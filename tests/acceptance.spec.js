@@ -4188,3 +4188,75 @@ test('serving a liege earns ground, repeatedly and visibly', async ({ page }) =>
   // And nothing is owed to a company that has sworn to nobody.
   expect(r.unsworn).toBeNull();
 });
+
+test('heavy contracts run in stages, and the ground grows with the fight', async ({ page }) => {
+  test.setTimeout(180000);
+  await boot(page);
+  await newCampaign(page);
+
+  const r = await page.evaluate(async () => {
+    const { Mission } = await import('/src/mission.js');
+    const State = await import('/src/state.js');
+    const mk = async (strength, type = 'skirmish') => {
+      const G = window.KR;
+      const S = State.newCampaign(12345);
+      G.campaign = S;
+      S.renown = 6000;
+      G.world?.dispose(); G.world = null;
+      document.getElementById('viewport').innerHTML = '';
+      const m = new Mission({
+        campaign: S,
+        spec: { type, site: 'grellan', layout: 'grellan', siteName: 'T',
+          enemyFaction: 'trust', party: { strength, quality: 0.8, kind: 'scrappers' } },
+        squad: S.roster.slice(0, 4),
+        container: document.getElementById('viewport'),
+        onHud: () => {}, onToast: () => {}, onIntro: () => {}, onWheel: () => {}, onEnd: () => {},
+      });
+      await m.start();
+      m.paused = false; m.hadLock = true;
+      if (m.intro) { m.intro.active = false; m.time = m.intro.graceUntil + 0.1; }
+      return m;
+    };
+
+    const sizes = [];
+    for (const s of [6, 30, 80]) {
+      const m = await mk(s);
+      sizes.push({ strength: s, bounds: m.level.bounds, stages: (m.stages || []).length });
+    }
+    // A hideout is one job; chaining it into "hold the crossing" would be two
+    // missions stapled together, and its own logic owns its objective.
+    const lair = await mk(54, 'lair');
+    const lairStages = (lair.stages || []).length;
+
+    // Play a heavy contract: the primary must NOT arm extraction on its own.
+    const m = await mk(54);
+    const spawn = { x: m.player.x, z: m.player.z };
+    m.entities.filter((e) => e.side === 'enemy').forEach((e) => { e.dead = true; e.down = true; });
+    m.skirmishCommitted = m.skirmishTotal;
+    for (let i = 0; i < 120; i++) { m.player.x = spawn.x; m.player.z = spawn.z; m.step(0.016); }
+    const afterPrimary = { idx: m.stageIndex, extract: !!m.extractArmed };
+    const markerDist = Math.hypot(m.stages[0].x - spawn.x, m.stages[0].z - spawn.z);
+
+    // Walking each stage down finishes the chain.
+    for (let guard = 0; guard < 4 && m.stages[m.stageIndex] && !m.extractArmed; guard++) {
+      const s = m.stages[m.stageIndex];
+      m.player.x = s.x; m.player.z = s.z;
+      for (let i = 0; i < 900 && m.stages[m.stageIndex] === s && !m.extractArmed; i++) m.step(0.016);
+    }
+    return { sizes, lairStages, afterPrimary, markerDist, finished: !!m.extractArmed };
+  });
+
+  // Ground scales with the number of people standing on it.
+  expect(r.sizes[2].bounds).toBeGreaterThan(r.sizes[0].bounds * 1.4);
+  expect(r.sizes[0].stages, 'a small fight got extra stages').toBe(0);
+  expect(r.sizes[1].stages).toBeGreaterThan(0);
+  expect(r.lairStages, 'a hideout was chained into extra stages').toBe(0);
+
+  // The mission-type logic that finished the primary must stop judging once a
+  // stage replaces it — its condition is still true every frame, which walked
+  // the whole chain in about two seconds and armed extraction from the spawn.
+  expect(r.markerDist).toBeGreaterThan(40);
+  expect(r.afterPrimary.idx, 'the primary did not open a stage').toBe(0);
+  expect(r.afterPrimary.extract, 'extraction armed without the stages being done').toBe(false);
+  expect(r.finished, 'the stage chain could not be completed').toBe(true);
+});

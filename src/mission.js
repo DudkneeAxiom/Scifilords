@@ -225,10 +225,16 @@ export class Mission {
   buildLevel() {
     // Locations map onto shared layouts but keep their own name, light and
     // garrison faction.
+    // Bigger fights get more ground. Sized off the opposition rather than the
+    // contract pay, because what makes a site feel cramped is the number of
+    // people standing in it.
+    const weight = this.spec.party?.strength || MISSION_TYPES[this.spec.type]?.foes || 8;
+    const spread = clamp(0.8 + weight / 90, 0.8, 1.75);
     this.level = Level.build(this.spec.layout || this.spec.site,
       this.S.seed + this.S.stats.missions, {
         name: this.spec.siteName ? this.spec.siteName.toUpperCase() : null,
         enemyFaction: this.spec.enemyFaction || null,
+        spread,
       });
     // Built once: everything in these sites is static.
     this.nav = new NavGrid(this.level.obstacles, this.level.bounds, 0.65);
@@ -788,6 +794,8 @@ export class Mission {
     else if (t === 'pit') this.buildPit();
     else if (t === 'siege') this.buildSiege();
     else this.buildDefense();
+
+    this.buildStages();
 
     // Optional objective: a cache placed deliberately AWAY from the exfil
     // route, so taking it costs time exactly when time is expensive.
@@ -2591,8 +2599,103 @@ export class Mission {
     }
   }
 
+  /**
+   * Big work is more than one thing.
+   *
+   * Every deployment used to be a single task followed by a walk to the
+   * extraction, whatever it paid — so a sixty-strong assault had the same shape
+   * as clearing a roadside camp, and the money was the only thing that scaled.
+   * A heavy contract now runs in stages: finish the first and the next one
+   * opens where you are standing, and extraction only arms when the last is
+   * done.
+   *
+   * Stages are generated from what the site already has rather than authored
+   * per mission, so any layout can carry them.
+   */
+  buildStages() {
+    const weight = this.spec.party?.strength || 0;
+    // Only work heavy enough to be worth a second trip across the ground.
+    // Only the open-field contracts. A hideout, a siege, a seizure and a raid
+    // each have a shape of their own — clearing a camp and then being told to
+    // go and hold a crossing reads as two missions stapled together, and the
+    // hideout's own completion logic owns its objective.
+    const STAGED = ['skirmish', 'sabotage', 'recovery'];
+    if (weight < 26 || !STAGED.includes(this.spec.type)) return;
+    const o = this.level.objectivePoint;
+    const b = this.level.bounds;
+    const far = (ang, d) => ({
+      x: clamp(o.x + Math.cos(ang) * d, -b + 12, b - 12),
+      z: clamp(o.z + Math.sin(ang) * d, -b + 12, b - 12),
+    });
+    const a0 = this.r() * Math.PI * 2;
+    const list = [];
+    if (weight >= 26) {
+      const p = far(a0, b * 0.45);
+      list.push({
+        kind: 'sweep', x: p.x, z: p.z, radius: 22,
+        text: 'Clear the far end of the site',
+        sub: 'Nothing of theirs left standing over there',
+      });
+    }
+    if (weight >= 45) {
+      const p = far(a0 + 2.2, b * 0.5);
+      list.push({
+        kind: 'hold', x: p.x, z: p.z, radius: 14, need: 12, progress: 0,
+        text: 'Hold the crossing while the truck comes up',
+        sub: 'Twelve seconds on the ground, nobody else standing on it',
+      });
+    }
+    this.stages = list;
+    this.stageIndex = -1;
+  }
+
+  /** Move to the next stage, or arm extraction if that was the last. */
+  advanceStage() {
+    if (!this.stages || this.stageIndex >= this.stages.length - 1) return false;
+    this.stageIndex++;
+    const s = this.stages[this.stageIndex];
+    this.objective = {
+      text: s.text, sub: s.sub, progress: 0,
+      need: s.kind === 'hold' ? s.need : 1,
+      done: false, type: 'stage', stage: s,
+    };
+    this.showMarker(s.x, s.z, 12);
+    Audio.uiAlert();
+    this.onToast('NEXT', s.text, 'deploy');
+    return true;
+  }
+
+  updateStages(dt) {
+    const s = this.stages?.[this.stageIndex];
+    if (!s || this.objective.done) return;
+    const p = this.player;
+    if (!p) return;
+    const inside = Math.hypot(p.x - s.x, p.z - s.z) < s.radius;
+    if (s.kind === 'sweep') {
+      // Everything alive within reach of the marker.
+      const left = this.entities.filter((e) => e.side === 'enemy' && !e.dead
+        && Math.hypot(e.x - s.x, e.z - s.z) < s.radius + 10).length;
+      this.objective.progress = left === 0 && inside ? 1 : 0;
+      if (left === 0 && inside) this.completeObjective();
+    } else {
+      const clear = !this.entities.some((e) => e.side === 'enemy' && !e.dead
+        && Math.hypot(e.x - s.x, e.z - s.z) < s.radius);
+      if (inside && clear) this.objective.progress = Math.min(s.need, this.objective.progress + dt);
+      else if (!inside) this.objective.progress = Math.max(0, this.objective.progress - dt * 0.5);
+      if (this.objective.progress >= s.need) this.completeObjective();
+    }
+  }
+
   completeObjective() {
     if (this.objective.done) return;
+    // A heavy contract has more than one piece of work in it. Only the last
+    // stage arms the extraction.
+    if (this.stages?.length && this.stageIndex < this.stages.length - 1) {
+      this.objective.done = true;
+      this.objective.progress = this.objective.need;
+      this.advanceStage();
+      return;
+    }
     this.objective.done = true;
     // Bodies are cleared from the entity list a little after they fall, so a
     // finished skirmish could read "51/54" on the HUD while the toast said the
@@ -3312,10 +3415,11 @@ export class Mission {
       this.updateDefense(dt);
     }
 
+    if (this.stages?.length && this.stageIndex >= 0) this.updateStages(dt);
     if (t === 'pit') this.updatePit(dt);
     if (t === 'siege') this.updateSiege(dt);
 
-    if (t === 'lair' && !this.objective.done) {
+    if (t === 'lair' && !this.objective.done && this.objective.type !== 'stage') {
       const onField = this.entities.filter((e) => e.side === 'enemy' && !e.dead).length;
       this.objective.progress = this.entities.filter((e) => e.side === 'enemy' && e.dead).length;
       this.updateSkirmishWaves();
@@ -3323,7 +3427,7 @@ export class Mission {
       else this.guardAgainstStall(dt);
     }
 
-    if (t === 'skirmish' && !this.objective.done) {
+    if (t === 'skirmish' && !this.objective.done && this.objective.type !== 'stage') {
       const onField = this.entities.filter((e) => e.side === 'enemy' && !e.dead).length;
       const killed = this.entities.filter((e) => e.side === 'enemy' && e.dead).length;
       this.objective.progress = killed;

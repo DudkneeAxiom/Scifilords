@@ -899,6 +899,14 @@ const SITES = {
  */
 export function build(siteId, seed, override = {}) {
   const b = new Builder(seed);
+  // How much ground this particular fight gets.
+  //
+  // Every site used to be the same size whatever was happening on it, so a
+  // four-man ambush and a sixty-strong assault were fought in an identically
+  // sized box — which left the small fights empty and the large ones playing
+  // like a crowd in a corridor. The spread override scales the playable
+  // radius with the weight of the encounter, and the scatter with its area.
+  const BOUND = Math.round(BOUNDS * (override.spread || 1));
   const fn = SITES[siteId] || siteGrellan;
   const meta = fn(b);
   // A location can rename and re-light a shared layout, so Culvert Nine does
@@ -910,10 +918,10 @@ export function build(siteId, seed, override = {}) {
   // Everything the layout did not place, placed once here so all eight sites
   // grow together: the middle distance gets filled in, and the edge is pushed
   // out well past where the fighting happens.
-  b.outskirts(26, BOUNDS - 14, 34);
+  b.outskirts(26, BOUND - 14, Math.round(34 * (override.spread || 1) ** 2));
 
   const group = new THREE.Group();
-  const ground = buildGround(BOUNDS * 4.2, meta.palette.ground, meta.palette.groundLow);
+  const ground = buildGround(BOUND * 4.2, meta.palette.ground, meta.palette.groundLow);
   group.add(ground);
 
   // Instanced-ish placement: each prop is a clone of a preloaded GLB.
@@ -949,7 +957,7 @@ export function build(siteId, seed, override = {}) {
     // site played the same regardless of what had been authored for it.
     garrison: meta.garrison || null,
     patrols: meta.patrols || null,
-    bounds: BOUNDS,
+    bounds: BOUND,
   };
 }
 
