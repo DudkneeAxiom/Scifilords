@@ -1,6 +1,6 @@
 # Handoff
 
-Written at commit `1f72e53`, **95/95 acceptance tests passing**, working tree
+Written at commit `740360b`, **95/95 acceptance tests passing**, working tree
 clean and pushed to <https://github.com/DudkneeAxiom/Scifilords>.
 
 This is the note I would want if I were picking the project up cold. It is not a
@@ -14,7 +14,7 @@ here, and the reasons behind decisions that look arbitrary from the outside.
 ```bash
 npm run serve                 # static server on 8124; PLAY.cmd on Windows
 npx playwright test           # the 95 acceptance tests, ~8.5 min
-node tools/soak.mjs 320 30    # 320 campaign days, 30 deployments, unattended
+node tools/soak.mjs 500 40    # 500 campaign days, 40 deployments, unattended
 node tools/shots.mjs          # photograph 20 screens into qa-shots/
 ```
 
@@ -121,12 +121,9 @@ Open, in rough priority order:
 
 <https://claude.ai/code/artifact/9070868b-f320-47b9-818c-2e2cfa32745d>
 
-**It is one revision out of date and needs republishing.** The local file
-`kettle-reach.html` (in the session scratchpad; regenerate if lost) has the
-corrections; the artifact service returned 502 three times running. The stale
-copy lists "the player cannot yet be granted a fief" as a known gap — that is
-wrong, fiefs exist and are now a repeating ladder. Republish with the same
-`url` to keep the link.
+Up to date as of `740360b`. The source is `kettle-reach.html` in the session
+scratchpad — regenerate it if lost, and republish with the same `url` to keep
+the link rather than creating a second artifact.
 
 ---
 
