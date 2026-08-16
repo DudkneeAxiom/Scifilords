@@ -21,6 +21,18 @@ import { rng, range, irange, pick } from './util.js';
  * pan, and flat ground keeps sightlines honest and AI pathing reliable.
  */
 export function heightAt(x, z) {
+  // Kept shallow on purpose, and it is a constraint rather than a preference.
+  //
+  // Real relief was tried — swells of five metres across the enlarged pan — and
+  // it broke the game underneath: every obstacle is an axis-aligned box
+  // anchored to ONE ground sample, so a nine-metre rampart standing across a
+  // slope has daylight under one end and rounds go beneath the wall. Closing
+  // that by sinking the boxes changes what an obstacle's height means, and its
+  // height is what classifies it as shoot-over cover, so the cover list empties.
+  // Making the ground properly three-dimensional needs obstacles that follow
+  // the terrain, which is a larger job than a visual tweak.
+  //
+  // Depth in the sites comes from fog range, structure and scatter instead.
   return (
     Math.sin(x * 0.021) * Math.cos(z * 0.019) * 0.75 +
     Math.sin(x * 0.058 + 1.7) * 0.28 +
@@ -29,7 +41,9 @@ export function heightAt(x, z) {
 }
 
 function buildGround(size, colorTop, colorLow) {
-  const seg = 84;
+  // Enough segments that the swells read as ground and not as facets. The
+  // pan is now more than twice as wide, so the old grid gave a 5m triangle.
+  const seg = 150;
   const geo = new THREE.PlaneGeometry(size, size, seg, seg);
   geo.rotateX(-Math.PI / 2);
   const pos = geo.attributes.position;
@@ -896,7 +910,7 @@ export function build(siteId, seed, override = {}) {
   // Everything the layout did not place, placed once here so all eight sites
   // grow together: the middle distance gets filled in, and the edge is pushed
   // out well past where the fighting happens.
-  b.outskirts(58, BOUNDS - 14, 20);
+  b.outskirts(26, BOUNDS - 14, 34);
 
   const group = new THREE.Group();
   const ground = buildGround(BOUNDS * 4.2, meta.palette.ground, meta.palette.groundLow);

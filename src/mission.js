@@ -239,7 +239,13 @@ export class Mission {
     // Heavy fog is the whole atmosphere budget. It hides the draw distance and
     // — because the fog is LIGHTER than the objects in it — turns everything at
     // distance into a flat silhouette, which is the entire look.
-    this.scene.fog = new THREE.Fog(p.fog, 26, 145);
+    //
+    // Ranged off the site rather than fixed: the field went from a 132m circle
+    // to 224m across, and a fog wall at 145m simply deleted everything that was
+    // added — the far half of every map was solid haze, which is why an enlarged
+    // site still read as one band of scenery in brown soup.
+    const far = this.level.bounds * 2.5;
+    this.scene.fog = new THREE.Fog(p.fog, this.level.bounds * 0.55, far);
 
     const amb = new THREE.HemisphereLight(p.amb, 0x0d0f0c, p.ambI);
     this.scene.add(amb);
@@ -251,10 +257,12 @@ export class Mission {
     sun.position.set(-46, 38, 30);
     sun.castShadow = true;
     sun.shadow.mapSize.set(1024, 1024);
-    const d = 62;
+    // The shadow volume has to cover the ground the player can actually see, or
+    // half the site is lit but shadowless and reads as flat.
+    const d = this.level.bounds * 1.1;
     sun.shadow.camera.left = -d; sun.shadow.camera.right = d;
     sun.shadow.camera.top = d; sun.shadow.camera.bottom = -d;
-    sun.shadow.camera.far = 160;
+    sun.shadow.camera.far = this.level.bounds * 3.2;
     sun.shadow.bias = -0.002;
     this.scene.add(sun);
     this.sun = sun;
