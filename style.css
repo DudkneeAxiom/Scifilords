@@ -976,3 +976,22 @@ kbd {
   background: rgba(10,14,8,0.72); pointer-events: none;
 }
 .cover-state.out { border-color: var(--bad); color: var(--bad); }
+
+/* Where the fire is coming from. Each wedge is rotated to the bearing of a
+   recent hit — 0deg is straight ahead — and fades over a couple of seconds.
+   Sits well outside the reticle so it never competes with aiming. */
+.hurt-dirs {
+  position: absolute; left: 50%; top: 50%; width: 0; height: 0;
+  pointer-events: none; z-index: 12;
+}
+.hurt-dirs i {
+  position: absolute; left: 0; top: 0; width: 0; height: 0;
+  transform-origin: 0 0;
+}
+.hurt-dirs i::before {
+  content: ""; position: absolute;
+  left: -46px; top: -150px; width: 92px; height: 26px;
+  background: radial-gradient(ellipse at 50% 100%,
+    rgba(168,69,47,0.95) 0%, rgba(168,69,47,0.35) 55%, rgba(168,69,47,0) 100%);
+  clip-path: polygon(50% 100%, 0 0, 100% 0);
+}

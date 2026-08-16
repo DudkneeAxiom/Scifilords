@@ -211,6 +211,23 @@ export function renderMissionHud(h) {
   ret.classList.toggle('ads', h.aiming);
   $('hurt').style.opacity = String(h.hurt * 0.85);
 
+  // Where the fire is coming from. One wedge per recent hit, pointing at the
+  // shooter and fading over a couple of seconds — so a player who is being shot
+  // from behind can tell, and pick a wall accordingly.
+  const hd = $('hurt-dirs');
+  if (hd) {
+    const marks = h.hurtFrom || [];
+    if (marks.length !== hd.children.length) {
+      hd.innerHTML = marks.map(() => '<i></i>').join('');
+    }
+    marks.forEach((mk, i) => {
+      const el = hd.children[i];
+      if (!el) return;
+      el.style.transform = `rotate(${(mk.rel * 180) / Math.PI}deg)`;
+      el.style.opacity = String(Math.max(0, 1 - mk.age) * 0.9);
+    });
+  }
+
   // Objective line — the tag changes so extraction reads as a different state.
   const tag = $('obj-tag');
   if (h.extract) { tag.textContent = 'EXTRACT'; tag.className = 'obj-tag extract'; }

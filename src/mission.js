@@ -924,9 +924,19 @@ export class Mission {
     }
   }
 
-  /** Feed the rest of a large party in as the front rank is destroyed. */
+  /**
+   * Feed the rest of a large party in as the front rank is destroyed.
+   *
+   * Lairs use this too. They did not: buildLair caps its opening wave at the
+   * field limit and relies on this to commit the remainder, but the guard here
+   * named only 'skirmish' — so any hideout stronger than the cap put 34 of its
+   * 54 defenders on the field, never sent the other twenty, and could never
+   * reach its own kill target. The mission was unwinnable and the player had no
+   * way to know why. Found by the campaign soak, which is the only thing that
+   * plays a big enough hideout to hit it.
+   */
   updateSkirmishWaves() {
-    if (this.spec.type !== 'skirmish') return;
+    if (this.spec.type !== 'skirmish' && this.spec.type !== 'lair') return;
     const alive = this.entities.filter((e) => e.side === 'enemy' && !e.dead).length;
     const left = this.skirmishTotal - (this.skirmishCommitted || 0);
     if (left > 0 && alive < Math.max(4, FIELD_CAP * 0.45)) {
@@ -2113,6 +2123,22 @@ export class Mission {
     else if (target.isPlayer) {
       this.hurtFlash = 1;
       this.shake = Math.min(0.8, (this.shake || 0) + 0.25);
+      // Which way it came from.
+      //
+      // A full-screen red flash says you are being shot and nothing else. Five
+      // rifle rounds kill you, and a firefight is decided in a handful of
+      // seconds — so a player who cannot tell which side the fire is coming
+      // from cannot choose a wall to get behind, and being killed by something
+      // you were never given the information to answer is the difference
+      // between hard and unfair.
+      this.hurtFrom = this.hurtFrom || [];
+      this.hurtFrom.push({
+        // World bearing from the player to whoever fired.
+        a: Math.atan2(source.x - target.x, source.z - target.z),
+        t: this.time,
+        dmg,
+      });
+      if (this.hurtFrom.length > 6) this.hurtFrom.shift();
     }
   }
 
@@ -3818,6 +3844,16 @@ export class Mission {
         && Math.hypot(e.x - p.x, e.z - p.z) < 60).length,
       compass: this.camYaw,
       hurt: this.hurtFlash || 0,
+      // Recent hits, as bearings relative to where the player is looking:
+      // 0 is straight ahead, positive is to the right. Converted here rather
+      // than in the renderer because the camera angle lives on this side.
+      hurtFrom: (this.hurtFrom || [])
+        .filter((h) => this.time - h.t < 2.2)
+        .map((h) => ({
+          rel: h.a - (this.camYaw + Math.PI),
+          age: (this.time - h.t) / 2.2,
+          dmg: h.dmg,
+        })),
       paused: this.paused,
       over: this.over,
       levelName: this.level.name,

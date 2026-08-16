@@ -3936,3 +3936,126 @@ test('the squad can be ordered into cover, and out of it again', async ({ page }
   expect(r.released).toBe(r.n);
   expect(r.stoodUp).toBe(r.n);
 });
+
+test('the player is told which way the fire is coming from', async ({ page }) => {
+  test.setTimeout(120000);
+  await boot(page);
+  await newCampaign(page);
+
+  const r = await page.evaluate(async () => {
+    const { Mission } = await import('/src/mission.js');
+    const State = await import('/src/state.js');
+    const UI = await import('/src/ui.js');
+    const G = window.KR;
+    const S = State.newCampaign(12345);
+    G.campaign = S;
+    S.renown = 4000;
+    G.world?.dispose(); G.world = null;
+    document.getElementById('viewport').innerHTML = '';
+    UI.show('hud');
+    const m = new Mission({
+      campaign: S,
+      spec: { type: 'skirmish', site: 'grellan', layout: 'grellan', siteName: 'T',
+        enemyFaction: 'trust' },
+      squad: S.roster.slice(0, 4),
+      container: document.getElementById('viewport'),
+      onHud: () => {}, onToast: () => {}, onIntro: () => {}, onWheel: () => {}, onEnd: () => {},
+    });
+    await m.start();
+    m.paused = false; m.hadLock = true;
+    if (m.intro) { m.intro.active = false; m.time = m.intro.graceUntil + 0.1; }
+    const p = m.player;
+    const foe = m.entities.find((e) => e.side === 'enemy');
+    const norm = (d) => ((d % 360) + 360) % 360;
+
+    // Body yaw 0 faces +z, so "ahead" is +z. Getting this backwards is easy and
+    // makes a correct indicator look inverted.
+    m.camYaw = -Math.PI;
+    const rows = [];
+    for (const [name, dx, dz] of [['ahead', 0, 20], ['behind', 0, -20],
+      ['right', 20, 0], ['left', -20, 0]]) {
+      m.hurtFrom = [];
+      foe.x = p.x + dx; foe.z = p.z + dz;
+      foe.dead = false; foe.down = false;
+      p.hp = p.maxHp;
+      m.applyDamage(p, 10, foe, { x: p.x, y: 1.2, z: p.z });
+      UI.renderMissionHud(m.buildHud());
+      const marks = m.buildHud().hurtFrom;
+      rows.push({
+        name,
+        wedges: document.querySelectorAll('#hurt-dirs i').length,
+        deg: marks.length ? Math.round(norm((marks[0].rel * 180) / Math.PI)) : null,
+      });
+    }
+    m.time += 3;
+    UI.renderMissionHud(m.buildHud());
+    return { rows, faded: m.buildHud().hurtFrom.length };
+  });
+
+  const by = Object.fromEntries(r.rows.map((x) => [x.name, x]));
+  for (const k of ['ahead', 'behind', 'right', 'left']) {
+    expect(by[k].wedges, `no indicator for fire from ${k}`).toBeGreaterThan(0);
+  }
+  // A full-screen red flash says you are being shot and nothing else; five
+  // rifle rounds kill you, so being unable to locate the shooter is what makes
+  // a firefight feel unfair rather than hard.
+  const near = (got, want) => Math.min(Math.abs(got - want), 360 - Math.abs(got - want)) < 25;
+  expect(near(by.ahead.deg, 0), `ahead read as ${by.ahead.deg}°`).toBe(true);
+  expect(near(by.behind.deg, 180), `behind read as ${by.behind.deg}°`).toBe(true);
+  expect(near(by.right.deg, 90), `right read as ${by.right.deg}°`).toBe(true);
+  expect(near(by.left.deg, 270), `left read as ${by.left.deg}°`).toBe(true);
+  expect(r.faded, 'indicators never fade').toBe(0);
+});
+
+test('a hideout bigger than the field cap still commits every defender', async ({ page }) => {
+  test.setTimeout(180000);
+  await boot(page);
+  await newCampaign(page);
+
+  const r = await page.evaluate(async () => {
+    const { Mission } = await import('/src/mission.js');
+    const State = await import('/src/state.js');
+    const G = window.KR;
+    const S = State.newCampaign(12345);
+    G.campaign = S;
+    S.renown = 4000;
+    G.world?.dispose(); G.world = null;
+    document.getElementById('viewport').innerHTML = '';
+    const m = new Mission({
+      campaign: S,
+      // Deliberately far above the field cap: this is the case that stalled.
+      spec: { type: 'lair', site: 'grellan', layout: 'grellan', siteName: 'T',
+        enemyFaction: 'raider', party: { strength: 54, quality: 0.8, kind: 'lair' } },
+      squad: S.roster.slice(0, 4),
+      container: document.getElementById('viewport'),
+      onHud: () => {}, onToast: () => {}, onIntro: () => {}, onWheel: () => {}, onEnd: () => {},
+    });
+    await m.start();
+    m.paused = false; m.hadLock = true;
+    if (m.intro) { m.intro.active = false; m.time = m.intro.graceUntil + 0.1; }
+
+    const total = m.skirmishTotal;
+    const firstWave = m.skirmishCommitted;
+    // Kill whatever is standing, repeatedly, and see whether the rest arrive.
+    for (let round = 0; round < 40 && !m.objective.done; round++) {
+      m.entities.filter((e) => e.side === 'enemy' && !e.dead)
+        .forEach((e) => { e.dead = true; e.down = true; e.hp = 0; });
+      for (let i = 0; i < 90 && !m.objective.done; i++) m.step(0.016);
+    }
+    return {
+      total, firstWave,
+      committed: m.skirmishCommitted,
+      done: !!m.objective.done,
+      progress: m.objective.progress,
+      need: m.objective.need,
+    };
+  });
+
+  // The opening wave is capped, which is correct — the bug was that the rest
+  // were never sent, so the kill target could not be reached and the mission
+  // was unwinnable with no way for the player to tell why.
+  expect(r.firstWave).toBeLessThan(r.total);
+  expect(r.committed, 'the remaining defenders were never committed').toBe(r.total);
+  expect(r.progress).toBeGreaterThanOrEqual(r.need);
+  expect(r.done, 'the hideout could not be cleared').toBe(true);
+});
