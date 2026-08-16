@@ -2989,9 +2989,19 @@ test('the map clock halts, runs and fast-forwards', async ({ page }) => {
   expect(Math.abs(r4.rate - r1.rate) / r1.rate).toBeLessThan(0.1);
 
   // An open panel reads as halted, because to the player it is.
-  await page.evaluate(() => { window.KR.world.setSpeed(1); window.KR.world.setPaused(true); });
-  await page.waitForTimeout(200);
+  //
+  // Opened for real rather than by setting the paused flag by hand: the world
+  // now asserts every frame that it is running whenever no panel is up — which
+  // is what stops a lost close-handler stranding the campaign — so a bare
+  // setPaused(true) is corrected before the next frame, exactly as intended.
+  await page.evaluate(() => {
+    window.KR.world.setSpeed(1);
+    window.KR.dev.UI.modal({ title: 'TEST', body: '', foot: '' });
+    window.KR.world.setPaused(true);
+  });
+  await page.waitForTimeout(250);
   expect(await page.evaluate(() => document.querySelector('#wh-spd .on')?.dataset.spd)).toBe('0');
+  await page.evaluate(() => window.KR.dev.UI.closeModal());
 });
 
 test('the company screens are one window with tabs, not seven panels', async ({ page }) => {
@@ -3496,6 +3506,11 @@ test('collision matches what you can see', async ({ page }) => {
       if (b.isEmpty() || !isFinite(b.min.x)) return null;
       return { hw: (b.max.x - b.min.x) / 2, hd: (b.max.z - b.min.z) / 2 };
     };
+    const meshH = (name) => {
+      const b = new THREE.Box3().setFromObject(Models.get(name));
+      if (b.isEmpty() || !isFinite(b.min.y)) return null;
+      return b.max.y - b.min.y;
+    };
     const out = [];
     for (const id of ['grellan', 'rampart', 'perran', 'settlement', 'works', 'fort', 'reclaimer']) {
       let lvl = null;
@@ -3507,7 +3522,25 @@ test('collision matches what you can see', async ({ page }) => {
         if (!m) continue;
         const dw = m.hw * p.scale, dd = m.hd * p.scale;
         if (dw < 0.01 || dd < 0.01) continue;
-        out.push({ model: p.model, ratio: (o.hw * o.hd) / (dw * dd) });
+        // Height as well as footprint. Checking area alone let a staircase
+        // through whose treads were the right width and four times too tall:
+        // one 0.94m crate drawn against a 4.1m collision box, so rounds
+        // stopped in open air halfway up a flight of steps.
+        const stack = lvl.props.filter((q) =>
+          Math.abs(q.x - o.x) < 1e-3 && Math.abs(q.z - o.z) < 1e-3);
+        let top = -Infinity, base = Infinity;
+        for (const q of stack) {
+          const mh = meshH(q.model);
+          if (mh === null) continue;
+          base = Math.min(base, q.y);
+          top = Math.max(top, q.y + mh * q.scale);
+        }
+        const drawnH = isFinite(top) ? top - Math.min(base, o.y) : null;
+        out.push({
+          model: p.model,
+          ratio: (o.hw * o.hd) / (dw * dd),
+          hRatio: drawnH && drawnH > 0.05 ? o.h / drawnH : 1,
+        });
       }
     }
     return out;
@@ -3524,6 +3557,9 @@ test('collision matches what you can see', async ({ page }) => {
   // dish's bowl, a mast's arms), which is why this bound is generous.
   const ghosts = worst.filter((r) => r.ratio < 0.35);
   expect(ghosts.map((g) => g.model), 'shots pass through solid things').toEqual([]);
+  // A box the right width and several times too tall is just as invisible.
+  const towers = worst.filter((r) => r.hRatio > 1.7);
+  expect(towers.map((x) => x.model), 'collision stands taller than the model').toEqual([]);
 });
 
 test('reinforcements arrive at a distance, unseen, and do not shoot on arrival', async ({ page }) => {
@@ -3920,8 +3956,12 @@ test('the squad can be ordered into cover, and out of it again', async ({ page }
     return {
       n: m.squad.length, ordered, shielded, down, shorter,
       onWheel: m.ORDERS.some((o) => o.id === 'cover'),
-      released: m.squad.filter((s) => s.order === 'follow').length,
-      stoodUp: m.squad.filter((s) => (s.tuck || 0) < 0.4).length,
+      // Only those still on their feet. Somebody who has been shot down during
+      // the fight keeps whatever order they had, and counting them as
+      // disobedient makes this a test of whether anyone got hurt.
+      up: m.squad.filter((s) => !s.down).length,
+      released: m.squad.filter((s) => !s.down && s.order === 'follow').length,
+      stoodUp: m.squad.filter((s) => !s.down && (s.tuck || 0) < 0.4).length,
     };
   });
 
@@ -3933,8 +3973,8 @@ test('the squad can be ordered into cover, and out of it again', async ({ page }
   expect(r.down, 'they walked to a wall and stood next to it').toBeGreaterThanOrEqual(Math.ceil(r.n / 2));
   expect(r.shorter).toBeGreaterThanOrEqual(Math.ceil(r.n / 2));
   // And cover must not be a trap they cannot be called out of.
-  expect(r.released).toBe(r.n);
-  expect(r.stoodUp).toBe(r.n);
+  expect(r.released).toBe(r.up);
+  expect(r.stoodUp).toBe(r.up);
 });
 
 test('the player is told which way the fire is coming from', async ({ page }) => {
@@ -4058,4 +4098,36 @@ test('a hideout bigger than the field cap still commits every defender', async (
   expect(r.committed, 'the remaining defenders were never committed').toBe(r.total);
   expect(r.progress).toBeGreaterThanOrEqual(r.need);
   expect(r.done, 'the hideout could not be cleared').toBe(true);
+});
+
+test('a required choice cannot be dismissed, and the Reach never stays paused', async ({ page }) => {
+  test.setTimeout(120000);
+  const errors = await boot(page);
+  await page.click('button[data-act="new"]');
+  await page.waitForSelector('#modal .modal-title', { timeout: 15000 });
+  await page.click('#modal [data-x="close"]');
+  // The opening commission is the same panel a promotion uses.
+  await page.waitForSelector('#modal [data-perk]', { timeout: 15000 });
+
+  expect(await page.evaluate(() => window.KR.dev.UI.modalBlocking())).toBe(true);
+  await page.keyboard.press('Escape');
+  await page.waitForTimeout(300);
+  // Escaping a promotion used to close it while leaving the world paused behind
+  // it, with the choice still outstanding: the campaign looked frozen and every
+  // click afterwards landed on a map that was no longer running.
+  expect(await page.evaluate(() => !!document.querySelector('#modal [data-perk]')),
+    'a required choice was dismissed with Escape').toBe(true);
+
+  await page.click('#modal [data-perk]');
+  await page.waitForTimeout(600);
+  await page.evaluate(() => document.getElementById('overlay').classList.add('hidden'));
+
+  // And the invariant that makes the whole class of bug impossible: if no panel
+  // is up, the Reach runs — whatever route left it paused.
+  const recovered = await page.evaluate(() => new Promise((res) => {
+    window.KR.world.setPaused(true);
+    setTimeout(() => res(window.KR.world.paused), 900);
+  }));
+  expect(recovered, 'the world stayed paused with no panel over it').toBe(false);
+  expect(errors).toEqual([]);
 });

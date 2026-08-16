@@ -56,7 +56,11 @@ export function clearToasts() {
 
 let modalOnClose = null;
 
-export function modal({ title, tag, body, foot, onClose, wide }) {
+// True while a panel is up that the player must answer rather than dismiss.
+let modalBlocks = false;
+export const modalBlocking = () => modalBlocks;
+
+export function modal({ title, tag, body, foot, onClose, wide, blocking }) {
   const ov = $('overlay');
   const m = $('modal');
   m.innerHTML = `
@@ -70,6 +74,11 @@ export function modal({ title, tag, body, foot, onClose, wide }) {
   else m.style.width = '';
   ov.classList.remove('hidden');
   modalOnClose = onClose || null;
+  // A blocking panel is one the player must answer — a promotion, a choice the
+  // campaign cannot proceed without. Escape must not dismiss it, because the
+  // caller has usually paused the world on the assumption that it will be
+  // answered, and dismissing it leaves the game running with nothing running.
+  modalBlocks = !!blocking;
   return m;
 }
 
@@ -719,6 +728,12 @@ export function perkPanel(S, soldier, { onDone }) {
     foot: '<span class="spacer">Training choices cannot be changed later.</span>',
     onClose: null,
     wide: true,
+    // There is no way out of this panel but to choose, and the caller has
+    // paused the world waiting for an answer — so Escape must not dismiss it.
+    // It did, which left the campaign paused for ever with the promotion still
+    // outstanding: the game looked frozen, and every click after that went to a
+    // world that was no longer running.
+    blocking: true,
   });
 
   for (const el of document.querySelectorAll('#modal [data-perk]')) {
@@ -2079,7 +2094,17 @@ export function encounterPanel(S, party, cbs) {
   if (hostile) {
     options.push(`<button class="btn btn-warn" data-x="fight">ENGAGE</button>`);
     if (sendBtn) options.push(sendBtn);
+    // Buying your way past. Always offered, always galling, and often the
+    // right call when the alternative is burying somebody.
+    const toll = State.tollOf(S, party);
+    options.push(`<button class="btn" data-x="toll" ${S.credits < toll ? 'disabled' : ''}
+      title="They will let you past for ${toll}">PAY THEM OFF (${toll})</button>`);
     options.push(`<button class="btn" data-x="avoid">WITHDRAW</button>`);
+  } else if (party.faction && (party.kind || '').startsWith('patrol')) {
+    // A patrol that wants to look in the truck.
+    options.push(`<button class="btn" data-x="inspect">STAND AND BE SEARCHED</button>`);
+    options.push(`<button class="btn btn-warn" data-x="refuse">REFUSE THEM</button>`);
+    options.push(`<button class="btn" data-x="avoid">MOVE ON</button>`);
   } else if (party.kind === 'refugees') {
     options.push(`<button class="btn" data-x="aid">GIVE THEM SUPPLIES (2)</button>`);
     options.push(`<button class="btn" data-x="avoid">MOVE ON</button>`);
@@ -2139,6 +2164,9 @@ export function encounterPanel(S, party, cbs) {
     aid: () => cbs.onAid(party),
     talk: () => cbs.onTalk(party),
     drink: () => cbs.onTalk(party),
+    toll: () => cbs.onToll?.(party),
+    inspect: () => cbs.onInspect?.(party),
+    refuse: () => cbs.onRefuse?.(party),
   });
 }
 
@@ -2312,15 +2340,21 @@ export function controlsPanel({ onClose }) {
         ${kv('RIGHT MOUSE', 'Aim down sights')}
         ${kv('SHIFT', 'Sprint — not from a crouch, not in the air')}
         ${kv('CTRL / C', 'Crouch. Hold with Ctrl, toggle with C.')}
-        ${kv('SPACE', 'Jump')}
+        ${kv('SPACE', 'Take cover if there is any in reach; leave it if you are in it; otherwise vault')}
         ${kv('Q', 'Swap camera shoulder')}
         ${kv('R', 'Reload')}
         ${kv('E (hold)', 'Interact / stabilise a casualty')}
         ${kv('ESC', 'Pause')}
         <div class="prose dim" style="margin-top:10px;font-size:11px">
-          Crouching costs most of your speed and steadies your aim; firing in
-          mid-air throws it away entirely. Swapping shoulders matters at a
-          corner — your own body hides whichever side you are leaning past.
+          Cover is geometry, not a bonus. Tucked behind a wall your body drops
+          below it and the round hits the wall; aiming leans you out, which is
+          the only way to shoot back and the only time you can be hit. Cover is
+          worth nothing from the flank, so a defended position is answered by
+          going round it.
+        </div>
+        <div class="prose dim" style="margin-top:8px;font-size:11px">
+          Walk over a body to strip it. Wedges around the reticle point at
+          whoever has just shot you.
         </div>
       </div>
       <div>
@@ -2331,6 +2365,7 @@ export function controlsPanel({ onClose }) {
         ${kv('X', 'Suppress that position — pins whoever is there')}
         ${kv('Z', 'Flank — swing wide and come at it from the side')}
         ${kv('V', 'Fall back to the commander')}
+        ${kv('G', 'Take cover — behind the nearest hard thing, facing the threat')}
         ${kv('F', 'Form up on the commander')}
         ${kv('H', 'Hold current position')}
         <div class="prose dim" style="margin-top:10px;font-size:11px">
@@ -2341,6 +2376,8 @@ export function controlsPanel({ onClose }) {
           another.
         </div>
         <div class="section-title">IN THE REACH</div>
+        ${kv('SPACE', 'Halt — stops the clock as well as the truck')}
+        ${kv('F', 'Fast forward, and back again')}
         ${kv('CLICK', 'Travel to a point')}
         ${kv('W A S D', 'Steer directly')}
         ${kv('SPACE', 'Halt')}

@@ -540,6 +540,13 @@ export const LOCATIONS = [
 
 export const PARTY_TIERS = {
   looters: {
+    id: 'strays', name: 'Stray Scavengers', tier: 1, faction: 'raider',
+    model: 'wm_party_raider', strength: [2, 5], speed: 23, hostile: true,
+    quality: 0.5, roles: ['rifleman', 'rifleman'],
+    desc: 'Two or three desperate people with whatever they could pick up. '
+      + 'The only thing in the basin a new company can take on and expect to win.',
+  },
+  looters: {
     id: 'looters', name: 'Looters', tier: 1, faction: 'raider',
     model: 'wm_party_raider', strength: [3, 8], speed: 21, hostile: true,
     quality: 0.62, roles: ['rifleman', 'rifleman', 'breacher'],
@@ -1078,22 +1085,22 @@ export const CREEDS = {
   straight: {
     id: 'straight', name: 'Straight',
     line: 'Signed on to fight soldiers, not to rob people.',
-    react: { raid: -9, press: -5, ransom: -3, sell: -14, release: 4, oathbreak: -6, unpaid: -2, win: 1, lair: 5, captured: -2 },
+    react: { raid: -9, press: -5, ransom: -3, sell: -14, release: 4, oathbreak: -6, unpaid: -2, win: 1, lair: 5, captured: -2, toll: -3 },
   },
   hard: {
     id: 'hard', name: 'Hard',
     line: 'Takes what is in front of them and does not lose sleep over it.',
-    react: { raid: 5, press: 3, ransom: 3, sell: 4, release: -4, oathbreak: 0, unpaid: -4, win: 2, lair: 1, captured: -7 },
+    react: { raid: 5, press: 3, ransom: 3, sell: 4, release: -4, oathbreak: 0, unpaid: -4, win: 2, lair: 1, captured: -7, toll: -9 },
   },
   loyal: {
     id: 'loyal', name: 'Loyal',
     line: 'Keeps their word, and expects the company to keep its own.',
-    react: { raid: -3, press: -2, ransom: -1, sell: -8, release: 2, oathbreak: -12, unpaid: -3, win: 2, lair: 3, captured: 1 },
+    react: { raid: -3, press: -2, ransom: -1, sell: -8, release: 2, oathbreak: -12, unpaid: -3, win: 2, lair: 3, captured: 1, toll: -2 },
   },
   paid: {
     id: 'paid', name: 'Professional',
     line: 'Here for the wage. Everything else is somebody else\'s argument.',
-    react: { raid: 1, press: 0, ransom: 4, sell: 5, release: -1, oathbreak: 0, unpaid: -9, win: 1, lair: 0, captured: -5 },
+    react: { raid: 1, press: 0, ransom: 4, sell: 5, release: -1, oathbreak: 0, unpaid: -9, win: 1, lair: 0, captured: -5, toll: 2 },
   },
 };
 

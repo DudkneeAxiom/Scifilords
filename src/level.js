@@ -181,7 +181,21 @@ class Builder {
       const sx = x + dirX * i * 1.0;
       const sz = z + dirZ * i * 1.0;
       const h = (i / n) * top;
-      this.props.push({ model: 'crate', x: sx, z: sz, ry: 0, scale: 1, y: heightAt(sx, sz) });
+      // Draw the whole tread, not one crate on top of four metres of nothing.
+      //
+      // Each step used to place a single crate against a collision box as tall
+      // as the step itself — by the top of a flight that was a 0.94m crate in
+      // front of a 4.1m wall. Rounds stopped in mid air, which is precisely the
+      // invisible geometry the collision audit was written to catch; it only
+      // ever compared FOOTPRINT AREA and never height, so a box the right width
+      // and four times too tall sailed through it.
+      const CRATE_H = 0.94;
+      for (let s = 0; s * CRATE_H < h - 0.05; s++) {
+        this.props.push({
+          model: 'crate', x: sx, z: sz, ry: 0, scale: 1,
+          y: heightAt(sx, sz) + s * CRATE_H,
+        });
+      }
       // A tread is exactly as deep as the stride between treads. Making them
       // wider than the spacing means every tread overlaps the two beyond it, so
       // a climber standing on the first is already inside the third — which is
@@ -209,20 +223,101 @@ class Builder {
     }
   }
 
-  /** A ring of rocks and dead trees that reads as terrain, not as a wall. */
-  perimeter(radius, count = 46) {
+  /**
+   * The edge of the site: a broken ridge, not a fence.
+   *
+   * This used to lay an even ring of rocks at a fixed radius, which made every
+   * deployment the same shape — a small circular arena with a kerb round it.
+   * You could read the boundary at a glance and there was nothing beyond it.
+   *
+   * Now the rim wanders in and out, opens into gaps where the ground leads
+   * somewhere, and thins into outlying stone rather than stopping dead. The
+   * point is that the edge should be somewhere you stop bothering to go, not a
+   * wall you can see.
+   */
+  rim(radius, count = 96) {
+    // Three or four mouths in the ring: approaches, and lines of retreat.
+    const gaps = [];
+    const nGaps = irange(this.r, 3, 4);
+    for (let g = 0; g < nGaps; g++) {
+      gaps.push({ at: (g / nGaps) * Math.PI * 2 + range(this.r, -0.5, 0.5), w: range(this.r, 0.28, 0.5) });
+    }
+    const inGap = (a) => gaps.some((g) => {
+      let d = Math.abs(((a - g.at + Math.PI) % (Math.PI * 2)) - Math.PI);
+      return d < g.w;
+    });
+
     for (let i = 0; i < count; i++) {
-      const a = (i / count) * Math.PI * 2 + range(this.r, -0.05, 0.05);
-      const d = radius + range(this.r, -8, 14);
+      const a = (i / count) * Math.PI * 2 + range(this.r, -0.03, 0.03);
+      if (inGap(a)) continue;
+      // A wandering edge rather than a drawn circle.
+      const wobble = Math.sin(a * 2.3) * 11 + Math.cos(a * 3.7 + 1.1) * 7;
+      const d = radius + wobble + range(this.r, -6, 10);
       const x = Math.cos(a) * d, z = Math.sin(a) * d;
-      if (this.r() < 0.22) {
-        this.prop('dead_tree', x, z, this.r() * 6.28, null, range(this.r, 0.8, 1.3));
+      if (this.r() < 0.2) {
+        this.prop('dead_tree', x, z, this.r() * 6.28, null, range(this.r, 0.8, 1.4));
       } else {
         this.prop(pick(this.r, ['rock_0', 'rock_1', 'rock_2', 'rock_3']), x, z,
-          this.r() * 6.28, 'auto', range(this.r, 1.8, 3.6));
+          this.r() * 6.28, 'auto', range(this.r, 1.8, 3.8));
+      }
+      // Outlying stone, so the ridge frays instead of ending.
+      if (this.r() < 0.45) {
+        const od = d + range(this.r, 10, 30);
+        this.prop(pick(this.r, ['rock_0', 'rock_1', 'rock_2', 'rock_3']),
+          Math.cos(a + range(this.r, -0.1, 0.1)) * od,
+          Math.sin(a + range(this.r, -0.1, 0.1)) * od,
+          this.r() * 6.28, 'auto', range(this.r, 1.4, 3.0));
       }
     }
   }
+
+  /**
+   * Fill the ground between the objective and the rim.
+   *
+   * Enlarging the field is worthless if the extra space is empty — a longer walk
+   * across nothing is worse than a small arena. This scatters clusters of hard
+   * cover across the middle distance, in clumps rather than evenly, so crossing
+   * the site is a series of decisions about which piece to run to next.
+   */
+  outskirts(inner, outer, clusters = 14) {
+    for (let c = 0; c < clusters; c++) {
+      const a = this.r() * Math.PI * 2;
+      const d = inner + Math.sqrt(this.r()) * (outer - inner);
+      const cx = Math.cos(a) * d, cz = Math.sin(a) * d;
+      if (!this.clear(cx, cz, 7)) continue;
+      const kind = this.r();
+      if (kind < 0.3) {
+        // A wrecked vehicle and the stuff that spilled out of it.
+        this.prop('truck_wreck', cx, cz, this.r() * 6.28, BOX.truck_wreck, 1);
+        for (let i = 0; i < irange(this.r, 1, 3); i++) {
+          this.prop('crate', cx + range(this.r, -4, 4), cz + range(this.r, -4, 4),
+            this.r() * 6.28, BOX.crate, 1);
+        }
+      } else if (kind < 0.55) {
+        // A firing position somebody left behind.
+        for (let i = 0; i < irange(this.r, 2, 4); i++) {
+          const aa = this.r() * Math.PI * 2;
+          this.prop('sandbags', cx + Math.cos(aa) * 2.4, cz + Math.sin(aa) * 2.4,
+            aa + Math.PI / 2, BOX.sandbags, 1.1);
+        }
+      } else if (kind < 0.78) {
+        this.prop('container', cx, cz, this.r() < 0.5 ? 0 : Math.PI / 2, BOX.container, 1);
+        if (this.r() < 0.5) {
+          this.prop('container', cx + range(this.r, -7, 7), cz + range(this.r, -7, 7),
+            Math.PI / 2, BOX.container, 1);
+        }
+      } else {
+        for (let i = 0; i < irange(this.r, 2, 5); i++) {
+          this.prop(pick(this.r, ['rock_0', 'rock_1', 'rock_2', 'rock_3']),
+            cx + range(this.r, -6, 6), cz + range(this.r, -6, 6),
+            this.r() * 6.28, 'auto', range(this.r, 1.2, 2.4));
+        }
+      }
+    }
+  }
+
+  /** Kept so existing layouts keep working; the rim is the real edge now. */
+  perimeter(radius) { this.rim(radius * 1.7); }
 }
 
 // Collision footprints for the kit, in metres. Measured from the Blender source.
@@ -798,8 +893,13 @@ export function build(siteId, seed, override = {}) {
   if (override.palette) meta.palette = { ...meta.palette, ...override.palette };
   if (override.enemyFaction) meta.enemyFaction = override.enemyFaction;
 
+  // Everything the layout did not place, placed once here so all eight sites
+  // grow together: the middle distance gets filled in, and the edge is pushed
+  // out well past where the fighting happens.
+  b.outskirts(58, BOUNDS - 14, 20);
+
   const group = new THREE.Group();
-  const ground = buildGround(280, meta.palette.ground, meta.palette.groundLow);
+  const ground = buildGround(BOUNDS * 4.2, meta.palette.ground, meta.palette.groundLow);
   group.add(ground);
 
   // Instanced-ish placement: each prop is a clone of a preloaded GLB.
@@ -835,7 +935,7 @@ export function build(siteId, seed, override = {}) {
     // site played the same regardless of what had been authored for it.
     garrison: meta.garrison || null,
     patrols: meta.patrols || null,
-    bounds: 66,
+    bounds: BOUNDS,
   };
 }
 
@@ -859,6 +959,17 @@ const RADIUS = 0.45;
  * teleporting onto a container by walking into its side.
  */
 export const STEP_UP = 0.62;
+
+/**
+ * How far the playable ground runs from the centre.
+ *
+ * Was 66 — a 132-metre circle, which played as a small arena with a kerb of
+ * rocks around it: you could see the whole site from the spawn and every fight
+ * happened in the same doughnut. At 112 the field is nearly three times the
+ * area, the objective is a walk rather than a glance, and there is room for an
+ * approach, a flank and a line of retreat that are actually different places.
+ */
+export const BOUNDS = 112;
 
 export function surfaceAt(obstacles, x, z, fromFeet = Infinity, stepUp = STEP_UP) {
   let best = heightAt(x, z);

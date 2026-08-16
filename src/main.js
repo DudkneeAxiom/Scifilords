@@ -106,7 +106,19 @@ function toWorld(isNew) {
     campaign: G.campaign,
     container: viewport,
     onEncounter: handleEncounter,
-    onHud: (h) => UI.renderWorldHud(h),
+    onHud: (h) => {
+      // Never leave the Reach paused with nothing on top of it.
+      //
+      // The world is paused by whatever opens a panel and resumed by that
+      // panel's close handler, which means any path that loses its close
+      // handler strands the campaign: the map stops, the clock stops, and
+      // every click lands on a world that is no longer running. That is what a
+      // promotion dismissed with Escape did after a seizure. Rather than chase
+      // each such path, the invariant is asserted here every frame — if no
+      // panel is up, the Reach runs.
+      if (G.world?.paused && !UI.modalOpen()) G.world.setPaused(false);
+      UI.renderWorldHud(h);
+    },
   });
   G.world.start();
 
@@ -409,6 +421,31 @@ function handleEncounter(party) {
   G.world?.setPaused(true);
   UI.encounterPanel(S, party, {
     onClose: () => G.world?.setPaused(false),
+    // Buy your way past. The band takes the money and moves off the road.
+    onToll: (p) => {
+      const res = State.payToll(S, p);
+      if (!res.ok) { Audio.uiDeny(); UI.toast('', res.why, 'bad'); return; }
+      UI.closeModal();
+      G.world?.setPaused(false);
+      S.parties = S.parties.filter((x) => x.id !== p.id);
+      UI.toast('PAID', `${res.cost} to be let past`, 'bad');
+    },
+    // Let a patrol look in the truck.
+    onInspect: (p) => {
+      const res = State.submitToInspection(S, p, makeRng(S.seed + S.day * 31 + 7));
+      UI.closeModal();
+      G.world?.setPaused(false);
+      UI.toast(res.seized ? 'CONFISCATED' : 'WAVED THROUGH',
+        res.seized ? `${res.seized.n} ${DATA.GOODS[res.seized.id]?.name || ''} taken`
+          : 'They found nothing they wanted',
+        res.seized ? 'bad' : 'good');
+    },
+    onRefuse: (p) => {
+      State.refuseInspection(S, p);
+      UI.closeModal();
+      G.world?.setPaused(false);
+      UI.toast('REFUSED', 'They will remember it', 'bad');
+    },
     onAvoid: () => {
       UI.closeModal();
       G.world?.setPaused(false);
@@ -631,6 +668,9 @@ window.addEventListener('keydown', (e) => {
   Audio.resume();
 
   if (UI.modalOpen()) {
+    // Some panels have to be answered. Dismissing one leaves the campaign
+    // paused behind it with the decision still outstanding.
+    if (k === 'escape' && UI.modalBlocking()) { Audio.uiDeny(); return; }
     if (k === 'escape') { Audio.uiBack(); UI.closeModal(); }
     // On a company screen the same keys that open these panels move between
     // them, because they are tabs of one window rather than seven panels.

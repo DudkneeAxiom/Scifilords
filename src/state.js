@@ -436,6 +436,13 @@ export function tickLairs(S, r) {
 function seedParties(S, r) {
   S.parties = [];
   // The starting basin gets small, beatable things plus traffic worth robbing.
+  // Work a four-person company can actually take. The basin used to hold two
+  // looter bands and nothing below them, so a new outfit had no fight on the
+  // map it could win and nothing to do but wait for a contract.
+  spawnParty(S, r, 'strays', 'vetch');
+  spawnParty(S, r, 'strays', 'grellan');
+  spawnParty(S, r, 'strays', 'sump');
+  spawnParty(S, r, 'strays', 'culvert');
   spawnParty(S, r, 'looters', 'grellan');
   spawnParty(S, r, 'looters', 'sump');
   spawnParty(S, r, 'scrappers', 'culvert');
@@ -881,6 +888,25 @@ export function applyMissionResult(S, res) {
     notes.push({
       tone: 'good',
       text: `Recovered a weapon: ${WEAPONS[w]?.name || w}. It is in the armoury.`,
+    });
+  }
+  // Everything stripped off the field by hand. Kept separate from the objective
+  // payout above, because what you carried off a position you fought across is
+  // a different kind of reward from what the contract paid — and the player
+  // should be able to see which was which.
+  const carried = [];
+  for (const [pool, label] of [['armoury', 'weapon'], ['armourPool', 'armour'], ['kitPool', 'kit']]) {
+    for (const [id, n] of Object.entries(res.loot?.[pool] || {})) {
+      if (!n) continue;
+      addSpoils(S, pool, id, n);
+      carried.push(`${n > 1 ? `${n}x ` : ''}${WEAPONS[id]?.name || ARMOUR[id]?.name || KIT[id]?.name || id}`);
+      S.stats.looted = (S.stats.looted || 0) + n;
+    }
+  }
+  if (carried.length) {
+    notes.push({
+      tone: 'good',
+      text: `Stripped off the field: ${carried.join(', ')}. Waiting on the equipment screen.`,
     });
   }
   S.supplies = Math.max(0, S.supplies - Math.round((res.suppliesUsed || 2) * mods.supplyMul));
@@ -1880,6 +1906,72 @@ export function tickGrudge(S) {
   if (p) { p.grudge = false; p.holds = null; p.name = p.name.replace(/'s command$/, "'s people"); }
   pushLog(S, `${g.who} has spent what was taken from Bracket. It is gone.`, 'bad');
   S.grudge = null;
+}
+
+// --------------------------------------------------------------------------
+// Meeting people on the road
+// --------------------------------------------------------------------------
+
+/**
+ * What a band on the road will take to let you past.
+ *
+ * Scaled to what they can see: a fat, slow company with a full truck is worth
+ * more to stop than four people and a bad injector. Paying is the coward's
+ * option and it is meant to be genuinely tempting — the alternative is a fight
+ * you might lose people in, and people do not come back.
+ */
+export function tollOf(S, party) {
+  const cargo = Object.values(S.cargo || {}).reduce((a, b) => a + b, 0);
+  const base = 60 + (party.strength || 6) * 22;
+  return Math.round(base * (1 + cargo * 0.02) * (1 + (S.renown || 0) / 2200));
+}
+
+export function payToll(S, party) {
+  const cost = tollOf(S, party);
+  if (S.credits < cost) return { ok: false, why: 'You cannot cover it.' };
+  S.credits -= cost;
+  // Buying your way past is not free of consequence: the company notices, and
+  // so does everyone the band tells.
+  S.morale = clamp((S.morale ?? 70) - 4, 0, 100);
+  S.stats.tolls = (S.stats.tolls || 0) + 1;
+  companyReacts(S, 'toll');
+  pushLog(S, `Bracket paid ${cost} to be let past.`, 'bad');
+  return { ok: true, cost };
+}
+
+/**
+ * A patrol stops you and wants to look in the truck.
+ *
+ * Submitting costs time and sometimes cargo and buys standing with their
+ * faction; refusing keeps whatever you are carrying and costs the standing.
+ * The interesting case is carrying something you would rather they did not see.
+ */
+export function submitToInspection(S, party, r) {
+  const f = party.faction;
+  advanceTime(S, 2.5);
+  let seized = null;
+  const goods = Object.entries(S.cargo || {}).filter(([, n]) => n > 0);
+  if (goods.length && r() < 0.3) {
+    const [id, n] = pick(r, goods);
+    const take = Math.max(1, Math.round(n * 0.4));
+    S.cargo[id] -= take;
+    if (S.cargo[id] <= 0) delete S.cargo[id];
+    seized = { id, n: take };
+  }
+  if (f && S.rep[f] != null) S.rep[f] += 2;
+  pushLog(S, seized
+    ? `${FACTIONS[f]?.short || 'A patrol'} took ${seized.n} ${GOODS[seized.id]?.name || seized.id}.`
+    : `${FACTIONS[f]?.short || 'A patrol'} waved Bracket through.`, seized ? 'bad' : 'world');
+  return { seized };
+}
+
+export function refuseInspection(S, party) {
+  const f = party.faction;
+  if (f && S.rep[f] != null) S.rep[f] -= 7;
+  S.morale = clamp((S.morale ?? 70) + 2, 0, 100);
+  pushLog(S, `Bracket refused a ${FACTIONS[f]?.short || 'patrol'} inspection.`, 'bad');
+  refreshHostility(S);
+  return { ok: true };
 }
 
 export function hireCost(S, s) {

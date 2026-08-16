@@ -17,7 +17,10 @@ import * as Models from './models.js';
 import * as Level from './level.js';
 import { NavGrid } from './nav.js';
 import * as Audio from './audio.js';
-import { WEAPONS, ROLES, FACTIONS, MISSION_TYPES, PARTY_TIERS, ORIGINS } from './data.js';
+import {
+  WEAPONS, ROLES, FACTIONS, MISSION_TYPES, PARTY_TIERS, ORIGINS,
+  ARMOUR, ARMOUR_LIST, KIT,
+} from './data.js';
 import {
   effective, weaponOf, roleOf, label, makeSoldier, STATUS, resolveCasualty,
 } from './roster.js';
@@ -683,6 +686,9 @@ export class Mission {
     // occludes exactly the side you are leaning past — being stuck on the right
     // makes left-hand corners unfightable.
     this.shoulder = 1;
+    // What the dead have left lying about, and what the player has picked up.
+    this.fieldLoot = [];
+    this.loot = { credits: 0, armoury: {}, armourPool: {}, kitPool: {} };
     // Which piece of cover the player is behind, and how far out they are
     // leaning from it. Null when standing in the open.
     this.cover = null;
@@ -2142,6 +2148,70 @@ export class Mission {
     }
   }
 
+  /**
+   * What a dead man leaves on the ground.
+   *
+   * Looting barely existed: spoils were a number computed after the fact from
+   * the party you beat, so the field itself was worthless and there was never a
+   * reason to cross it. A body that drops the rifle it was firing turns a
+   * cleared position into somewhere worth walking, and turns a hard fight
+   * against a well-equipped enemy into a way to equip yourself.
+   *
+   * Deliberately not everything: most men leave their weapon and little else,
+   * so the field reads as scavenging rather than as a vending machine.
+   */
+  dropLoot(e) {
+    const drops = [];
+    if (e.weapon?.id && this.r() < 0.55) drops.push({ kind: 'armoury', id: e.weapon.id });
+    if (this.r() < 0.16) {
+      drops.push({ kind: 'armourPool', id: pick(this.r, ARMOUR_LIST) });
+    }
+    if (this.r() < 0.10) drops.push({ kind: 'kitPool', id: pick(this.r, Object.keys(KIT)) });
+    if (this.r() < 0.5) {
+      drops.push({ kind: 'credits', id: null, n: irange(this.r, 8, 26) });
+    }
+    if (!drops.length) return;
+
+    const g = new THREE.Group();
+    const box = Models.get('crate');
+    box.scale.setScalar(0.5);
+    g.add(box);
+    g.position.set(e.x, Level.heightAt(e.x, e.z) + 0.1, e.z);
+    this.scene.add(g);
+    this.fieldLoot.push({ x: e.x, z: e.z, drops, mesh: g, taken: false });
+  }
+
+  /**
+   * Pick up anything the player walks over.
+   *
+   * Automatic rather than a prompt: in the middle of a firefight, stopping to
+   * press a key over each body is friction with no decision in it. The decision
+   * is whether to cross the ground at all.
+   */
+  updateLoot(dt) {
+    if (!this.player || this.player.down) return;
+    for (const l of this.fieldLoot) {
+      if (l.taken) continue;
+      if (Math.hypot(l.x - this.player.x, l.z - this.player.z) > 2.4) continue;
+      l.taken = true;
+      if (l.mesh) { this.scene.remove(l.mesh); l.mesh = null; }
+      const words = [];
+      for (const d of l.drops) {
+        if (d.kind === 'credits') {
+          this.loot.credits += d.n;
+          words.push(`${d.n} credits`);
+        } else {
+          this.loot[d.kind] = this.loot[d.kind] || {};
+          this.loot[d.kind][d.id] = (this.loot[d.kind][d.id] || 0) + 1;
+          words.push(WEAPONS[d.id]?.abbr || ARMOUR[d.id]?.abbr || KIT[d.id]?.abbr || d.id);
+        }
+      }
+      this.stats.looted = (this.stats.looted || 0) + 1;
+      Audio.uiSelect();
+      this.onToast('TAKEN', words.join(' · '), 'good');
+    }
+  }
+
   downEntity(e, source) {
     if (e.down || e.dead) return;
     e.hp = 0;
@@ -2154,6 +2224,7 @@ export class Mission {
       if (source?.soldier) source.killCount = (source.killCount || 0) + 1;
       if (source?.isPlayer) this.onToast('', 'HOSTILE DOWN', 'kill');
       Audio.impact('flesh', this.relPos(e));
+      this.dropLoot(e);
       return;
     }
 
@@ -2359,6 +2430,7 @@ export class Mission {
     }
 
     this.updateInteraction(dt);
+    this.updateLoot(dt);
   }
 
   updateInteraction(dt) {
@@ -3469,7 +3541,15 @@ export class Mission {
       }
     }
 
-    const loot = { credits: 0, weapons: [] };
+    // Everything picked up off the field, on top of whatever the objective
+    // itself paid out.
+    const loot = {
+      credits: this.loot.credits,
+      weapons: [],
+      armoury: this.loot.armoury,
+      armourPool: this.loot.armourPool,
+      kitPool: this.loot.kitPool,
+    };
     if (this.cacheTaken) {
       loot.credits = irange(r, 180, 320);
       // The prototype is the one memorable pull in the slice, and it only
