@@ -1,0 +1,16 @@
+node_modules/
+test-results/
+playwright-report/
+__pycache__/
+*.pyc
+
+# Everything the QA probes write.
+#
+# These were listed one directory at a time, which meant the list fell behind
+# every time a probe was added — there are two dozen of them now and a fresh run
+# drops another 34MB of screenshots into the tree. Matched by pattern instead,
+# so a new probe never needs an entry here.
+qa/
+qa[0-9]*/
+qa-*/
+qa-*.png

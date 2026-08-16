@@ -1,0 +1,3753 @@
+// Acceptance tests for the critical flows.
+//
+// These guard the loop, not the pixels — screenshot QA (tools/qa.mjs and
+// tools/qa2.mjs) covers what things look like. Anything here failing means the
+// game is not playable end to end.
+
+import { test, expect } from '@playwright/test';
+
+/** Boot to the title screen with models loaded. */
+async function boot(page) {
+  const errors = [];
+  page.on('pageerror', (e) => errors.push(e.message));
+  await page.goto('/', { waitUntil: 'domcontentloaded' });
+  await page.waitForSelector('#title:not(.hidden)', { timeout: 90000 });
+  return errors;
+}
+
+/** Start a new campaign and clear the intro, commission and contract board. */
+async function newCampaign(page) {
+  await page.click('button[data-act="new"]');
+  await page.waitForSelector('#modal .modal-title', { timeout: 15000 });
+  await page.click('#modal [data-x="close"]');
+  // The commander's opening commission gates everything after it.
+  await page.waitForSelector('#modal [data-perk]', { timeout: 15000 });
+  await page.click('#modal [data-perk]');
+  await page.waitForTimeout(600);
+  // The intro hands straight to the board; close it and resume the world.
+  await page.evaluate(() => {
+    document.getElementById('overlay').classList.add('hidden');
+    window.KR.world.setPaused(false);
+  });
+  await page.waitForTimeout(300);
+}
+
+/** Accept a contract for a site and drive the company to it. */
+async function takeContractAt(page, site, type) {
+  await page.evaluate(([site, type]) => {
+    const S = window.KR.campaign;
+    S.contracts.forEach((c) => { c.accepted = false; });
+    let c = S.contracts.find((x) => x.site === site && x.type === type);
+    if (!c) {
+      c = {
+        id: 'test_' + site, type, site, employer: 'syndic', title: 'Test posting',
+        text: 'test', pay: 500, expiresDay: S.day + 9, accepted: true,
+      };
+      S.contracts.push(c);
+    }
+    c.accepted = true;
+    const L = { rampart: [-60, -290], perran: [240, 60], grellan: [200, -230] }[site];
+    window.KR.world.stopTravel();
+    S.pos.x = L[0];
+    S.pos.z = L[1] + 12;
+    // Remembered so enterLocation can put us back: withdrawing from an
+    // encounter deliberately displaces the company, sometimes out of range.
+    window.__testSite = [S.pos.x, S.pos.z];
+  }, [site, type]);
+  await page.waitForTimeout(900);
+  // An approach encounter may legitimately interrupt; dismiss it.
+  await page.evaluate(() => {
+    const el = document.querySelector('#modal [data-x="avoid"]');
+    if (el && !document.getElementById('overlay').classList.contains('hidden')) el.click();
+  });
+  await page.waitForTimeout(400);
+}
+
+/** Dismiss any panel that is actually on screen (an approach encounter, say). */
+async function clearModal(page) {
+  await page.evaluate(() => {
+    if (document.getElementById('overlay').classList.contains('hidden')) return;
+    const el = document.querySelector('#modal [data-x="avoid"]')
+      || document.querySelector('#modal [data-x="close"]');
+    if (el) el.click();
+  });
+  await page.waitForTimeout(350);
+}
+
+/**
+ * Press E at a location and wait for the expected panel. A party can wander
+ * into range at any moment and open an encounter, which swallows world keys —
+ * so retry rather than assuming the first press lands.
+ */
+/**
+ * Drive into the location under the company and wait for `selector`.
+ *
+ * A settlement with services now opens a menu of verbs rather than every
+ * service at once, so anything aiming at a service has to walk in through the
+ * door: pass the verb that opens it. Somewhere with no services — a ruin, a
+ * mast, a fort — still goes straight to the deployment picker, which is why
+ * most callers need no verb at all.
+ */
+async function enterLocation(page, selector, verb = null) {
+  for (let i = 0; i < 5; i++) {
+    await clearModal(page);
+    // Withdrawing from an encounter pushes the company away from the party,
+    // which can take it outside the location radius — put it back.
+    await page.evaluate(() => {
+      if (window.__testSite) {
+        const S = window.KR.campaign;
+        window.KR.world.stopTravel();
+        S.pos.x = window.__testSite[0];
+        S.pos.z = window.__testSite[1];
+      }
+    });
+    await page.waitForTimeout(250);
+    await page.keyboard.press('e');
+    try {
+      if (verb) {
+        await page.waitForSelector(`#modal [data-verb="${verb}"]`, { timeout: 4000 });
+        await page.click(`#modal [data-verb="${verb}"]`);
+      }
+      await page.waitForSelector(selector, { timeout: 4000 });
+      return;
+    } catch { /* an encounter beat us to it; clear it and try again */ }
+  }
+  await page.waitForSelector(selector, { timeout: 8000 });
+}
+
+/**
+ * Select everyone in the deployment picker. The panel re-renders after every
+ * click, so cached element handles go stale — re-query by index each time.
+ */
+async function selectWholeCompany(page) {
+  const count = (await page.$$('#modal [data-p]')).length;
+  for (let i = 0; i < count; i++) {
+    const els = await page.$$('#modal [data-p]');
+    if (els[i]) await els[i].click().catch(() => {});
+    await page.waitForTimeout(60);
+  }
+}
+
+/**
+ * Wait out the deployment cinematic. Nothing responds to input and nothing
+ * shoots until it hands over, so tests that skip it measure a frozen game.
+ */
+async function waitForControl(page) {
+  await page.waitForFunction(
+    () => window.KR.mission && !window.KR.mission.intro?.active && !window.KR.mission.inserting,
+    null, { timeout: 30000 },
+  );
+  await page.waitForTimeout(300);
+}
+
+async function deploy(page) {
+  await enterLocation(page, '#modal [data-x="go"]');
+  await page.click('#modal [data-x="go"]');
+  await page.waitForFunction(() => window.KR.mission && window.KR.mission.player, null,
+    { timeout: 30000 });
+  await waitForControl(page);
+}
+
+test('game boots to the title screen with no page errors', async ({ page }) => {
+  const errors = await boot(page);
+  await expect(page.locator('.title-main')).toHaveText('KETTLE REACH');
+  expect(errors).toEqual([]);
+});
+
+test('new campaign starts with a commander and three soldiers', async ({ page }) => {
+  await boot(page);
+  await newCampaign(page);
+  const s = await page.evaluate(() => {
+    const S = window.KR.campaign;
+    return {
+      roster: S.roster.length,
+      commanders: S.roster.filter((x) => x.isCommander).length,
+      credits: S.credits,
+      contracts: S.contracts.length,
+      day: S.day,
+    };
+  });
+  expect(s.roster).toBe(4);
+  expect(s.commanders).toBe(1);
+  expect(s.contracts).toBeGreaterThanOrEqual(2);
+  expect(s.day).toBe(1);
+});
+
+test('strategic travel moves the company and advances time', async ({ page }) => {
+  await boot(page);
+  await newCampaign(page);
+  const before = await page.evaluate(() => {
+    const S = window.KR.campaign;
+    return { x: S.pos.x, z: S.pos.z, t: S.day * 24 + S.hour };
+  });
+  // Steer directly rather than clicking, so the test does not depend on where
+  // the terrain raycast happens to land.
+  await page.keyboard.down('w');
+  await page.waitForTimeout(1500);
+  await page.keyboard.up('w');
+  const after = await page.evaluate(() => {
+    const S = window.KR.campaign;
+    return { x: S.pos.x, z: S.pos.z, t: S.day * 24 + S.hour };
+  });
+  expect(Math.hypot(after.x - before.x, after.z - before.z)).toBeGreaterThan(5);
+  expect(after.t).toBeGreaterThan(before.t);
+});
+
+test('parties move independently on the strategic map', async ({ page }) => {
+  await boot(page);
+  await newCampaign(page);
+  const before = await page.evaluate(() =>
+    window.KR.campaign.parties.map((p) => ({ id: p.id, x: p.x, z: p.z })));
+  await page.keyboard.down('w');
+  await page.waitForTimeout(2000);
+  await page.keyboard.up('w');
+  const after = await page.evaluate(() =>
+    window.KR.campaign.parties.map((p) => ({ id: p.id, x: p.x, z: p.z })));
+  const moved = after.filter((a) => {
+    const b = before.find((x) => x.id === a.id);
+    return b && Math.hypot(a.x - b.x, a.z - b.z) > 0.5;
+  });
+  expect(moved.length).toBeGreaterThan(0);
+});
+
+test('a recovery deployment launches, completes and extracts', async ({ page }) => {
+  test.setTimeout(180000);
+  await boot(page);
+  await newCampaign(page);
+  await takeContractAt(page, 'grellan', 'recovery');
+  await deploy(page);
+
+  const start = await page.evaluate(() => ({
+    // Locations share layouts, so the level id is the layout; the deployment's
+    // site is what identifies the place.
+    site: window.KR.mission.spec.site,
+    layout: window.KR.mission.level.id,
+    objective: window.KR.mission.objective.type,
+    enemies: window.KR.mission.entities.filter((e) => e.side === 'enemy').length,
+    prisoners: window.KR.mission.prisoners.length,
+  }));
+  expect(start.site).toBe('grellan');
+  expect(start.layout).toBe('array');
+  expect(start.objective).toBe('recovery');
+  expect(start.enemies).toBeGreaterThan(3);
+  expect(start.prisoners).toBe(3);
+
+  // Release the held personnel through the game's own interaction path.
+  await page.evaluate(() => {
+    const m = window.KR.mission;
+    m.player.hp = m.player.maxHp;
+    m.interactables.filter((i) => i.kind === 'prisoner').forEach((i) => m.completeInteraction(i));
+  });
+  await page.waitForTimeout(500);
+  expect(await page.evaluate(() => window.KR.mission.objective.done)).toBe(true);
+  expect(await page.evaluate(() => window.KR.mission.extractArmed)).toBe(true);
+
+  // Walk everyone to the extraction point.
+  await page.evaluate(() => {
+    const m = window.KR.mission;
+    const ex = m.level.extraction;
+    m.player.x = ex.x; m.player.z = ex.z;
+    m.prisoners.forEach((p, i) => { p.x = ex.x + i * 0.8; p.z = ex.z + 1.5; });
+  });
+  await page.waitForFunction(() => window.KR.mission?.over === true, null, { timeout: 30000 });
+  const res = await page.evaluate(() => window.KR.mission.result);
+  expect(res.success).toBe(true);
+  expect(res.recruits.length).toBeGreaterThan(0);
+});
+
+test('mission results persist to the campaign and change the world', async ({ page }) => {
+  test.setTimeout(180000);
+  await boot(page);
+  await newCampaign(page);
+  const rosterBefore = await page.evaluate(() => window.KR.campaign.roster.length);
+
+  await takeContractAt(page, 'grellan', 'recovery');
+  await deploy(page);
+  await page.evaluate(() => {
+    const m = window.KR.mission;
+    m.player.hp = m.player.maxHp;
+    m.interactables.filter((i) => i.kind === 'prisoner').forEach((i) => m.completeInteraction(i));
+    const ex = m.level.extraction;
+    m.player.x = ex.x; m.player.z = ex.z;
+    m.prisoners.forEach((p, i) => { p.x = ex.x + i * 0.8; p.z = ex.z + 1.5; });
+  });
+  await page.waitForFunction(() => window.KR.mission?.over === true, null, { timeout: 30000 });
+  // The after-action panel appears once results are folded into the campaign.
+  await page.waitForSelector('.aar-verdict', { timeout: 20000 });
+
+  const after = await page.evaluate(() => {
+    const S = window.KR.campaign;
+    return {
+      roster: S.roster.length,
+      missions: S.stats.missions,
+      grellanCleared: S.world.grellanCleared,
+      raiderDensity: S.world.raiderDensity,
+      rescued: S.roster.filter((s) => /Rescued/.test(s.joinedHow)).length,
+    };
+  });
+  expect(after.roster).toBeGreaterThan(rosterBefore);
+  expect(after.missions).toBe(1);
+  expect(after.grellanCleared).toBe(true);
+  expect(after.raiderDensity).toBeLessThan(1);
+  expect(after.rescued).toBeGreaterThan(0);
+});
+
+test('soldiers accumulate deployments and experience', async ({ page }) => {
+  test.setTimeout(180000);
+  await boot(page);
+  await newCampaign(page);
+  await takeContractAt(page, 'grellan', 'recovery');
+  await deploy(page);
+  await page.evaluate(() => {
+    const m = window.KR.mission;
+    m.player.hp = m.player.maxHp;
+    m.interactables.filter((i) => i.kind === 'prisoner').forEach((i) => m.completeInteraction(i));
+    const ex = m.level.extraction;
+    m.player.x = ex.x; m.player.z = ex.z;
+    m.prisoners.forEach((p, i) => { p.x = ex.x + i * 0.8; p.z = ex.z + 1.5; });
+  });
+  await page.waitForFunction(() => window.KR.mission?.over === true, null, { timeout: 30000 });
+  await page.waitForSelector('.aar-verdict', { timeout: 20000 });
+  const cmd = await page.evaluate(() => {
+    const S = window.KR.campaign;
+    const c = S.roster.find((s) => s.isCommander);
+    return { deployments: c.deployments, xp: c.xp };
+  });
+  expect(cmd.deployments).toBe(1);
+  expect(cmd.xp).toBeGreaterThan(0); // the commander starts their own ladder at zero
+});
+
+test('a downed soldier can be stabilised with a medical kit', async ({ page }) => {
+  test.setTimeout(180000);
+  await boot(page);
+  await newCampaign(page);
+  await takeContractAt(page, 'grellan', 'recovery');
+  // Take the whole company so there is somebody to lose.
+  await enterLocation(page, '#modal [data-p]');
+  await selectWholeCompany(page);
+  await page.click('#modal [data-x="go"]');
+  await page.waitForFunction(() => window.KR.mission?.player, null, { timeout: 30000 });
+  await waitForControl(page);
+
+  const result = await page.evaluate(() => {
+    const m = window.KR.mission;
+    const mate = m.squad.find((s) => s.soldier);
+    if (!mate) return { skipped: true };
+    const kitsBefore = m.S.medical;
+    m.downEntity(mate, m.player);
+    const wasDown = mate.down;
+    // Stand over them and complete the stabilise interaction.
+    m.player.x = mate.x; m.player.z = mate.z;
+    m.completeInteraction({ kind: 'revive', entity: mate, need: 2.2, progress: 2.2 });
+    return {
+      wasDown,
+      nowDown: mate.down,
+      stabilised: mate.stabilised,
+      kitsBefore,
+      kitsAfter: m.S.medical,
+    };
+  });
+  expect(result.wasDown).toBe(true);
+  expect(result.nowDown).toBe(false);
+  expect(result.stabilised).toBe(true);
+  expect(result.kitsAfter).toBe(result.kitsBefore - 1);
+});
+
+test('an unstabilised casualty left behind can die permanently', async ({ page }) => {
+  test.setTimeout(180000);
+  await boot(page);
+  await newCampaign(page);
+  await takeContractAt(page, 'grellan', 'recovery');
+  await enterLocation(page, '#modal [data-p]');
+  await selectWholeCompany(page);
+  await page.click('#modal [data-x="go"]');
+  await page.waitForFunction(() => window.KR.mission?.player, null, { timeout: 30000 });
+  await waitForControl(page);
+
+  const id = await page.evaluate(() => {
+    const m = window.KR.mission;
+    const mate = m.squad.find((s) => s.soldier);
+    m.downEntity(mate, m.player);
+    mate.bleed = 0.01;          // bleed out immediately
+    return mate.soldier.id;
+  });
+  await page.waitForFunction((id) => {
+    const m = window.KR.mission;
+    const e = m.entities.find((x) => x.soldier && x.soldier.id === id);
+    return e && e.dead;
+  }, id, { timeout: 20000 });
+
+  // Finish the mission and confirm the death persisted to the campaign.
+  await page.evaluate(() => {
+    const m = window.KR.mission;
+    m.player.hp = m.player.maxHp;
+    m.interactables.filter((i) => i.kind === 'prisoner').forEach((i) => m.completeInteraction(i));
+    const ex = m.level.extraction;
+    m.player.x = ex.x; m.player.z = ex.z;
+    m.prisoners.forEach((p, i) => { p.x = ex.x + i * 0.8; p.z = ex.z + 1.5; });
+  });
+  await page.waitForFunction(() => window.KR.mission?.over === true, null, { timeout: 30000 });
+  await page.waitForSelector('.aar-verdict', { timeout: 20000 });
+  const dead = await page.evaluate((id) => {
+    const s = window.KR.campaign.roster.find((x) => x.id === id);
+    return { status: s.status, hp: s.hp };
+  }, id);
+  expect(dead.status).toBe('dead');
+  expect(dead.hp).toBe(0);
+});
+
+test('recruitment at a settlement adds a soldier and charges credits', async ({ page }) => {
+  await boot(page);
+  await newCampaign(page);
+  await page.evaluate(() => {
+    const S = window.KR.campaign;
+    window.KR.world.stopTravel();
+    S.pos.x = -210; S.pos.z = -150;
+    S.credits = 3000;
+    window.__testSite = [S.pos.x, S.pos.z];
+  });
+  await page.waitForTimeout(1000);
+  await enterLocation(page, '#modal [data-hire="0"]', 'recruit');
+  const before = await page.evaluate(() => ({
+    roster: window.KR.campaign.roster.length,
+    credits: window.KR.campaign.credits,
+  }));
+  await page.click('#modal [data-hire="0"]');
+  await page.waitForTimeout(700);
+  const after = await page.evaluate(() => ({
+    roster: window.KR.campaign.roster.length,
+    credits: window.KR.campaign.credits,
+  }));
+  expect(after.roster).toBe(before.roster + 1);
+  expect(after.credits).toBeLessThan(before.credits);
+});
+
+test('save and load round-trip preserves the company', async ({ page }) => {
+  await boot(page);
+  await newCampaign(page);
+  await page.evaluate(async () => {
+    const S = window.KR.campaign;
+    S.credits = 1234;
+    S.day = 5;
+    const St = await import('/src/state.js');
+    St.save(S);
+  });
+  const before = await page.evaluate(() => {
+    const S = window.KR.campaign;
+    return { credits: S.credits, day: S.day, names: S.roster.map((s) => s.name) };
+  });
+
+  await page.reload({ waitUntil: 'domcontentloaded' });
+  await page.waitForSelector('#title:not(.hidden)', { timeout: 90000 });
+  await expect(page.locator('#btn-continue')).toBeEnabled();
+  await page.click('#btn-continue');
+  await page.waitForTimeout(1800);
+
+  const after = await page.evaluate(() => {
+    const S = window.KR.campaign;
+    return { credits: S.credits, day: S.day, names: S.roster.map((s) => s.name) };
+  });
+  expect(after).toEqual(before);
+});
+
+test('a corrupt save is discarded rather than blocking the game', async ({ page }) => {
+  await boot(page);
+  await page.evaluate(() => localStorage.setItem('kettle_reach_save_v1', '{"nonsense":true'));
+  await page.reload({ waitUntil: 'domcontentloaded' });
+  await page.waitForSelector('#title:not(.hidden)', { timeout: 90000 });
+  // A broken save must never prevent starting a new company.
+  await page.click('button[data-act="new"]');
+  await page.waitForSelector('#modal .modal-title', { timeout: 15000 });
+  expect(await page.evaluate(() => window.KR.campaign.roster.length)).toBe(4);
+});
+
+test('sabotage completing collapses Trust patrol coverage', async ({ page }) => {
+  test.setTimeout(180000);
+  await boot(page);
+  await newCampaign(page);
+  await takeContractAt(page, 'rampart', 'sabotage');
+  await deploy(page);
+  await page.evaluate(() => {
+    const m = window.KR.mission;
+    m.player.hp = m.player.maxHp;
+    const it = m.interactables.find((i) => i.kind === 'charge');
+    m.completeInteraction(it);
+  });
+  expect(await page.evaluate(() => window.KR.mission.chargesPlaced)).toBe(true);
+  await page.evaluate(() => {
+    const m = window.KR.mission;
+    const ex = m.level.extraction;
+    m.player.x = ex.x; m.player.z = ex.z;
+  });
+  await page.waitForFunction(() => window.KR.mission?.over === true, null, { timeout: 30000 });
+  await page.waitForSelector('.aar-verdict', { timeout: 20000 });
+  const w = await page.evaluate(() => window.KR.campaign.world);
+  expect(w.rampartMastDown).toBe(true);
+  expect(w.trustPatrolDensity).toBeLessThan(0.5);
+});
+
+test('the character rig animates while moving and settles when still', async ({ page }) => {
+  test.setTimeout(180000);
+  await boot(page);
+  await newCampaign(page);
+  await takeContractAt(page, 'grellan', 'recovery');
+  await deploy(page);
+
+  // Every joint the walk cycle drives must have a real range of travel. This
+  // caught a regression where the player's velocity was measured after they had
+  // already moved, so the commander slid along in a permanent idle pose.
+  const measure = async () => page.evaluate(() => new Promise((resolve) => {
+    const m = window.KR.mission;
+    const keys = ['legL', 'legR', 'kneeL', 'kneeR', 'armR'];
+    const lo = {}, hi = {};
+    keys.forEach((k) => { lo[k] = Infinity; hi[k] = -Infinity; });
+    let n = 0;
+    const t = setInterval(() => {
+      const r = m.player.char.rig;
+      keys.forEach((k) => {
+        if (!r[k]) return;
+        lo[k] = Math.min(lo[k], r[k].rotation.x);
+        hi[k] = Math.max(hi[k], r[k].rotation.x);
+      });
+      if (++n > 70) {
+        clearInterval(t);
+        const out = {};
+        keys.forEach((k) => { out[k] = hi[k] - lo[k]; });
+        resolve(out);
+      }
+    }, 16);
+  }));
+
+  // Keep the commander upright for the duration: a collapse animation swings
+  // the legs hard and would be measured as "movement while standing still".
+  await page.evaluate(() => {
+    window.__alive = setInterval(() => {
+      const m = window.KR.mission;
+      if (m && m.player && !m.over) { m.player.hp = m.player.maxHp; m.player.down = false; }
+    }, 100);
+  });
+  await page.keyboard.down('w');
+  const walking = await measure();
+  await page.keyboard.up('w');
+  await page.waitForTimeout(700);
+  const standing = await measure();
+  await page.evaluate(() => clearInterval(window.__alive));
+
+  for (const joint of ['legL', 'legR', 'kneeL', 'kneeR']) {
+    expect(walking[joint], `${joint} should swing while walking`).toBeGreaterThan(0.15);
+    expect(standing[joint], `${joint} should be still when stopped`).toBeLessThan(0.10);
+  }
+  expect(walking.armR, 'arms should move while walking').toBeGreaterThan(0.05);
+});
+
+test('the commander picks an opening commission that applies company-wide', async ({ page }) => {
+  await boot(page);
+  await page.click('button[data-act="new"]');
+  await page.waitForSelector('#modal .modal-title', { timeout: 15000 });
+  await page.click('#modal [data-x="close"]');
+  await page.waitForSelector('#modal [data-perk]', { timeout: 15000 });
+
+  const offered = await page.$$eval('#modal [data-perk]', (els) => els.map((e) => e.dataset.perk));
+  expect(offered.length).toBe(3);
+  await page.click('#modal [data-perk]');
+  await page.waitForTimeout(600);
+
+  const cmd = await page.evaluate(() => {
+    const c = window.KR.campaign.roster.find((s) => s.isCommander);
+    return { perks: c.perks, pending: c.pendingPerks, rank: c.rank };
+  });
+  expect(cmd.perks.length).toBe(1);
+  expect(offered).toContain(cmd.perks[0]);
+  expect(cmd.pending).toBeFalsy();
+});
+
+test('promotion queues a perk choice that changes the soldier', async ({ page }) => {
+  await boot(page);
+  await newCampaign(page);
+  const before = await page.evaluate(async () => {
+    const { effective } = await import('/src/roster.js');
+    const s = window.KR.campaign.roster.find((x) => !x.isCommander);
+    return { id: s.id, acc: effective(s).accuracy, perks: s.perks.length };
+  });
+
+  // Award enough experience to promote, then take the offered choice.
+  const offered = await page.evaluate(async (id) => {
+    const { addXp } = await import('/src/roster.js');
+    const { rng } = await import('/src/util.js');
+    const s = window.KR.campaign.roster.find((x) => x.id === id);
+    addXp(s, 500, rng(11));
+    return s.pendingPerks ? s.pendingPerks[0] : null;
+  }, before.id);
+  expect(offered).not.toBeNull();
+  expect(offered.length).toBe(3);
+
+  const after = await page.evaluate(async ([id, perk]) => {
+    const { choosePerk, effective } = await import('/src/roster.js');
+    const s = window.KR.campaign.roster.find((x) => x.id === id);
+    const ok = choosePerk(s, perk);
+    return { ok, perks: s.perks, pending: s.pendingPerks, acc: effective(s).accuracy, rank: s.rank };
+  }, [before.id, offered[0]]);
+
+  expect(after.ok).toBe(true);
+  expect(after.perks).toContain(offered[0]);
+  expect(after.pending).toBeFalsy();
+  expect(after.rank).toBeGreaterThan(0);
+});
+
+test('weapons move between the armoury and soldiers without being lost', async ({ page }) => {
+  await boot(page);
+  await newCampaign(page);
+  const result = await page.evaluate(async () => {
+    const St = await import('/src/state.js');
+    const S = window.KR.campaign;
+    const s = S.roster.find((x) => !x.isCommander);
+    const original = s.weapon;
+    const spare = Object.keys(S.armoury).find((w) => S.armoury[w] > 0);
+    const totalBefore = Object.values(S.armoury).reduce((a, b) => a + b, 0);
+    const ok = St.equipWeapon(S, s, spare);
+    const totalAfter = Object.values(S.armoury).reduce((a, b) => a + b, 0);
+    return {
+      ok, original, spare, carrying: s.weapon,
+      totalBefore, totalAfter, returned: S.armoury[original] || 0,
+    };
+  });
+  expect(result.ok).toBe(true);
+  expect(result.carrying).toBe(result.spare);
+  // The old weapon went back into the armoury: nothing created, nothing lost.
+  expect(result.totalAfter).toBe(result.totalBefore);
+  expect(result.returned).toBeGreaterThan(0);
+});
+
+test('kit changes a soldier\'s effective statistics', async ({ page }) => {
+  await boot(page);
+  await newCampaign(page);
+  const r = await page.evaluate(async () => {
+    const St = await import('/src/state.js');
+    const { effective } = await import('/src/roster.js');
+    const S = window.KR.campaign;
+    S.credits = 5000;
+    const s = S.roster.find((x) => !x.isCommander);
+    const before = effective(s).maxHp;
+    St.buyKit(S, 'plate');
+    const ok = St.equipKit(S, s, 'plate');
+    return { ok, before, after: effective(s).maxHp, kit: s.kit };
+  });
+  expect(r.ok).toBe(true);
+  expect(r.kit).toBe('plate');
+  expect(r.after).toBeGreaterThan(r.before);
+});
+
+test('suppressing fire pins an enemy and degrades its aim', async ({ page }) => {
+  test.setTimeout(180000);
+  await boot(page);
+  await newCampaign(page);
+  await takeContractAt(page, 'grellan', 'recovery');
+  await deploy(page);
+
+  const r = await page.evaluate(() => {
+    const m = window.KR.mission;
+    const foe = m.entities.find((e) => e.side === 'enemy' && !e.dead);
+    const cleanSpread = (1 - foe.acc) * (0.9 + 20 * 0.17) / m.suppressionPenalty(foe);
+    // Walk a burst straight past them.
+    for (let i = 0; i < 14; i++) {
+      m.applySuppression(m.player, foe.x - 6, foe.z, foe.x + 6, foe.z + 0.4);
+    }
+    const pinnedSpread = (1 - foe.acc) * (0.9 + 20 * 0.17) / m.suppressionPenalty(foe);
+    return { suppression: foe.suppression, cleanSpread, pinnedSpread };
+  });
+
+  expect(r.suppression).toBeGreaterThan(0.45);
+  // Aim scatter must genuinely widen — that is the whole mechanic.
+  expect(r.pinnedSpread).toBeGreaterThan(r.cleanSpread * 1.3);
+});
+
+test('individual selection routes orders to one soldier only', async ({ page }) => {
+  test.setTimeout(180000);
+  await boot(page);
+  await newCampaign(page);
+  await takeContractAt(page, 'grellan', 'recovery');
+  await enterLocation(page, '#modal [data-p]');
+  await selectWholeCompany(page);
+  await page.click('#modal [data-x="go"]');
+  await page.waitForFunction(() => window.KR.mission?.squad?.length > 1, null, { timeout: 30000 });
+  await waitForControl(page);
+
+  // Select soldier 1 only, then order a hold.
+  await page.keyboard.press('1');
+  await page.waitForTimeout(200);
+  await page.keyboard.press('h');
+  await page.waitForTimeout(300);
+
+  const r = await page.evaluate(() => {
+    const m = window.KR.mission;
+    return {
+      selected: m.selection.size,
+      orders: m.squad.filter((s) => !s.militia).map((s) => s.order),
+    };
+  });
+  expect(r.selected).toBe(1);
+  expect(r.orders[0]).toBe('hold');
+  // Everyone else keeps their previous order.
+  expect(r.orders.slice(1).every((o) => o !== 'hold')).toBe(true);
+});
+
+test('suppress and flank orders put soldiers into those behaviours', async ({ page }) => {
+  test.setTimeout(180000);
+  await boot(page);
+  await newCampaign(page);
+  await takeContractAt(page, 'grellan', 'recovery');
+  await enterLocation(page, '#modal [data-p]');
+  await selectWholeCompany(page);
+  await page.click('#modal [data-x="go"]');
+  await page.waitForFunction(() => window.KR.mission?.squad?.length > 0, null, { timeout: 30000 });
+  await waitForControl(page);
+  await waitForControl(page);
+
+  await page.keyboard.press('x');
+  await page.waitForTimeout(300);
+  const sup = await page.evaluate(() => {
+    const m = window.KR.mission;
+    const s = m.squad.find((e) => !e.militia);
+    return { order: s.order, hasPoint: !!s.suppressPoint };
+  });
+  expect(sup.order).toBe('suppress');
+  expect(sup.hasPoint).toBe(true);
+
+  await page.keyboard.press('z');
+  await page.waitForTimeout(300);
+  const flank = await page.evaluate(() => {
+    const m = window.KR.mission;
+    const s = m.squad.find((e) => !e.militia);
+    return {
+      order: s.order,
+      // The flank point must be meaningfully away from the commander's line.
+      offset: s.flankPoint
+        ? Math.hypot(s.flankPoint.x - m.player.x, s.flankPoint.z - m.player.z) : 0,
+    };
+  });
+  expect(flank.order).toBe('flank');
+  expect(flank.offset).toBeGreaterThan(5);
+});
+
+test('a dead rescue target does not make the recovery unwinnable', async ({ page }) => {
+  test.setTimeout(180000);
+  await boot(page);
+  await newCampaign(page);
+  await takeContractAt(page, 'grellan', 'recovery');
+  await deploy(page);
+
+  // Kill one of the people we came for, then free the rest. Extraction must
+  // still arm — this previously left the objective stuck at 2 of 3 forever.
+  const r = await page.evaluate(() => {
+    const m = window.KR.mission;
+    m.player.hp = m.player.maxHp;
+    const victim = m.prisoners[0];
+    victim.dead = true;
+    victim.down = true;
+    m.updateRecovery();
+    const afterDeath = { need: m.objective.need, done: m.objective.done };
+    m.interactables
+      .filter((i) => i.kind === 'prisoner' && i.entity !== victim)
+      .forEach((i) => m.completeInteraction(i));
+    return {
+      afterDeath,
+      need: m.objective.need,
+      progress: m.objective.progress,
+      done: m.objective.done,
+      extractArmed: m.extractArmed,
+      lost: m.lostPrisoners,
+    };
+  });
+
+  expect(r.afterDeath.need).toBe(2);       // target shrank to the survivors
+  expect(r.need).toBe(2);
+  expect(r.progress).toBe(2);
+  expect(r.done).toBe(true);
+  expect(r.extractArmed).toBe(true);
+  expect(r.lost).toBe(1);
+});
+
+test('losing every rescue target fails honestly instead of stranding the player', async ({ page }) => {
+  test.setTimeout(180000);
+  await boot(page);
+  await newCampaign(page);
+  await takeContractAt(page, 'grellan', 'recovery');
+  await deploy(page);
+
+  const r = await page.evaluate(() => {
+    const m = window.KR.mission;
+    m.prisoners.forEach((p) => { p.dead = true; p.down = true; });
+    m.updateRecovery();
+    return { failed: m.objective.failed, extractArmed: m.extractArmed };
+  });
+  // The player must always be able to leave.
+  expect(r.failed).toBe(true);
+  expect(r.extractArmed).toBe(true);
+});
+
+test('nothing shoots at the player during the deployment cinematic', async ({ page }) => {
+  test.setTimeout(180000);
+  await boot(page);
+  await newCampaign(page);
+  await takeContractAt(page, 'grellan', 'recovery');
+  await enterLocation(page, '#modal [data-x="go"]');
+  await page.click('#modal [data-x="go"]');
+  await page.waitForFunction(() => window.KR.mission?.player, null, { timeout: 30000 });
+
+  // Sample health and enemy targeting across the whole insertion.
+  const during = await page.evaluate(() => new Promise((resolve) => {
+    const m = window.KR.mission;
+    const startHp = m.player.hp;
+    let anyTargeting = false;
+    let minHp = startHp;
+    const t = setInterval(() => {
+      // Check FIRST whether the grace is still running. Sampling before this
+      // meant the final tick could observe up to 100ms of entirely legitimate
+      // post-cinematic behaviour and report it as a violation — the test was
+      // racing the thing it was measuring, and failed about one run in three.
+      if (!m.inserting) {
+        clearInterval(t);
+        resolve({ startHp, minHp, anyTargeting, introRan: true });
+        return;
+      }
+      minHp = Math.min(minHp, m.player.hp);
+      if (m.entities.some((e) => e.side === 'enemy' && !e.dead && e.target)) anyTargeting = true;
+    }, 100);
+  }));
+
+  expect(during.introRan).toBe(true);
+  expect(during.anyTargeting).toBe(false);
+  expect(during.minHp).toBe(during.startHp);
+});
+
+test('a flanking soldier routes around a solid obstacle', async ({ page }) => {
+  test.setTimeout(180000);
+  await boot(page);
+  await newCampaign(page);
+  await takeContractAt(page, 'grellan', 'recovery');
+  await deploy(page);
+
+  const r = await page.evaluate(() => {
+    const nav = window.KR.mission.nav;
+    // Straight through the bunker at (-22,-12).
+    const a = { x: -22, z: 8 }, b = { x: -22, z: -30 };
+    const blocked = !nav.lineClear(a.x, a.z, b.x, b.z);
+    const path = nav.findPath(a.x, a.z, b.x, b.z);
+    let maxDev = 0;
+    const dx = b.x - a.x, dz = b.z - a.z, len = Math.hypot(dx, dz);
+    for (const p of path || []) {
+      maxDev = Math.max(maxDev, Math.abs((p.x - a.x) * dz - (p.z - a.z) * dx) / len);
+    }
+    // And every waypoint must be on open ground.
+    const allOpen = (path || []).every((p) => !nav.isBlockedWorld(p.x, p.z));
+    return { blocked, found: !!path, maxDev, allOpen };
+  });
+
+  expect(r.blocked).toBe(true);
+  expect(r.found).toBe(true);
+  expect(r.maxDev).toBeGreaterThan(2);   // it detoured rather than going through
+  expect(r.allOpen).toBe(true);
+});
+
+test('trade buys low at a producer and sells high at a consumer', async ({ page }) => {
+  await boot(page);
+  await newCampaign(page);
+  const r = await page.evaluate(async () => {
+    const St = await import('/src/state.js');
+    const S = window.KR.campaign;
+    S.credits = 5000;
+    S.cargo = {};
+    // Perran produces water; Harrow Deep wants it.
+    const buyAt = St.priceAt(S, 'perran', 'water');
+    const sellAt = St.priceAt(S, 'harrow', 'water');
+    const bought = St.buyGood(S, 'perran', 'water', 5);
+    const afterBuy = S.credits;
+    const sold = St.sellGood(S, 'harrow', 'water', 5);
+    return {
+      buyAt, sellAt, bought, sold,
+      afterBuy, afterSell: S.credits,
+      cargo: S.cargo.water || 0,
+      trendProducer: St.priceTrend('perran', 'water'),
+      trendConsumer: St.priceTrend('harrow', 'water'),
+    };
+  });
+  expect(r.bought).toBe(true);
+  expect(r.sold).toBe(true);
+  expect(r.cargo).toBe(0);
+  expect(r.trendProducer).toBe('cheap');
+  expect(r.trendConsumer).toBe('dear');
+  // The route has to be profitable, or the whole system is decorative.
+  expect(r.sellAt).toBeGreaterThan(r.buyAt);
+  expect(r.afterSell).toBeGreaterThan(r.afterBuy);
+});
+
+test('cargo capacity limits what the truck can carry', async ({ page }) => {
+  await boot(page);
+  await newCampaign(page);
+  const r = await page.evaluate(async () => {
+    const St = await import('/src/state.js');
+    const S = window.KR.campaign;
+    S.credits = 999999;
+    S.cargo = {};
+    // Salvage is bulk 4, so capacity should bind well before credits do.
+    let placed = 0;
+    for (let i = 0; i < 100; i++) if (St.buyGood(S, 'vetch', 'salvage', 1)) placed++;
+    return { placed, used: St.cargoUsed(S), cap: St.CARGO_CAPACITY, free: St.cargoFree(S) };
+  });
+  expect(r.placed).toBeGreaterThan(0);
+  expect(r.used).toBeLessThanOrEqual(r.cap);
+  expect(r.free).toBeLessThan(4);          // could not fit another unit
+});
+
+test('locations offer several mission templates across the wider map', async ({ page }) => {
+  await boot(page);
+  await newCampaign(page);
+  const r = await page.evaluate(async () => {
+    const { LOCATIONS } = await import('/src/data.js');
+    const St = await import('/src/state.js');
+    const { rng } = await import('/src/util.js');
+    const S = window.KR.campaign;
+    // Generate a large board and see how varied it is.
+    const seen = {};
+    for (let i = 0; i < 60; i++) {
+      S.contracts = [];
+      const c = St.generateContract(S, rng(1000 + i));
+      if (c) (seen[c.site] = seen[c.site] || new Set()).add(c.type);
+    }
+    return {
+      locations: LOCATIONS.length,
+      multiMission: LOCATIONS.filter((l) => (l.missions || []).length > 1).length,
+      sitesSeen: Object.keys(seen).length,
+      sitesWithVariety: Object.values(seen).filter((s) => s.size > 1).length,
+    };
+  });
+  expect(r.locations).toBeGreaterThanOrEqual(11);
+  expect(r.multiMission).toBeGreaterThanOrEqual(8);
+  expect(r.sitesSeen).toBeGreaterThan(4);
+  expect(r.sitesWithVariety).toBeGreaterThan(0);
+});
+
+test('seizing a location makes it a holding that produces daily', async ({ page }) => {
+  await boot(page);
+  await newCampaign(page);
+  const r = await page.evaluate(async () => {
+    const St = await import('/src/state.js');
+    const S = window.KR.campaign;
+    const before = { held: Object.keys(S.holdings).length, credits: S.credits };
+    const ok = St.seizeLocation(S, 'rampart');
+    const held = St.isHolding(S, 'rampart');
+    // Roll a day and confirm the holding paid out.
+    const creditsAfterSeize = S.credits;
+    St.advanceTime(S, 26);
+    return {
+      ok, held,
+      before,
+      after: Object.keys(S.holdings).length,
+      creditsAfterSeize,
+      creditsNextDay: S.credits,
+      repHit: S.rep.trust,
+    };
+  });
+  expect(r.ok).toBe(true);
+  expect(r.held).toBe(true);
+  expect(r.after).toBe(r.before.held + 1);
+  // Taking Trust ground costs Trust standing.
+  expect(r.repHit).toBeLessThan(0);
+  // And it pays.
+  expect(r.creditsNextDay).toBeGreaterThan(r.creditsAfterSeize);
+});
+
+test('holding upgrades cost credits and goods and change the company', async ({ page }) => {
+  await boot(page);
+  await newCampaign(page);
+  const r = await page.evaluate(async () => {
+    const St = await import('/src/state.js');
+    const S = window.KR.campaign;
+    St.seizeLocation(S, 'rampart');
+    S.credits = 20000;
+
+    const cost = St.upgradeCost(S, 'rampart', 'depot');
+    // Deliberately without the goods first: credits alone must not be enough.
+    S.cargo = {};
+    const blocked = St.buildUpgrade(S, 'rampart', 'depot');
+
+    // Now stock the goods it asks for.
+    for (const [g, n] of Object.entries(cost)) if (g !== 'credits') S.cargo[g] = n;
+    const capBefore = St.cargoCap(S);
+    const built = St.buildUpgrade(S, 'rampart', 'depot');
+    return {
+      cost, blocked, built,
+      level: S.holdings.rampart.upgrades.depot,
+      capBefore, capAfter: St.cargoCap(S),
+      goodsSpent: Object.keys(cost).filter((g) => g !== 'credits')
+        .every((g) => !S.cargo[g]),
+    };
+  });
+  expect(r.cost.credits).toBeGreaterThan(0);
+  expect(r.blocked).toBe(false);        // goods are genuinely required
+  expect(r.built).toBe(true);
+  expect(r.level).toBe(1);
+  expect(r.goodsSpent).toBe(true);
+  // A depot really does give the truck more room.
+  expect(r.capAfter).toBeGreaterThan(r.capBefore);
+});
+
+test('an unheld holding builds pressure and can be lost', async ({ page }) => {
+  await boot(page);
+  await newCampaign(page);
+  const r = await page.evaluate(async () => {
+    const St = await import('/src/state.js');
+    const S = window.KR.campaign;
+    St.seizeLocation(S, 'rampart');
+    let retakeOffered = false;
+    // Run a fortnight without ever defending it.
+    for (let d = 0; d < 16; d++) {
+      St.advanceTime(S, 25);
+      if (S.contracts.some((c) => c.retake === 'rampart')) retakeOffered = true;
+      if (!St.isHolding(S, 'rampart')) break;
+    }
+    return { retakeOffered, stillHeld: St.isHolding(S, 'rampart') };
+  });
+  expect(r.retakeOffered).toBe(true);   // the player was warned and given a mission
+  expect(r.stillHeld).toBe(false);      // ignoring it loses the ground
+});
+
+test('a seize deployment requires holding the ground, not just clearing it', async ({ page }) => {
+  test.setTimeout(180000);
+  await boot(page);
+  await newCampaign(page);
+  await page.evaluate(() => {
+    const S = window.KR.campaign;
+    S.contracts.forEach((c) => { c.accepted = false; });
+    S.contracts.push({
+      id: 'seize_test', type: 'seize', site: 'rampart', employer: null, seizure: true,
+      title: 'Take Rampart 12', text: 'test', pay: 0, expiresDay: S.day + 9, accepted: true,
+    });
+    window.KR.world.stopTravel();
+    S.pos.x = -60; S.pos.z = -278;
+    window.__testSite = [S.pos.x, S.pos.z];
+  });
+  await page.waitForTimeout(900);
+  await deploy(page);
+
+  const mid = await page.evaluate(() => {
+    const m = window.KR.mission;
+    m.player.hp = m.player.maxHp;
+    // Kill the garrison outright — the objective must still not be complete.
+    m.entities.filter((e) => e.side === 'enemy').forEach((e) => { e.dead = true; e.down = true; });
+    const o = m.level.objectivePoint;
+    m.player.x = o.x; m.player.z = o.z;
+    return { done: m.objective.done, type: m.objective.type, hold: m.holdSeconds };
+  });
+  expect(mid.type).toBe('seize');
+  expect(mid.done).toBe(false);          // clearing is not taking
+  expect(mid.hold).toBeGreaterThan(10);
+
+  // Standing on it long enough finishes the job.
+  await page.evaluate(() => { window.KR.mission.holdProgress = window.KR.mission.holdSeconds - 0.5; });
+  await page.waitForFunction(() => window.KR.mission?.over === true, null, { timeout: 20000 });
+  const res = await page.evaluate(() => window.KR.mission.result);
+  expect(res.success).toBe(true);
+  expect(res.type).toBe('seize');
+
+  await page.waitForSelector('.aar-verdict', { timeout: 20000 });
+  expect(await page.evaluate(() => !!window.KR.campaign.holdings.rampart)).toBe(true);
+});
+
+test('the continent has a danger gradient from the starting basin outward', async ({ page }) => {
+  await boot(page);
+  await newCampaign(page);
+  const r = await page.evaluate(async () => {
+    const { LOCATIONS, REGIONS, REGION } = await import('/src/data.js');
+    const St = await import('/src/state.js');
+    const S = window.KR.campaign;
+    const byRegion = {};
+    for (const p of S.parties) {
+      const home = LOCATIONS.find((l) => l.id === p.home);
+      const reg = home?.region || 'kettle';
+      (byRegion[reg] = byRegion[reg] || []).push(p.strength);
+    }
+    const avg = (a) => (a && a.length ? a.reduce((x, y) => x + y, 0) / a.length : 0);
+    return {
+      size: REGION.size,
+      locations: LOCATIONS.length,
+      regions: Object.keys(REGIONS).length,
+      kettle: avg(byRegion.kettle),
+      // The faction heartlands and the coast should be markedly nastier.
+      outer: avg([...(byRegion.sarn || []), ...(byRegion.weal || []), ...(byRegion.littoral || [])]),
+      parties: S.parties.length,
+    };
+  });
+  expect(r.size).toBeGreaterThanOrEqual(4000);
+  expect(r.locations).toBeGreaterThanOrEqual(25);
+  expect(r.regions).toBe(5);
+  expect(r.parties).toBeGreaterThan(15);
+  expect(r.kettle).toBeGreaterThan(0);
+  // Starting ground is genuinely easier than the far regions.
+  expect(r.outer).toBeGreaterThan(r.kettle * 1.4);
+});
+
+test('renown raises the deployment limit', async ({ page }) => {
+  await boot(page);
+  await newCampaign(page);
+  const r = await page.evaluate(async () => {
+    const St = await import('/src/state.js');
+    const { makeSoldier } = await import('/src/roster.js');
+    const { rng } = await import('/src/util.js');
+    const S = window.KR.campaign;
+    const rr = rng(5);
+    for (let i = 0; i < 14; i++) {
+      S.roster.push(makeSoldier(rr, { role: 'rifleman', how: 'test', day: 1 }));
+    }
+    const start = St.deployLimit(S);
+    const names = [];
+    S.renown = 0; names.push([St.renownName(S), St.deployLimit(S)]);
+    S.renown = 600; names.push([St.renownName(S), St.deployLimit(S)]);
+    S.renown = 2200; names.push([St.renownName(S), St.deployLimit(S)]);
+    return { start, names };
+  });
+  expect(r.start).toBe(5);
+  expect(r.names[0][1]).toBe(5);
+  expect(r.names[1][1]).toBeGreaterThan(r.names[0][1]);
+  expect(r.names[2][1]).toBeGreaterThanOrEqual(12);
+  expect(r.names[2][0]).not.toBe(r.names[0][0]);
+});
+
+test('a large party fields a real battle in waves', async ({ page }) => {
+  test.setTimeout(240000);
+  await boot(page);
+  await newCampaign(page);
+  await page.evaluate(async () => {
+    const { makeSoldier } = await import('/src/roster.js');
+    const { rng } = await import('/src/util.js');
+    const S = window.KR.campaign;
+    S.renown = 2200;
+    const rr = rng(7);
+    for (let i = 0; i < 12; i++) {
+      S.roster.push(makeSoldier(rr, { role: 'rifleman', rank: 2, how: 'test', day: 1 }));
+    }
+    window.__spec = {
+      type: 'skirmish', site: 'roadside', layout: 'roadside', siteName: 'Test Field',
+      party: { id: 'p', kind: 'column_trust', name: 'Column', strength: 60, tier: 5, quality: 1.1 },
+    };
+  });
+  await page.evaluate(async () => {
+    const UI = await import('/src/ui.js');
+    UI.deployPanel(window.KR.campaign, window.__spec, {
+      onClose: () => {}, onDeploy: (sq) => { window.__squad = sq; UI.closeModal(); },
+    });
+  });
+  await page.waitForSelector('#modal [data-p]', { timeout: 15000 });
+  await selectWholeCompany(page);
+  await page.click('#modal [data-x="go"]');
+  await page.waitForTimeout(300);
+
+  await page.evaluate(async () => {
+    const { Mission } = await import('/src/mission.js');
+    const UI = await import('/src/ui.js');
+    const G = window.KR;
+    G.world?.dispose(); G.world = null;
+    document.getElementById('viewport').innerHTML = '';
+    UI.show('hud');
+    G.mission = new Mission({
+      campaign: G.campaign, spec: window.__spec, squad: window.__squad,
+      container: document.getElementById('viewport'),
+      onHud: () => {}, onToast: () => {}, onIntro: () => {}, onEnd: () => {},
+    });
+    await G.mission.start();
+  });
+  await page.waitForFunction(() => window.KR.mission?.player, null, { timeout: 40000 });
+  await waitForControl(page);
+
+  const first = await page.evaluate(() => {
+    const m = window.KR.mission;
+    return {
+      total: m.skirmishTotal,
+      committed: m.skirmishCommitted,
+      onField: m.entities.filter((e) => e.side === 'enemy' && !e.dead).length,
+      friendly: m.squad.length + 1,
+    };
+  });
+  expect(first.total).toBe(60);
+  expect(first.friendly).toBeGreaterThanOrEqual(10);
+  // The whole party is not standing on the field at once...
+  expect(first.onField).toBeLessThan(first.total);
+  expect(first.onField).toBeGreaterThan(20);
+
+  // ...but killing the front rank brings the rest on.
+  await page.evaluate(() => {
+    const m = window.KR.mission;
+    m.entities.filter((e) => e.side === 'enemy').forEach((e) => { e.dead = true; e.down = true; });
+  });
+  await page.waitForFunction(
+    (c) => window.KR.mission.skirmishCommitted > c, first.committed, { timeout: 20000 });
+  const second = await page.evaluate(() => window.KR.mission.skirmishCommitted);
+  expect(second).toBeGreaterThan(first.committed);
+});
+
+test('equipping armour changes the soldier and returns the old piece', async ({ page }) => {
+  await boot(page);
+  await newCampaign(page);
+  const r = await page.evaluate(async () => {
+    const St = await import('/src/state.js');
+    const { effective, armourRating } = await import('/src/roster.js');
+    const S = window.KR.campaign;
+    S.armourPool = { head_combat: 1, head_heavy: 1 };
+    const c = S.roster.find((x) => x.isCommander);
+    // Baseline is this soldier's own speed — traits and perks mean it is not
+    // necessarily the bare 4.2, so the weight test has to be relative.
+    const baseSpeed = effective(c).speed;
+    const before = { hp: effective(c).maxHp, armour: armourRating(c), speed: baseSpeed };
+    const a = St.equipArmour(S, c, 'head', 'head_combat');
+    const mid = { hp: effective(c).maxHp, armour: armourRating(c), worn: c.equip.head };
+    // Swapping should put the first helmet back in stores.
+    const b = St.equipArmour(S, c, 'head', 'head_heavy');
+    return {
+      a, b, before, mid,
+      after: { hp: effective(c).maxHp, armour: armourRating(c), worn: c.equip.head },
+      returned: S.armourPool.head_combat || 0,
+      // A sealed helm is heavy: speed must actually drop.
+      speed: effective(c).speed,
+    };
+  });
+  expect(r.a).toBe(true);
+  expect(r.mid.worn).toBe('head_combat');
+  expect(r.mid.hp).toBeGreaterThan(r.before.hp);
+  expect(r.b).toBe(true);
+  expect(r.after.worn).toBe('head_heavy');
+  expect(r.after.armour).toBeGreaterThan(r.mid.armour);
+  expect(r.returned).toBe(1);       // nothing lost in the swap
+  // A sealed helm is heavy: it must cost this soldier speed.
+  expect(r.speed).toBeLessThan(r.before.speed);
+});
+
+test('spoils are held aside until claimed', async ({ page }) => {
+  await boot(page);
+  await newCampaign(page);
+  const r = await page.evaluate(async () => {
+    const St = await import('/src/state.js');
+    const S = window.KR.campaign;
+    S.spoils = { credits: 0, cargo: {}, armoury: {}, armourPool: {}, kitPool: {} };
+    const creditsBefore = S.credits;
+    St.addSpoils(S, 'credits', null, 250);
+    St.addSpoils(S, 'armoury', 'dmr', 2);
+    St.addSpoils(S, 'armourPool', 'head_combat', 1);
+    const waiting = St.hasSpoils(S);
+    const creditsWhileWaiting = S.credits;
+    St.claimSpoils(S);
+    return {
+      waiting, creditsBefore, creditsWhileWaiting,
+      creditsAfter: S.credits,
+      dmr: S.armoury.dmr || 0,
+      helm: S.armourPool.head_combat || 0,
+      empty: !St.hasSpoils(S),
+    };
+  });
+  expect(r.waiting).toBe(true);
+  // Nothing lands in stores until the player takes it.
+  expect(r.creditsWhileWaiting).toBe(r.creditsBefore);
+  expect(r.creditsAfter).toBe(r.creditsBefore + 250);
+  expect(r.dmr).toBeGreaterThanOrEqual(2);
+  expect(r.helm).toBeGreaterThanOrEqual(1);
+  expect(r.empty).toBe(true);
+});
+
+test('faction standing gates a commission and tribute buys favour', async ({ page }) => {
+  await boot(page);
+  await newCampaign(page);
+  const r = await page.evaluate(async () => {
+    const Dip = await import('/src/diplomacy.js');
+    const S = window.KR.campaign;
+    S.credits = 20000;
+    const early = Dip.canTakeCommission(S, 'trust');
+    // Not trusted, not renowned: refused, and told why.
+    S.renown = 700;
+    const stillEarly = Dip.canTakeCommission(S, 'trust');
+    const before = Dip.standingOf(S, 'trust');
+    const creditsBefore = S.credits;
+    for (let i = 0; i < 6; i++) Dip.payTribute(S, 'trust');
+    return {
+      early: early.ok, earlyWhy: early.why,
+      stillEarly: stillEarly.ok,
+      before, after: Dip.standingOf(S, 'trust'),
+      tier: Dip.standingName(S, 'trust'),
+      spent: creditsBefore - S.credits,
+      nowOk: Dip.canTakeCommission(S, 'trust').ok,
+    };
+  });
+  expect(r.early).toBe(false);
+  expect(r.earlyWhy).toBeTruthy();
+  expect(r.stillEarly).toBe(false);          // renown alone is not enough
+  expect(r.after).toBeGreaterThan(r.before);  // tribute works
+  expect(r.spent).toBeGreaterThan(0);
+  expect(r.nowOk).toBe(true);                 // standing + renown unlocks it
+});
+
+test('taking a commission makes their enemies yours', async ({ page }) => {
+  await boot(page);
+  await newCampaign(page);
+  const r = await page.evaluate(async () => {
+    const Dip = await import('/src/diplomacy.js');
+    const St = await import('/src/state.js');
+    const S = window.KR.campaign;
+    S.renown = 700; S.rep.trust = 20; S.rep.syndic = 5;
+    const hostileBefore = S.parties.filter((p) => p.hostileToPlayer).length;
+    const res = Dip.takeCommission(S, 'trust');
+    St.refreshHostility(S);
+    return {
+      ok: res.ok,
+      allegiance: S.allegiance,
+      trust: S.rep.trust,
+      syndic: S.rep.syndic,
+      war: Dip.relationBetween(S, 'trust', 'syndic'),
+      hostileBefore,
+      hostileAfter: S.parties.filter((p) => p.hostileToPlayer).length,
+      syndicHostile: Dip.isHostileToPlayer(S, 'syndic'),
+      trustHostile: Dip.isHostileToPlayer(S, 'trust'),
+    };
+  });
+  expect(r.ok).toBe(true);
+  expect(r.allegiance).toBe('trust');
+  expect(r.trust).toBeGreaterThanOrEqual(30);
+  expect(r.syndic).toBeLessThan(0);
+  expect(r.war).toBe('war');
+  // Their war is now visible on the road.
+  expect(r.syndicHostile).toBe(true);
+  expect(r.trustHostile).toBe(false);
+  expect(r.hostileAfter).toBeGreaterThan(r.hostileBefore);
+});
+
+test('breaking an oath costs renown and makes a permanent enemy', async ({ page }) => {
+  await boot(page);
+  await newCampaign(page);
+  const r = await page.evaluate(async () => {
+    const Dip = await import('/src/diplomacy.js');
+    const S = window.KR.campaign;
+    S.renown = 900; S.rep.trust = 20;
+    Dip.takeCommission(S, 'trust');
+    const renownBefore = S.renown;
+    const res = Dip.breakAllegiance(S);
+    return {
+      ok: res.ok, was: res.was,
+      allegiance: S.allegiance,
+      renownBefore, renownAfter: S.renown,
+      trust: S.rep.trust,
+    };
+  });
+  expect(r.ok).toBe(true);
+  expect(r.was).toBe('trust');
+  expect(r.allegiance).toBeNull();
+  expect(r.renownAfter).toBeLessThan(r.renownBefore);
+  expect(r.trust).toBeLessThan(-20);
+});
+
+test('declaring a faction needs renown and ground, then turns both powers against you', async ({ page }) => {
+  await boot(page);
+  await newCampaign(page);
+  const r = await page.evaluate(async () => {
+    const Dip = await import('/src/diplomacy.js');
+    const St = await import('/src/state.js');
+    const S = window.KR.campaign;
+
+    const noRenown = Dip.canDeclare(S);
+    S.renown = 1500;
+    const noGround = Dip.canDeclare(S);
+    St.seizeLocation(S, 'rampart');
+    St.seizeLocation(S, 'grellan');
+    St.seizeLocation(S, 'culvert');
+    const ready = Dip.canDeclare(S);
+
+    const res = Dip.declareFaction(S, 'The Kettle Compact');
+    St.refreshHostility(S);
+    return {
+      noRenown: noRenown.ok, noRenownWhy: noRenown.why,
+      noGround: noGround.ok,
+      ready: ready.ok,
+      declared: res.ok,
+      name: S.ownFaction?.name,
+      trustWar: Dip.relationBetween(S, 'bracket', 'trust'),
+      syndicWar: Dip.relationBetween(S, 'bracket', 'syndic'),
+      rep: { trust: S.rep.trust, syndic: S.rep.syndic },
+      factions: Dip.allFactions(S).length,
+      hostile: S.parties.filter((p) => p.hostileToPlayer).length,
+      total: S.parties.length,
+    };
+  });
+  expect(r.noRenown).toBe(false);
+  expect(r.noRenownWhy).toBeTruthy();
+  expect(r.noGround).toBe(false);      // renown without territory is not enough
+  expect(r.ready).toBe(true);
+  expect(r.declared).toBe(true);
+  expect(r.name).toBe('The Kettle Compact');
+  // A third power on the continent, at war with both.
+  expect(r.factions).toBe(3);
+  expect(r.trustWar).toBe('war');
+  expect(r.syndicWar).toBe('war');
+  expect(r.rep.trust).toBeLessThan(0);
+  expect(r.rep.syndic).toBeLessThan(0);
+  expect(r.hostile).toBeGreaterThan(r.total * 0.4);
+});
+
+test('inter-faction relations shift over time', async ({ page }) => {
+  await boot(page);
+  await newCampaign(page);
+  const r = await page.evaluate(async () => {
+    const St = await import('/src/state.js');
+    const Dip = await import('/src/diplomacy.js');
+    const S = window.KR.campaign;
+    const seen = new Set();
+    // Run a long stretch of days and record every state the pair passes through.
+    // Measured over 1000 days: war occupies about a quarter of them and the
+    // first one landed on day 143, so a 220-day window was marginal.
+    for (let d = 0; d < 500; d++) {
+      St.advanceTime(S, 25);
+      seen.add(Dip.relationBetween(S, 'trust', 'syndic'));
+    }
+    return { states: [...seen], sawWar: seen.has('war') };
+  });
+  // The continent must not be politically frozen.
+  expect(r.states.length).toBeGreaterThan(1);
+  expect(r.sawWar).toBe(true);
+});
+
+test('suing for peace ends a war for money', async ({ page }) => {
+  await boot(page);
+  await newCampaign(page);
+  const r = await page.evaluate(async () => {
+    const Dip = await import('/src/diplomacy.js');
+    const St = await import('/src/state.js');
+    const S = window.KR.campaign;
+    S.renown = 1500; S.credits = 50000;
+    St.seizeLocation(S, 'rampart');
+    St.seizeLocation(S, 'grellan');
+    St.seizeLocation(S, 'culvert');
+    Dip.declareFaction(S, 'Test Compact');
+    const atWar = Dip.relationBetween(S, 'bracket', 'trust');
+    const before = S.credits;
+    const res = Dip.suePeace(S, 'trust');
+    St.refreshHostility(S);
+    return {
+      atWar, ok: res.ok, cost: res.cost,
+      after: Dip.relationBetween(S, 'bracket', 'trust'),
+      spent: before - S.credits,
+      hostile: Dip.isHostileToPlayer(S, 'trust'),
+    };
+  });
+  expect(r.atWar).toBe('war');
+  expect(r.ok).toBe(true);
+  expect(r.spent).toBeGreaterThan(0);
+  expect(r.after).toBe('truce');
+  expect(r.hostile).toBe(false);
+});
+
+test('where a place raises troops decides who you can hire there', async ({ page }) => {
+  await boot(page);
+  await newCampaign(page);
+  const pools = await page.evaluate(() => {
+    const { State, DATA } = window.KR.dev;
+    const S = window.KR.campaign;
+    const out = {};
+    for (const l of DATA.LOCATIONS) {
+      if (l.kind !== 'settlement' || !l.services.includes('recruit')) continue;
+      const pool = State.recruitPool(S, l.id);
+      if (pool.length) out[l.id] = pool[0].origin;
+    }
+    return out;
+  });
+  const origins = new Set(Object.values(pools));
+  // The map has to be worth crossing: at least three different kinds of people.
+  expect(origins.size).toBeGreaterThanOrEqual(3);
+});
+
+test('origins carry distinct stats, models and prices', async ({ page }) => {
+  await boot(page);
+  await newCampaign(page);
+  const rows = await page.evaluate(() => {
+    const { State, Roster, DATA, makeRng } = window.KR.dev;
+    const S = window.KR.campaign;
+    const r = makeRng(99);
+    return Object.keys(DATA.ORIGINS).map((id) => {
+      const o = DATA.ORIGINS[id];
+      let acc = 0; let spd = 0; let hp = 0; let cost = 0;
+      const N = 30;
+      for (let i = 0; i < N; i++) {
+        const s = Roster.makeSoldier(r, { role: 'rifleman', rank: 0, day: 1, origin: id });
+        if (o.kit.armour) s.equip.body = o.kit.armour;
+        if (o.kit.head) s.equip.head = o.kit.head;
+        s.maxHp = Roster.maxHpOf(s);
+        const st = Roster.effective(s, S.roster);
+        acc += st.accuracy; spd += st.speed; hp += s.maxHp; cost += State.hireCost(S, s);
+      }
+      return { id, model: o.model, acc: acc / N, spd: spd / N, hp: hp / N, cost: cost / N };
+    });
+  });
+  expect(rows.length).toBeGreaterThanOrEqual(5);
+  // Every origin fields its own character model.
+  expect(new Set(rows.map((x) => x.model)).size).toBe(rows.length);
+  // Trust regulars are the accurate, armoured, slow, expensive ones; Syndic
+  // levies are the fast cheap ones. If those two ever converge the system is
+  // decoration.
+  const trust = rows.find((x) => x.id === 'trust');
+  const syndic = rows.find((x) => x.id === 'syndic');
+  expect(trust.acc).toBeGreaterThan(syndic.acc);
+  expect(trust.hp).toBeGreaterThan(syndic.hp);
+  expect(trust.spd).toBeLessThan(syndic.spd);
+  expect(trust.cost).toBeGreaterThan(syndic.cost);
+});
+
+test('a soldier keeps their origin through hiring and deployment', async ({ page }) => {
+  await boot(page);
+  await newCampaign(page);
+  const founders = await page.evaluate(() => window.KR.campaign.roster.map((s) => s.origin));
+  // The founding company is deliberately mixed.
+  expect(new Set(founders).size).toBeGreaterThanOrEqual(2);
+  const hired = await page.evaluate(() => {
+    const { State, DATA } = window.KR.dev;
+    const S = window.KR.campaign;
+    S.credits = 40000;
+    const l = DATA.LOCATIONS.find(
+      (x) => x.faction === 'trust' && x.kind === 'settlement' && x.services.includes('recruit'));
+    S.atLocation = l.id;
+    const pick = State.recruitPool(S, l.id)[0];
+    State.hire(S, pick);
+    const saved = S.roster.find((s) => s.id === pick.id);
+    return { want: pick.origin, got: saved?.origin, model: DATA.ORIGINS[saved.origin].model };
+  });
+  expect(hired.got).toBe(hired.want);
+  expect(hired.model).toBe('soldier_trust');
+});
+
+test('crouch, jump and shoulder swap change the player state', async ({ page }) => {
+  await boot(page);
+  await newCampaign(page);
+  const launch = async () => page.evaluate(async () => {
+    const { Mission } = await import('/src/mission.js');
+    const UI = await import('/src/ui.js');
+    const G = window.KR;
+    const S = G.campaign;
+    S.renown = 4000;
+    G.mission?.dispose();
+    G.world?.dispose(); G.world = null;
+    document.getElementById('viewport').innerHTML = '';
+    UI.show('hud');
+    G.mission = new Mission({
+      campaign: S,
+      spec: { type: 'skirmish', site: 'roadside', layout: 'roadside', siteName: 'T',
+        party: { id: 't', kind: 'scrappers', name: 'T', strength: 8, tier: 2, quality: 0.8 } },
+      squad: S.roster.slice(0, 4),
+      container: document.getElementById('viewport'),
+      onHud: () => {}, onToast: () => {}, onIntro: () => {}, onWheel: () => {}, onEnd: () => {},
+    });
+    await G.mission.start();
+    G.mission.paused = false;
+    G.mission.hadLock = true;
+    if (G.mission.intro) {
+      G.mission.intro.active = false;
+      G.mission.time = G.mission.intro.graceUntil + 0.1;
+    }
+  });
+  await launch();
+  await page.waitForFunction(() => window.KR.mission?.player, null, { timeout: 40000 });
+
+  const stance = await page.evaluate(async () => {
+    const m = window.KR.mission;
+    m.hadLock = true;
+    const out = {};
+
+    // Crouch blends in rather than snapping, and costs speed.
+    m.crouchHeld = true;
+    for (let i = 0; i < 60; i++) m.step(1 / 60);
+    out.crouched = +m.crouch.toFixed(2);
+    m.crouchHeld = false;
+    for (let i = 0; i < 60; i++) m.step(1 / 60);
+    out.stoodBack = +m.crouch.toFixed(2);
+
+    // A jump leaves the ground and comes back to it.
+    m.tryJump();
+    out.leftGround = !m.grounded;
+    let peak = 0;
+    for (let i = 0; i < 120; i++) { m.step(1 / 60); peak = Math.max(peak, m.airY); }
+    out.peak = +peak.toFixed(2);
+    out.landed = m.grounded && m.airY === 0;
+
+    // You cannot jump out of a crouch, and you cannot double-jump.
+    m.crouchHeld = true;
+    for (let i = 0; i < 60; i++) m.step(1 / 60);
+    m.tryJump();
+    out.blockedByCrouch = m.grounded;
+    m.crouchHeld = false;
+    for (let i = 0; i < 60; i++) m.step(1 / 60);
+    m.tryJump();
+    const vy1 = m.vy;
+    m.tryJump();
+    out.noDoubleJump = m.vy === vy1;
+
+    // Shoulder swap mirrors the camera side.
+    const before = m.shoulder;
+    m.swapShoulder();
+    out.swapped = m.shoulder === -before;
+    return out;
+  });
+
+  expect(stance.crouched).toBeGreaterThan(0.9);
+  expect(stance.stoodBack).toBe(0);
+  expect(stance.leftGround).toBe(true);
+  expect(stance.peak).toBeGreaterThan(0.4);
+  expect(stance.landed).toBe(true);
+  expect(stance.blockedByCrouch).toBe(true);
+  expect(stance.noDoubleJump).toBe(true);
+  expect(stance.swapped).toBe(true);
+});
+
+test('the command wheel issues the order it is showing', async ({ page }) => {
+  await boot(page);
+  await newCampaign(page);
+  const launch = async () => page.evaluate(async () => {
+    const { Mission } = await import('/src/mission.js');
+    const UI = await import('/src/ui.js');
+    const G = window.KR;
+    const S = G.campaign;
+    S.renown = 4000;
+    G.mission?.dispose();
+    G.world?.dispose(); G.world = null;
+    document.getElementById('viewport').innerHTML = '';
+    UI.show('hud');
+    G.mission = new Mission({
+      campaign: S,
+      spec: { type: 'skirmish', site: 'roadside', layout: 'roadside', siteName: 'T',
+        party: { id: 't', kind: 'scrappers', name: 'T', strength: 8, tier: 2, quality: 0.8 } },
+      squad: S.roster.slice(0, 4),
+      container: document.getElementById('viewport'),
+      onHud: () => {}, onToast: () => {}, onIntro: () => {}, onWheel: () => {}, onEnd: () => {},
+    });
+    await G.mission.start();
+    G.mission.paused = false;
+    G.mission.hadLock = true;
+    if (G.mission.intro) {
+      G.mission.intro.active = false;
+      G.mission.time = G.mission.intro.graceUntil + 0.1;
+    }
+  });
+  await launch();
+  await page.waitForFunction(() => window.KR.mission?.player, null, { timeout: 40000 });
+
+  const r = await page.evaluate(() => {
+    const m = window.KR.mission;
+    m.hadLock = true;
+    const orders = m.ORDERS.map((o) => o.id);
+    const out = [];
+    for (let i = 0; i < orders.length; i++) {
+      const a = (i / orders.length) * Math.PI * 2;
+      m.closeWheel(false);
+      m.openWheel();
+      for (let k = 0; k < 10; k++) m.steerWheel(Math.sin(a) * 12, -Math.cos(a) * 12);
+      out.push({ want: orders[i], got: m.ORDERS[m.wheel.index]?.id });
+      m.closeWheel(true);
+    }
+    // Releasing inside the dead zone must not issue anything.
+    m.setSquadOrder('hold');
+    m.openWheel();
+    m.steerWheel(3, 3);
+    const idx = m.wheel.index;
+    m.closeWheel(true);
+    return { out, deadZone: idx, after: m.squad.find((s) => !s.dead)?.order };
+  });
+  for (const row of r.out) expect(row.got).toBe(row.want);
+  expect(r.deadZone).toBe(-1);
+  expect(r.after).toBe('hold');
+});
+
+test('the Titan sheds armour and only its cores take real damage', async ({ page }) => {
+  await boot(page);
+  await newCampaign(page);
+  const r = await page.evaluate(async () => {
+    const { Mission } = await import('/src/mission.js');
+    const UI = await import('/src/ui.js');
+    const G = window.KR;
+    const S = G.campaign;
+    S.renown = 4000;
+    G.mission?.dispose();
+    G.world?.dispose(); G.world = null;
+    document.getElementById('viewport').innerHTML = '';
+    UI.show('hud');
+    G.mission = new Mission({
+      campaign: S,
+      spec: { type: 'titan', site: 'roadside', layout: 'roadside', siteName: 'Titan' },
+      squad: S.roster.slice(0, 3),
+      container: document.getElementById('viewport'),
+      onHud: () => {}, onToast: () => {}, onIntro: () => {}, onWheel: () => {}, onEnd: () => {},
+    });
+    await G.mission.start();
+    const m = G.mission;
+    const e = m.titan;
+    const pl = e.plates.find((x) => x.id === 'chest');
+
+    const hitPlate = (n) => {
+      const before = e.hp;
+      for (let i = 0; i < n; i++) {
+        const wp = m.platePos(pl);
+        m.applyDamage(e, 30, m.player, { x: wp.x, y: wp.y, z: wp.z, plate: pl });
+      }
+      return before - e.hp;
+    };
+
+    const armourCost = hitPlate(5);
+    let guard = 0;
+    while (!pl.broken && guard++ < 200) hitPlate(1);
+    const broke = { broken: pl.broken, slabHidden: !pl.slab.visible, coreShown: pl.core.visible };
+    const coreCost = hitPlate(5);
+
+    // And it has to be killable through the hole.
+    guard = 0;
+    while (!e.dead && guard++ < 4000) hitPlate(1);
+    for (let i = 0; i < 60; i++) m.step(1 / 60);
+    return {
+      plates: e.plates.length,
+      armourCost, coreCost, ...broke,
+      dead: e.dead, done: !!m.objective.done,
+    };
+  });
+  expect(r.plates).toBeGreaterThanOrEqual(6);
+  expect(r.broken).toBe(true);
+  expect(r.slabHidden).toBe(true);
+  expect(r.coreShown).toBe(true);
+  // Armour is a gate, not a modifier: a core hit must be worth many armour hits.
+  expect(r.coreCost).toBeGreaterThan(r.armourCost * 8);
+  expect(r.dead).toBe(true);
+  expect(r.done).toBe(true);
+});
+
+test('holding ground builds renown and the ambition ladder tracks it', async ({ page }) => {
+  await boot(page);
+  await newCampaign(page);
+  const r = await page.evaluate(() => {
+    const { State, Dip } = { State: window.KR.dev.State, Dip: window.KR.dev.Dip };
+    const S = window.KR.campaign;
+    const before = Math.round(S.renown || 0);
+    State.seizeLocation(S, 'grellan');
+    for (let d = 0; d < 10; d++) State.advanceTime(S, 24);
+    const after = Math.round(S.renown || 0);
+    const amb = Dip.ambition(S);
+    return {
+      before, after,
+      steps: amb.steps.map((s) => ({ id: s.id, have: s.have, need: s.need, how: !!s.how })),
+      declared: amb.declared,
+    };
+  });
+  // A place you hold makes your name, which is what makes growing one lead
+  // anywhere at all.
+  expect(r.after).toBeGreaterThan(r.before);
+  expect(r.steps.length).toBe(2);
+  expect(r.steps.every((s) => s.how)).toBe(true);
+  expect(r.steps.find((s) => s.id === 'ground').have).toBeGreaterThanOrEqual(1);
+});
+
+test('settlements fight on settlement ground, with the garrison they were given', async ({ page }) => {
+  await boot(page);
+  await newCampaign(page);
+  const r = await page.evaluate(async () => {
+    const { DATA } = window.KR.dev;
+    const Level = await import('/src/level.js');
+    const towns = DATA.LOCATIONS.filter((l) => l.layout === 'settlement' || l.layout === 'works');
+    const built = Level.build('settlement', 7, {});
+    return {
+      towns: towns.length,
+      garrison: (built.garrison || []).length,
+      patrols: (built.patrols || []).length,
+      name: built.name,
+    };
+  });
+  // Places where people live now have their own ground to fight over.
+  expect(r.towns).toBeGreaterThanOrEqual(10);
+  // And every layout's authored defenders actually reach the mission — these
+  // were being dropped on the floor by build(), so every site played the same.
+  expect(r.garrison).toBeGreaterThan(0);
+  expect(r.patrols).toBeGreaterThan(0);
+});
+
+test('the company costs money and food every day', async ({ page }) => {
+  await boot(page);
+  await newCampaign(page);
+  const r = await page.evaluate(() => {
+    const { State } = window.KR.dev;
+    const S = window.KR.campaign;
+    const up = State.upkeepOf(S);
+    const start = { credits: S.credits, rations: S.rations };
+    State.advanceTime(S, 24);
+    const after = { credits: S.credits, rations: S.rations };
+    // The commander is not on the payroll — you do not pay yourself.
+    const cmd = State.commander(S);
+    return { up, start, after, commanderWage: State.wageOf(cmd) };
+  });
+  expect(r.up.wages).toBeGreaterThan(0);
+  expect(r.up.food).toBeGreaterThan(0);
+  expect(r.after.credits).toBe(r.start.credits - r.up.wages);
+  expect(r.after.rations).toBe(r.start.rations - r.up.food);
+  expect(r.commanderWage).toBe(0);
+});
+
+test('going unpaid and unfed costs morale, and people eventually leave', async ({ page }) => {
+  await boot(page);
+  await newCampaign(page);
+  const r = await page.evaluate(() => {
+    const { State } = window.KR.dev;
+    const S = window.KR.campaign;
+    S.credits = 0;
+    S.rations = 0;
+    const before = { morale: S.morale, roster: State.living(S).length };
+    for (let d = 0; d < 40; d++) State.advanceTime(S, 24);
+    const after = { morale: S.morale, roster: State.living(S).length,
+      unpaid: S.unpaidDays, deserted: S.stats.deserted || 0 };
+    // The commander never deserts, whatever happens.
+    return { before, after, hasCommander: !!State.commander(S) };
+  });
+  expect(r.after.morale).toBeLessThan(r.before.morale);
+  expect(r.after.deserted).toBeGreaterThan(0);
+  expect(r.after.roster).toBeLessThan(r.before.roster);
+  expect(r.hasCommander).toBe(true);
+});
+
+test('paying and feeding the company stops the bleeding', async ({ page }) => {
+  await boot(page);
+  await newCampaign(page);
+  const r = await page.evaluate(() => {
+    const { State, DATA } = window.KR.dev;
+    const S = window.KR.campaign;
+    S.credits = 0; S.rations = 0;
+    for (let d = 0; d < 25; d++) State.advanceTime(S, 24);
+    const low = { morale: S.morale, roster: State.living(S).length };
+
+    // Settle up and restock.
+    S.credits = 20000;
+    const market = DATA.LOCATIONS.find((l) => l.services?.includes('market'));
+    const bought = State.buyRations(S, market.id, 30);
+    for (let d = 0; d < 10; d++) State.advanceTime(S, 24);
+    return { low, bought, morale: S.morale, roster: State.living(S).length };
+  });
+  expect(r.bought).toBe(true);
+  expect(r.morale).toBeGreaterThan(r.low.morale);
+  // Nobody else walks once they are paid and fed — desertion needs a live
+  // grievance, not just a lagging number.
+  expect(r.roster).toBe(r.low.roster);
+});
+
+test('prisoners can be pressed, ransomed or released', async ({ page }) => {
+  await boot(page);
+  await newCampaign(page);
+  const r = await page.evaluate(() => {
+    const { State, Roster, makeRng } = window.KR.dev;
+    const S = window.KR.campaign;
+    const rng = makeRng(5);
+    const mk = (n) => Object.assign(
+      Roster.makeSoldier(rng, { role: 'rifleman', rank: 1, day: 1, name: n }),
+      { captiveFaction: 'trust' },
+    );
+    S.prisoners = [mk('P One'), mk('P Two'), mk('P Three')];
+    const before = { roster: State.living(S).length, credits: S.credits,
+      rep: S.rep.trust, morale: S.morale };
+
+    const pressed = State.pressPrisoner(S, S.prisoners[0].id);
+    const afterPress = { roster: State.living(S).length, morale: S.morale };
+
+    const value = State.ransomValue(S, S.prisoners[0]);
+    const ransomed = State.ransomPrisoner(S, S.prisoners[0].id);
+    const afterRansom = { credits: S.credits, rep: S.rep.trust };
+
+    const released = State.releasePrisoner(S, S.prisoners[0].id);
+    return { before, pressed, afterPress, value, ransomed, afterRansom,
+      released, rep: S.rep.trust, left: S.prisoners.length };
+  });
+  expect(r.pressed).toBe(true);
+  expect(r.afterPress.roster).toBe(r.before.roster + 1);
+  // Serving next to somebody who was shooting at you last week costs morale.
+  expect(r.afterPress.morale).toBeLessThan(r.before.morale);
+  expect(r.ransomed).toBe(true);
+  expect(r.afterRansom.credits).toBe(r.before.credits + r.value);
+  expect(r.afterRansom.rep).toBeLessThan(r.before.rep);
+  expect(r.released).toBe(true);
+  // Letting one go is the only thing that buys standing back.
+  expect(r.rep).toBeGreaterThan(r.afterRansom.rep);
+  expect(r.left).toBe(0);
+});
+
+test('opening the wheel on a hostile focuses fire and marks them', async ({ page }) => {
+  await boot(page);
+  await newCampaign(page);
+  await page.evaluate(async () => {
+    const { Mission } = await import('/src/mission.js');
+    const UI = await import('/src/ui.js');
+    const G = window.KR;
+    const S = G.campaign;
+    S.renown = 4000;
+    G.mission?.dispose();
+    G.world?.dispose(); G.world = null;
+    document.getElementById('viewport').innerHTML = '';
+    UI.show('hud');
+    G.mission = new Mission({
+      campaign: S,
+      spec: { type: 'skirmish', site: 'roadside', layout: 'roadside', siteName: 'F',
+        party: { id: 'f', kind: 'scrappers', name: 'F', strength: 10, tier: 2, quality: 0.8 } },
+      squad: S.roster.slice(0, 4),
+      container: document.getElementById('viewport'),
+      onHud: () => {}, onWheel: () => {}, onToast: () => {}, onIntro: () => {}, onEnd: () => {},
+    });
+    await G.mission.start();
+    const m = G.mission;
+    m.paused = false; m.hadLock = true;
+    if (m.intro) { m.intro.active = false; m.time = m.intro.graceUntil + 0.1; }
+  });
+  await page.waitForFunction(() => window.KR.mission?.player, null, { timeout: 40000 });
+
+  const r = await page.evaluate(() => {
+    const m = window.KR.mission;
+    const foe = m.entities.find((e) => e.side === 'enemy' && !e.dead);
+    // Sweep bearings until the reticle genuinely lands on them — a fixed
+    // bearing kept putting a container in the way.
+    let found = false;
+    for (let k = 0; k < 48 && !found; k++) {
+      const yaw = (k / 48) * Math.PI * 2;
+      foe.x = m.player.x - Math.sin(yaw) * 14;
+      foe.z = m.player.z - Math.cos(yaw) * 14;
+      m.camYaw = yaw; m.camPitch = 0;
+      for (let i = 0; i < 20; i++) m.updateCamera(1 / 60);
+      found = m.aimPoint(140).entity === foe;
+    }
+    m.openWheel();
+    const marked = m.marked === foe;
+    const onTarget = m.squad.filter((s) => s.forceTarget === foe).length;
+    const total = m.squad.filter((s) => !s.dead).length;
+    m.closeWheel(true);                     // release without picking an order
+    const survives = m.marked === foe;
+    for (let i = 0; i < 10; i++) m.step(1 / 60);
+    const shown = m.markMesh.visible;
+
+    // It has to end when they do.
+    foe.hp = 0; foe.dead = true; foe.down = true;
+    for (let i = 0; i < 10; i++) m.step(1 / 60);
+    return { found, marked, onTarget, total, survives, shown,
+      cleared: m.marked === null, hidden: !m.markMesh.visible };
+  });
+  expect(r.found).toBe(true);
+  expect(r.marked).toBe(true);
+  // Everyone under command goes on the target, not just one of them.
+  expect(r.onTarget).toBe(r.total);
+  // Releasing without choosing is a confirmation, not a cancellation.
+  expect(r.survives).toBe(true);
+  expect(r.shown).toBe(true);
+  expect(r.cleared).toBe(true);
+  expect(r.hidden).toBe(true);
+});
+
+test('advancement is a branching choice you pay for, gated on earned rank', async ({ page }) => {
+  await boot(page);
+  await newCampaign(page);
+  const r = await page.evaluate(() => {
+    const { State, DATA } = window.KR.dev;
+    const S = window.KR.campaign;
+    const s = State.living(S).find((x) => !x.isCommander);
+    s.role = 'rifleman';
+    s.rank = 0;
+    S.credits = 20000;
+
+    // Rank is earned in the field and cannot be bought.
+    const atRecruit = State.upgradesFor(S, s);
+    const refused = State.upgradeTroop(S, s.id, 'marksman');
+
+    s.rank = 1;
+    const atTrooper = State.upgradesFor(S, s);
+    const opt = atTrooper.find((o) => o.to === 'marksman');
+    const before = { credits: S.credits, wage: State.wageOf(s), xp: s.xp, name: s.name };
+    const done = State.upgradeTroop(S, s.id, 'marksman');
+    const after = { role: s.role, weapon: s.weapon, credits: S.credits,
+      wage: State.wageOf(s), xp: s.xp, name: s.name };
+
+    // Money is a real gate too.
+    const other = State.living(S).find((x) => !x.isCommander && x.id !== s.id);
+    other.rank = 1; other.role = 'rifleman';
+    S.credits = 0;
+    const broke = State.upgradeTroop(S, other.id, 'marksman');
+
+    return {
+      branches: (DATA.TROOP_PATHS.rifleman || []).length,
+      atRecruit: atRecruit.map((o) => o.ok),
+      refused, done, cost: opt.cost, before, after, broke,
+      terminal: (DATA.TROOP_PATHS.medic || []).length,
+    };
+  });
+  // A rifleman has somewhere to go, and more than one somewhere.
+  expect(r.branches).toBeGreaterThanOrEqual(3);
+  // Nothing is available to a raw recruit, and trying anyway is refused.
+  expect(r.atRecruit.every((ok) => ok === false)).toBe(true);
+  expect(r.refused).toBe(false);
+  expect(r.done).toBe(true);
+  expect(r.after.role).toBe('marksman');
+  expect(r.after.weapon).toBe('dmr');
+  expect(r.after.credits).toBe(r.before.credits - r.cost);
+  // Specialists cost more to keep — a company of them is a running expense.
+  expect(r.after.wage).toBeGreaterThan(r.before.wage);
+  // It is the same person, not a replacement.
+  expect(r.after.name).toBe(r.before.name);
+  expect(r.after.xp).toBe(r.before.xp);
+  expect(r.broke).toBe(false);
+  // And some roles are the end of the road.
+  expect(r.terminal).toBe(0);
+});
+
+test('the company you built decides how fast it moves', async ({ page }) => {
+  await boot(page);
+  await newCampaign(page);
+  const r = await page.evaluate(() => {
+    const { State, Roster, DATA, makeRng } = window.KR.dev;
+    const S = window.KR.campaign;
+    const rng = makeRng(9);
+    S.cargo = {}; S.rations = 20; S.morale = 70;
+    const light = State.partySpeed(S);
+
+    // Deliberately moderate: pace is clamped at 42% so it can never reach a
+    // standstill, and piling on enough weight to hit that floor would make the
+    // later comparisons test the clamp rather than the curve.
+    for (let i = 0; i < 6; i++) {
+      S.roster.push(Roster.makeSoldier(rng, { role: 'rifleman', day: 1,
+        avoid: S.roster.map((x) => x.name) }));
+    }
+    const crowded = State.partySpeed(S);
+
+    for (const id of DATA.GOODS_LIST) S.cargo[id] = 2;
+    const loaded = State.partySpeed(S);
+
+    S.rations = 0;
+    const hungry = State.partySpeed(S);
+
+    return {
+      light: light.mul, crowded: crowded.mul, loaded: loaded.mul, hungry: hungry.mul,
+      reasons: hungry.factors.map((f) => f.label),
+      lightReasons: light.factors.length,
+    };
+  });
+  // A small company travelling light has nothing slowing it down.
+  expect(r.light).toBe(1);
+  expect(r.lightReasons).toBe(0);
+  // Each thing you take on costs pace, and the reasons are reported.
+  expect(r.crowded).toBeLessThan(r.light);
+  expect(r.loaded).toBeLessThan(r.crowded);
+  expect(r.hungry).toBeLessThan(r.loaded);
+  expect(r.reasons.some((x) => /eaten/.test(x))).toBe(true);
+  // But never to a standstill.
+  expect(r.hungry).toBeGreaterThan(0.4);
+});
+
+test('sending the squad in without you resolves through the same pipeline', async ({ page }) => {
+  await boot(page);
+  await newCampaign(page);
+  const r = await page.evaluate(() => {
+    const { State } = window.KR.dev;
+    const S = window.KR.campaign;
+
+    // Odds have to track the strength gap rather than being a coin flip.
+    const squad0 = State.ready(S).slice(0, State.deployLimit(S));
+    const easy = State.estimateFight(S, squad0, { strength: 3, quality: 0.7 }).odds;
+    const hard = State.estimateFight(S, squad0, { strength: 60, quality: 0.9 }).odds;
+
+    // Keep rolling until it wins: a loss pays nothing, so it would tell us
+    // nothing about whether the payment path runs.
+    let out = null;
+    for (let attempt = 0; attempt < 40 && !out; attempt++) {
+      for (const s of S.roster) { s.status = 'healthy'; s.hp = s.maxHp; s.wound = null; }
+      const squad = State.ready(S).slice(0, 4);
+      if (squad.length < 2) break;
+      const party = { id: `t${attempt}`, kind: 'looters', name: 'Looters', strength: 5,
+        tier: 1, quality: 0.55, faction: 'raider', x: 0, z: 0, hostileToPlayer: true };
+      S.parties.push(party);
+      const before = {
+        missions: S.stats.missions,
+        deployments: squad.map((s) => s.deployments),
+        xp: Object.fromEntries(squad.map((s) => [s.id, s.xp])),
+        renown: Math.round(S.renown || 0),
+        supplies: S.supplies,
+      };
+      const res = State.autoResolve(S, { type: 'skirmish', site: 'roadside', party }, squad);
+      State.applyMissionResult(S, res);
+      if (!res.success) { S.parties = S.parties.filter((x) => x.id !== party.id); continue; }
+      const survivors = squad.filter((s) => s.status !== 'dead');
+      out = {
+        auto: res.auto,
+        missions: [before.missions, S.stats.missions],
+        deployed: squad.every((s, i) => s.deployments === before.deployments[i] + 1),
+        xpGained: survivors.every((s) => s.xp > before.xp[s.id]),
+        renown: [before.renown, Math.round(S.renown || 0)],
+        supplies: [before.supplies, S.supplies],
+        cleared: !S.parties.some((x) => x.id === party.id),
+      };
+    }
+    return { easy, hard, out };
+  });
+
+  expect(r.easy).toBeGreaterThan(r.hard + 0.4);
+  expect(r.out).not.toBeNull();
+  expect(r.out.auto).toBe(true);
+  // It counts as a real deployment in every respect that matters.
+  expect(r.out.missions[1]).toBe(r.out.missions[0] + 1);
+  expect(r.out.deployed).toBe(true);
+  expect(r.out.xpGained).toBe(true);
+  expect(r.out.supplies[1]).toBeLessThan(r.out.supplies[0]);
+  // And it pays, which only happens if the party was really on the map.
+  expect(r.out.renown[1]).toBeGreaterThan(r.out.renown[0]);
+  expect(r.out.cleared).toBe(true);
+});
+
+test('autoresolve costs people, but not so many that nobody would use it', async ({ page }) => {
+  await boot(page);
+  await newCampaign(page);
+  const r = await page.evaluate(() => {
+    const { State, Roster, makeRng } = window.KR.dev;
+    const S = window.KR.campaign;
+    const tally = (strength, N) => {
+      let dead = 0; let wounded = 0; let wins = 0;
+      for (let i = 0; i < N; i++) {
+        const rng = makeRng(700 + i);
+        S.roster = S.roster.slice(0, 1);
+        for (let k = 0; k < 4; k++) {
+          S.roster.push(Roster.makeSoldier(rng, { role: 'rifleman', rank: 1, day: 1,
+            avoid: S.roster.map((x) => x.name) }));
+        }
+        for (const s of S.roster) { s.status = 'healthy'; s.hp = s.maxHp; s.wound = null; }
+        S.stats.missions = i;
+        const res = State.autoResolve(S,
+          { type: 'skirmish', site: 'roadside', party: { strength, quality: 0.75 } },
+          State.ready(S).slice(0, 5));
+        if (res.success) wins++;
+        for (const x of res.soldierResults) {
+          if (x.status === 'dead') dead++;
+          else if (x.status === 'wounded') wounded++;
+        }
+      }
+      return { dead: dead / N, wounded: wounded / N, winRate: wins / N };
+    };
+    // Death counts alone are too noisy to separate at small samples; total
+    // casualties and win rate are the stable signals.
+    return { easy: tally(6, 120), hard: tally(30, 120) };
+  });
+
+  // Something always comes back hurt — it is never free.
+  expect(r.easy.dead + r.easy.wounded).toBeGreaterThan(0);
+  // But an easy fight must not average a permadeath, or "skip the trivial
+  // encounter" would mean "feed it a soldier".
+  expect(r.easy.dead).toBeLessThan(0.6);
+  // A bad fight is genuinely worse: more people come back hurt, and you win
+  // less often. Deaths alone swing too much to assert on directly.
+  expect(r.hard.dead + r.hard.wounded).toBeGreaterThan(r.easy.dead + r.easy.wounded);
+  expect(r.hard.winRate).toBeLessThan(r.easy.winRate);
+});
+
+test('a settlement that likes you sells cheaper and pays better', async ({ page }) => {
+  await boot(page);
+  await newCampaign(page);
+  const r = await page.evaluate(() => {
+    const { State, DATA } = window.KR.dev;
+    const S = window.KR.campaign;
+    const loc = DATA.LOCATIONS.find((l) => l.services?.includes('market') && l.trade);
+    const good = DATA.GOODS_LIST[0];
+    const at = (rel) => {
+      S.relations[loc.id] = rel;
+      return {
+        tier: State.relationTier(S, loc.id).name,
+        base: State.priceAt(S, loc.id, good),
+        buy: State.buyPriceAt(S, loc.id, good),
+        sell: State.sellPriceAt(S, loc.id, good),
+      };
+    };
+    return { hated: at(-100), neutral: at(0), loved: at(100) };
+  });
+  // The whole point: standing must bend the two prices in OPPOSITE directions.
+  // One shared multiplier would make a settlement that likes you pay you less.
+  expect(r.loved.buy).toBeLessThan(r.neutral.buy);
+  expect(r.loved.sell).toBeGreaterThan(r.neutral.sell);
+  expect(r.hated.buy).toBeGreaterThan(r.neutral.buy);
+  expect(r.hated.sell).toBeLessThan(r.neutral.sell);
+  // A market always takes a spread; you never buy cheaper than they pay.
+  expect(r.loved.buy).toBeLessThan(r.loved.sell);
+  // Somewhere you have never been is neutral, not suspicious.
+  expect(r.neutral.tier).toBe('Known');
+  expect(r.neutral.buy).toBe(r.neutral.sell);
+});
+
+test('standing decides who a settlement will put forward', async ({ page }) => {
+  await boot(page);
+  await newCampaign(page);
+  const r = await page.evaluate(() => {
+    const { State, DATA } = window.KR.dev;
+    const S = window.KR.campaign;
+    const loc = DATA.LOCATIONS.find((l) => l.services?.includes('recruit'));
+    const at = (rel, day) => {
+      S.relations[loc.id] = rel;
+      S.day = day;                     // the pool is deterministic per day
+      const pool = State.recruitPool(S, loc.id);
+      return { offered: pool.length, trained: pool.filter((x) => x.rank > 0).length };
+    };
+    return { hated: at(-80, 12), neutral: at(0, 12), loved: at(80, 12) };
+  });
+  // A place that hates you will not sell you anybody at all.
+  expect(r.hated.offered).toBe(0);
+  expect(r.neutral.offered).toBeGreaterThan(0);
+  expect(r.loved.offered).toBeGreaterThan(r.neutral.offered);
+});
+
+test('standing moves for reasons the player caused', async ({ page }) => {
+  await boot(page);
+  await newCampaign(page);
+  const r = await page.evaluate(() => {
+    const { State, DATA } = window.KR.dev;
+    const S = window.KR.campaign;
+    S.relations = {};
+    S.credits = 90000;
+    const loc = DATA.LOCATIONS.find((l) => l.services?.includes('market') && l.trade);
+    const good = DATA.GOODS_LIST[0];
+
+    State.buyGood(S, loc.id, good, 20);
+    const beforeTrade = State.relationOf(S, loc.id);
+    for (let i = 0; i < 20; i++) State.sellGood(S, loc.id, good, 1);
+    const afterTrade = State.relationOf(S, loc.id);
+
+    const target = DATA.LOCATIONS.find((l) => l.kind !== 'open'
+      && l.id !== loc.id && !State.isHolding(S, l.id));
+    const beforeSeize = State.relationOf(S, target.id);
+    State.seizeLocation(S, target.id);
+    const afterSeize = State.relationOf(S, target.id);
+
+    // Crossing a band should be announced rather than silently accumulated.
+    const logBefore = S.log.length;
+    State.changeRelation(S, loc.id, 80);
+    return {
+      beforeTrade, afterTrade, beforeSeize, afterSeize,
+      announced: S.log.length > logBefore,
+      tier: State.relationTier(S, loc.id).name,
+    };
+  });
+  // Being a regular customer counts for something.
+  expect(r.afterTrade).toBeGreaterThan(r.beforeTrade);
+  // Taking a place by force is not how you make friends inside it.
+  expect(r.afterSeize).toBeLessThan(r.beforeSeize);
+  expect(r.announced).toBe(true);
+  expect(r.tier).toBe('Ours');
+});
+
+test('caravans need a depot and are never spawned by the world', async ({ page }) => {
+  await boot(page);
+  await newCampaign(page);
+  const r = await page.evaluate(() => {
+    const { State, DATA } = window.KR.dev;
+    const S = window.KR.campaign;
+    const loc = DATA.LOCATIONS.find((l) => l.kind === 'settlement');
+    S.credits = 50000;
+
+    const unheld = State.canBuyCaravan(S, loc.id).ok;
+    State.seizeLocation(S, loc.id);
+    const noDepot = State.canBuyCaravan(S, loc.id).ok;
+    S.holdings[loc.id].upgrades.depot = 1;
+    const withDepot = State.canBuyCaravan(S, loc.id).ok;
+    const bought = !!State.buyCaravan(S, loc.id);
+    const atCap = State.canBuyCaravan(S, loc.id).ok;
+    S.holdings[loc.id].upgrades.depot = 2;
+    const raised = State.canBuyCaravan(S, loc.id).ok;
+
+    // The party table is also the spawn table, so a player-owned type must
+    // never be reachable from the random draw — otherwise the world hands out
+    // Bracket caravans as roadside traffic.
+    S.parties = S.parties.filter((x) => x.kind !== 'own_caravan');
+    for (let d = 0; d < 90; d++) State.advanceTime(S, 24);
+    const spawnedByWorld = S.parties.filter((x) => x.kind === 'own_caravan').length;
+
+    return { unheld, noDepot, withDepot, bought, atCap, raised, spawnedByWorld };
+  });
+  expect(r.unheld).toBe(false);
+  expect(r.noDepot).toBe(false);
+  expect(r.withDepot).toBe(true);
+  expect(r.bought).toBe(true);
+  expect(r.atCap).toBe(false);        // a level 1 depot runs one
+  expect(r.raised).toBe(true);
+  expect(r.spawnedByWorld).toBe(0);
+});
+
+test('a caravan survives the party housekeeping and pays by standing', async ({ page }) => {
+  await boot(page);
+  await newCampaign(page);
+  const r = await page.evaluate(() => {
+    const { State, DATA, makeRng } = window.KR.dev;
+    const S = window.KR.campaign;
+    const loc = DATA.LOCATIONS.find((l) => l.kind === 'settlement');
+    S.credits = 80000;
+    State.seizeLocation(S, loc.id);
+    S.holdings[loc.id].upgrades.depot = 3;
+    const c = State.buyCaravan(S, loc.id);
+
+    // maintainParties trims the party furthest from the player when a region is
+    // crowded, and yours must never be the one it picks. It CAN still be taken
+    // on the road — that is the whole design — so the property under test is
+    // not "it survives" but "it never disappears without saying so". Asserting
+    // survival would be asserting that a deliberately uncertain thing is
+    // certain, and it duly failed about one run in five.
+    const logBefore = S.log.length;
+    for (let d = 0; d < 60; d++) State.advanceTime(S, 24);
+    const alive = S.parties.some((p) => p.id === c.id);
+    // The log only holds 60 entries, so a loss on day 3 has scrolled away by
+    // day 60. The running count is what actually records it.
+    const reported = (S.stats.caravansLost || 0) > 0;
+    const accountedFor = alive || reported;
+    const hostile = S.parties.filter((p) => p.kind === 'own_caravan')
+      .some((p) => p.hostileToPlayer);
+
+    // Takings follow standing where it trades.
+    const measure = (rel) => {
+      S.relations[loc.id] = rel;
+      // Clear the road first. What is being measured here is the PAYMENT
+      // formula, and leaving hostiles about means the caravan can be taken
+      // mid-measurement and report zero takings for reasons that have nothing
+      // to do with standing.
+      S.parties = S.parties.filter((p) => p.kind === 'own_caravan');
+      // Sixty days of ignoring a holding loses it to pressure, and you cannot
+      // fit out a caravan somewhere you no longer hold — so re-establish it
+      // before measuring, or this reports zero for reasons unrelated to pay.
+      if (!State.isHolding(S, loc.id)) State.seizeLocation(S, loc.id);
+      S.holdings[loc.id].upgrades.depot = 3;
+      if (!S.parties.length) {
+        S.credits = 80000;
+        State.buyCaravan(S, loc.id);
+      }
+      const cv = S.parties.find((p) => p.kind === 'own_caravan');
+      if (!cv) return 0;
+      cv.homeHolding = loc.id; cv.target = loc.id;
+      S.credits = 0;
+      for (let d = 0; d < 40; d++) {
+        S.day++; cv.nextPayDay = 0;
+        State.tickCaravans(S, makeRng(6000 + d));
+      }
+      return S.credits / 40;
+    };
+    const hated = measure(-100);
+    const loved = measure(100);
+    return { alive, accountedFor, hostile, hated, loved };
+  });
+  // Either it is still out there or the log says where it went.
+  expect(r.accountedFor).toBe(true);
+  expect(r.hostile).toBe(false);
+  expect(r.loved).toBeGreaterThan(r.hated);
+});
+
+test('a raid escalates while you do it and ends where you came in', async ({ page }) => {
+  await boot(page);
+  await newCampaign(page);
+  await page.evaluate(async () => {
+    const { Mission } = await import('/src/mission.js');
+    const UI = await import('/src/ui.js');
+    const G = window.KR;
+    const S = G.campaign;
+    S.renown = 4000;
+    G.mission?.dispose();
+    G.world?.dispose(); G.world = null;
+    document.getElementById('viewport').innerHTML = '';
+    UI.show('hud');
+    G.mission = new Mission({
+      campaign: S,
+      spec: { type: 'raid', site: 'vetch', layout: 'settlement', siteName: 'Vetch',
+        enemyFaction: 'syndic' },
+      squad: S.roster.slice(0, 4),
+      container: document.getElementById('viewport'),
+      onHud: () => {}, onToast: () => {}, onIntro: () => {}, onWheel: () => {}, onEnd: () => {},
+    });
+    await G.mission.start();
+    const m = G.mission;
+    m.paused = false; m.hadLock = true;
+    if (m.intro) { m.intro.active = false; m.time = m.intro.graceUntil + 0.1; }
+  });
+  await page.waitForFunction(() => window.KR.mission?.player, null, { timeout: 40000 });
+
+  const r = await page.evaluate(() => {
+    const m = window.KR.mission;
+    const stores = m.interactables.filter((i) => i.kind === 'loot');
+    const counts = [];
+    for (const s of stores) {
+      const before = m.entities.filter((e) => e.side === 'enemy' && !e.dead).length;
+      m.completeInteraction(s);
+      counts.push({ before, after: m.entities.filter((e) => e.side === 'enemy' && !e.dead).length });
+    }
+    for (let i = 0; i < 60; i++) m.step(1 / 60);
+    return {
+      stores: stores.length,
+      counts,
+      hunting: m.entities.filter((e) => e.side === 'enemy' && !e.dead && e.state === 'hunt').length,
+      taken: m.raidTaken,
+      done: !!m.objective.done,
+      extract: !!m.extractArmed,
+      extractIsSpawn: Math.hypot(m.level.extraction.x - m.level.playerSpawn.x,
+        m.level.extraction.z - m.level.playerSpawn.z) < 3,
+    };
+  });
+  expect(r.stores).toBe(3);
+  // Every store you crack brings more of them into the street — the mission
+  // gets worse as you do it, which is the inverse of a recovery.
+  expect(r.counts.every((c) => c.after > c.before)).toBe(true);
+  expect(r.hunting).toBeGreaterThan(0);
+  expect(r.taken).toBe(3);
+  expect(r.done).toBe(true);
+  expect(r.extract).toBe(true);
+  // You leave the way you came in, carrying it.
+  expect(r.extractIsSpawn).toBe(true);
+});
+
+test('raiding pays in goods and costs you the place', async ({ page }) => {
+  await boot(page);
+  await newCampaign(page);
+  const r = await page.evaluate(() => {
+    const { State, DATA } = window.KR.dev;
+    const S = window.KR.campaign;
+    // Somewhere that flies a flag, so the faction penalty has something to hit.
+    const loc = DATA.LOCATIONS.find((l) => l.kind === 'settlement' && l.faction);
+    S.relations = {};
+    S.relations[loc.id] = 60;
+    S.spoils = { credits: 0, cargo: {}, armoury: {}, armourPool: {}, kitPool: {} };
+    const before = {
+      rel: State.relationOf(S, loc.id),
+      rep: S.rep[loc.faction],
+      morale: S.morale,
+      recruits: State.recruitPool(S, loc.id).length,
+    };
+    State.applyMissionResult(S, {
+      success: true, type: 'raid', site: loc.id, raidTaken: 3, kills: 5,
+      soldierResults: [], suppliesUsed: 2,
+    });
+    return {
+      before,
+      rel: State.relationOf(S, loc.id),
+      rep: S.rep[loc.faction],
+      morale: S.morale,
+      recruits: State.recruitPool(S, loc.id).length,
+      credits: S.spoils.credits,
+      goods: Object.keys(S.spoils.cargo || {}).length,
+    };
+  });
+  // It pays, in money and in goods you have to haul.
+  expect(r.credits).toBeGreaterThan(0);
+  expect(r.goods).toBeGreaterThan(0);
+  // And it costs the relationship, the faction, your soldiers' opinion of you,
+  // and the recruits that place would have offered.
+  expect(r.rel).toBeLessThan(r.before.rel - 30);
+  expect(r.rep).toBeLessThan(r.before.rep);
+  expect(r.morale).toBeLessThan(r.before.morale);
+  expect(r.recruits).toBeLessThan(r.before.recruits);
+});
+
+test('a hideout is a place that produces raiders, not a party that wanders', async ({ page }) => {
+  await boot(page);
+  await newCampaign(page);
+  const r = await page.evaluate(() => {
+    const { State, DATA } = window.KR.dev;
+    const S = window.KR.campaign;
+    let found = null;
+    for (let d = 0; d < 200 && !found; d++) {
+      State.advanceTime(S, 24);
+      found = S.parties.find((p) => p.kind === 'lair') || null;
+    }
+    if (!found) return null;
+    const start = { x: found.x, z: found.z };
+    let broods = 0;
+    for (let d = 0; d < 60; d++) {
+      const before = S.parties.filter((p) => p.fromLair === found.id).length;
+      State.advanceTime(S, 24);
+      broods += Math.max(0, S.parties.filter((p) => p.fromLair === found.id).length - before);
+    }
+    const perRegion = S.parties.filter((p) => p.kind === 'lair').reduce((a, p) => {
+      const reg = DATA.LOCATIONS.find((l) => l.id === p.home)?.region || '?';
+      a[reg] = (a[reg] || 0) + 1; return a;
+    }, {});
+    return {
+      moved: Math.hypot(found.x - start.x, found.z - start.z),
+      alive: S.parties.some((p) => p.id === found.id),
+      broods,
+      maxPerRegion: Math.max(...Object.values(perRegion)),
+    };
+  });
+  expect(r).not.toBeNull();
+  // A place does not wander, and the population housekeeping must not bin it.
+  expect(r.moved).toBeLessThan(1);
+  expect(r.alive).toBe(true);
+  // It is a source: it keeps putting parties on the road.
+  expect(r.broods).toBeGreaterThan(0);
+  // One per region, so the map never fills up with them.
+  expect(r.maxPerRegion).toBe(1);
+});
+
+test('clearing a hideout removes it and is felt by the places it preyed on', async ({ page }) => {
+  await boot(page);
+  await newCampaign(page);
+  const r = await page.evaluate(() => {
+    const { State, DATA } = window.KR.dev;
+    const S = window.KR.campaign;
+    let lair = null;
+    for (let d = 0; d < 200 && !lair; d++) {
+      State.advanceTime(S, 24);
+      lair = S.parties.find((p) => p.kind === 'lair') || null;
+    }
+    if (!lair) return null;
+    const near = DATA.LOCATIONS.filter((l) => l.kind !== 'open'
+      && Math.hypot(l.x - lair.x, l.z - lair.z) < 620);
+    const relBefore = near.map((l) => State.relationOf(S, l.id));
+    const renownBefore = S.renown || 0;
+    State.applyMissionResult(S, {
+      success: true, type: 'lair', site: 'roadside', partyId: lair.id,
+      kills: lair.strength, soldierResults: [], suppliesUsed: 3,
+    });
+    return {
+      gone: !S.parties.some((p) => p.id === lair.id),
+      nearby: near.length,
+      improved: near.every((l, i) => State.relationOf(S, l.id) > relBefore[i]),
+      renownUp: (S.renown || 0) > renownBefore,
+      counted: S.stats.lairsCleared || 0,
+    };
+  });
+  expect(r).not.toBeNull();
+  expect(r.gone).toBe(true);
+  expect(r.nearby).toBeGreaterThan(0);
+  // Making somebody else's road safer is the cheapest standing in the game.
+  expect(r.improved).toBe(true);
+  expect(r.renownUp).toBe(true);
+  expect(r.counted).toBeGreaterThan(0);
+});
+
+test('a hideout deployment is capped however big the company is', async ({ page }) => {
+  await boot(page);
+  await newCampaign(page);
+  const r = await page.evaluate(() => {
+    const { State, UI } = window.KR.dev;
+    const S = window.KR.campaign;
+    S.renown = 4000;                    // enough to field a great many normally
+    const normal = State.deployLimit(S);
+    UI.deployPanel(S, { type: 'lair', site: 'compound', squadCap: 4,
+      party: { strength: 18, quality: 0.8 } }, { onClose: () => {}, onDeploy: () => {} });
+    const text = document.querySelector('#modal')?.textContent || '';
+    const title = document.querySelector('#modal .section-title')?.textContent || '';
+    return { normal, capped: /OF 4/.test(title), warned: /Only 4/.test(text) };
+  });
+  // The cap is the whole reason a hideout stays dangerous after you have
+  // outgrown the parties it produces.
+  expect(r.normal).toBeGreaterThan(4);
+  expect(r.capped).toBe(true);
+  expect(r.warned).toBe(true);
+});
+
+test('the pit pays by the round whether you win or lose', async ({ page }) => {
+  await boot(page);
+  await newCampaign(page);
+  const r = await page.evaluate(() => {
+    const { State } = window.KR.dev;
+    const S = window.KR.campaign;
+    const purses = [];
+    for (const rounds of [0, 1, 3, 5, 8]) {
+      S.credits = 0;
+      S.relations = {};
+      State.applyMissionResult(S, {
+        // Deliberately NOT a success for anything short of the full card: the
+        // pit has to pay anyway, which is the whole reason it is usable when
+        // the company is broke.
+        success: rounds >= 8, type: 'pit', site: 'vetch', pitRounds: rounds,
+        kills: rounds, soldierResults: [], suppliesUsed: 1,
+      });
+      purses.push({ rounds, purse: S.credits, rel: State.relationOf(S, 'vetch') });
+    }
+    return purses;
+  });
+  // Nothing for being put down immediately, then a rising purse.
+  expect(r[0].purse).toBe(0);
+  for (let i = 2; i < r.length; i++) {
+    expect(r[i].purse).toBeGreaterThan(r[i - 1].purse);
+  }
+  // A losing run still pays — this failed before, because the payout was
+  // nested inside the success branch.
+  expect(r[1].purse).toBeGreaterThan(0);
+  expect(r[2].purse).toBeGreaterThan(0);
+  // Fighting in front of a town for a few rounds is worth something there.
+  expect(r[r.length - 1].rel).toBeGreaterThan(0);
+});
+
+test('nobody comes out of the pit maimed', async ({ page }) => {
+  await boot(page);
+  await newCampaign(page);
+  const r = await page.evaluate(() => {
+    const { State } = window.KR.dev;
+    const S = window.KR.campaign;
+    const cmd = State.commander(S);
+    cmd.status = 'healthy'; cmd.wound = null; cmd.hp = cmd.maxHp;
+    State.applyMissionResult(S, {
+      success: false, type: 'pit', site: 'vetch', pitRounds: 0,
+      kills: 0, suppliesUsed: 1,
+      // The mission layer hands back a mauled commander; the campaign must
+      // refuse to write it down. That promise is what the pit is for.
+      soldierResults: [{ id: cmd.id, kills: 0, status: 'wounded',
+        wound: { id: 'gut', name: 'Abdominal, serious' }, hp: 3 }],
+    });
+    return {
+      status: cmd.status,
+      wound: cmd.wound,
+      hp: cmd.hp,
+      fit: State.ready(S).some((s) => s.id === cmd.id),
+      alive: State.living(S).some((s) => s.id === cmd.id),
+    };
+  });
+  expect(r.status).toBe('healthy');
+  expect(r.wound).toBeNull();
+  expect(r.hp).toBeGreaterThan(0);
+  expect(r.fit).toBe(true);
+  expect(r.alive).toBe(true);
+});
+
+test('you go into the pit alone and it escalates', async ({ page }) => {
+  await boot(page);
+  await newCampaign(page);
+  await page.evaluate(async () => {
+    const { Mission } = await import('/src/mission.js');
+    const UI = await import('/src/ui.js');
+    const G = window.KR;
+    const S = G.campaign;
+    G.mission?.dispose();
+    G.world?.dispose(); G.world = null;
+    document.getElementById('viewport').innerHTML = '';
+    UI.show('hud');
+    G.mission = new Mission({
+      campaign: S,
+      spec: { type: 'pit', site: 'vetch', layout: 'settlement', siteName: 'Vetch',
+        enemyFaction: 'raider' },
+      squad: S.roster.slice(0, 4),
+      container: document.getElementById('viewport'),
+      onHud: () => {}, onToast: () => {}, onIntro: () => {}, onWheel: () => {}, onEnd: () => {},
+    });
+    await G.mission.start();
+    const m = G.mission;
+    m.paused = false; m.hadLock = true;
+    if (m.intro) { m.intro.active = false; m.time = m.intro.graceUntil + 0.1; }
+  });
+  await page.waitForFunction(() => window.KR.mission?.player, null, { timeout: 40000 });
+
+  const r = await page.evaluate(() => {
+    const m = window.KR.mission;
+    const alone = m.squad.length === 0;
+    const counts = [];
+    for (let round = 0; round < 8; round++) {
+      const foes = m.entities.filter((e) => e.side === 'enemy' && !e.dead);
+      counts.push(foes.length);
+      for (const e of foes) { e.hp = 0; e.dead = true; }
+      for (let i = 0; i < 400; i++) m.step(1 / 60);
+      if (m.objective.done) break;
+    }
+    return { alone, counts, done: !!m.objective.done, best: m.pitBest };
+  });
+  // Whoever came with you is in the crowd.
+  expect(r.alone).toBe(true);
+  // One at a time, then more.
+  expect(r.counts[0]).toBe(1);
+  expect(Math.max(...r.counts)).toBeGreaterThan(r.counts[0]);
+  expect(r.done).toBe(true);
+  expect(r.best).toBeGreaterThanOrEqual(8);
+});
+
+test('formations are genuinely different shapes', async ({ page }) => {
+  await boot(page);
+  await newCampaign(page);
+  await page.evaluate(async () => {
+    const { Mission } = await import('/src/mission.js');
+    const UI = await import('/src/ui.js');
+    const G = window.KR;
+    const S = G.campaign;
+    S.renown = 4000;
+    G.mission?.dispose();
+    G.world?.dispose(); G.world = null;
+    document.getElementById('viewport').innerHTML = '';
+    UI.show('hud');
+    G.mission = new Mission({
+      campaign: S,
+      spec: { type: 'skirmish', site: 'roadside', layout: 'roadside', siteName: 'F',
+        party: { id: 'f', kind: 'scrappers', name: 'F', strength: 2, tier: 2, quality: 0.5 } },
+      squad: S.roster.slice(0, 5),
+      container: document.getElementById('viewport'),
+      onHud: () => {}, onToast: () => {}, onIntro: () => {}, onWheel: () => {}, onEnd: () => {},
+    });
+    await G.mission.start();
+    const m = G.mission;
+    m.paused = false; m.hadLock = true;
+    if (m.intro) { m.intro.active = false; m.time = m.intro.graceUntil + 0.1; }
+  });
+  await page.waitForFunction(() => window.KR.mission?.player, null, { timeout: 40000 });
+
+  const r = await page.evaluate(() => {
+    const m = window.KR.mission;
+    const measure = (f) => {
+      m.setFormation(f);
+      // Push the hostiles away rather than killing them: clearing the field
+      // completes the objective, ends the mission, and step() then returns
+      // immediately — so nothing would ever move into position.
+      for (const e of m.entities) {
+        if (e.side === 'enemy') { e.x = 900; e.z = 900; e.target = null; e.state = 'guard'; }
+      }
+      for (let i = 0; i < 60 * 14; i++) m.step(1 / 60);
+      const p2 = m.player;
+      const c = Math.cos(-p2.yaw); const s = Math.sin(-p2.yaw);
+      const rel = m.squad.filter((x) => !x.dead).map((x) => {
+        const dx = x.x - p2.x; const dz = x.z - p2.z;
+        return { side: dx * c - dz * s, fwd: dx * s + dz * c };
+      });
+      let minPair = 99;
+      for (let i = 0; i < rel.length; i++) {
+        for (let j = i + 1; j < rel.length; j++) {
+          minPair = Math.min(minPair,
+            Math.hypot(rel[i].side - rel[j].side, rel[i].fwd - rel[j].fwd));
+        }
+      }
+      return {
+        frontage: Math.max(...rel.map((v) => Math.abs(v.side))) * 2,
+        minPair,
+        formation: m.formation,
+      };
+    };
+    return { wedge: measure('wedge'), line: measure('line'), spread: measure('spread') };
+  });
+
+  expect(r.wedge.formation).toBe('wedge');
+  // Line stands them abreast, so the frontage is wider than the wedge's.
+  expect(r.line.frontage).toBeGreaterThan(r.wedge.frontage);
+  // Spread is the widest of all, and — the point of it — puts real distance
+  // between neighbours so one burst cannot catch three people.
+  expect(r.spread.frontage).toBeGreaterThan(r.line.frontage);
+  expect(r.spread.minPair).toBeGreaterThan(r.wedge.minPair * 1.4);
+});
+
+test('calling a formation forms the squad up without changing their order', async ({ page }) => {
+  await boot(page);
+  await newCampaign(page);
+  await page.evaluate(async () => {
+    const { Mission } = await import('/src/mission.js');
+    const UI = await import('/src/ui.js');
+    const G = window.KR;
+    const S = G.campaign;
+    S.renown = 4000;
+    G.mission?.dispose();
+    G.world?.dispose(); G.world = null;
+    document.getElementById('viewport').innerHTML = '';
+    UI.show('hud');
+    G.mission = new Mission({
+      campaign: S,
+      spec: { type: 'skirmish', site: 'roadside', layout: 'roadside', siteName: 'F',
+        party: { id: 'f', kind: 'scrappers', name: 'F', strength: 6, tier: 2, quality: 0.6 } },
+      squad: S.roster.slice(0, 4),
+      container: document.getElementById('viewport'),
+      onHud: () => {}, onToast: () => {}, onIntro: () => {}, onWheel: () => {}, onEnd: () => {},
+    });
+    await G.mission.start();
+    const m = G.mission;
+    m.paused = false; m.hadLock = true;
+    if (m.intro) { m.intro.active = false; m.time = m.intro.graceUntil + 0.1; }
+  });
+  await page.waitForFunction(() => window.KR.mission?.player, null, { timeout: 40000 });
+
+  const r = await page.evaluate(() => {
+    const m = window.KR.mission;
+    m.setSquadOrder('hold');
+    const before = m.squad.map((s) => s.order);
+    // A formation is a shape, not an order: it forms them up on you.
+    m.issueOrder('spread');
+    return {
+      before,
+      after: m.squad.map((s) => s.order),
+      formation: m.formation,
+      hud: m.buildHud().formation,
+    };
+  });
+  expect(r.before.every((o) => o === 'hold')).toBe(true);
+  expect(r.after.every((o) => o === 'follow')).toBe(true);
+  expect(r.formation).toBe('spread');
+  // And it is a standing state the player can see without opening the wheel.
+  expect(r.hud).toBe('SPREAD');
+});
+
+test('a siege wall genuinely stops you until the gate goes', async ({ page }) => {
+  await boot(page);
+  await newCampaign(page);
+  await page.evaluate(async () => {
+    const { Mission } = await import('/src/mission.js');
+    const UI = await import('/src/ui.js');
+    const G = window.KR;
+    const S = G.campaign;
+    S.renown = 4000;
+    S.seed = 12345;
+    S.stats.missions = 0;
+    G.mission?.dispose();
+    G.world?.dispose(); G.world = null;
+    document.getElementById('viewport').innerHTML = '';
+    UI.show('hud');
+    G.mission = new Mission({
+      campaign: S,
+      spec: { type: 'siege', site: 'fort', layout: 'fort', siteName: 'Gate',
+        enemyFaction: 'trust' },
+      squad: S.roster.slice(0, 4),
+      container: document.getElementById('viewport'),
+      onHud: () => {}, onToast: () => {}, onIntro: () => {}, onWheel: () => {}, onEnd: () => {},
+    });
+    await G.mission.start();
+    const m = G.mission;
+    m.paused = false; m.hadLock = true;
+    if (m.intro) { m.intro.active = false; m.time = m.intro.graceUntil + 0.1; }
+  });
+  await page.waitForFunction(() => window.KR.mission?.player, null, { timeout: 40000 });
+
+  const r = await page.evaluate(async () => {
+    const Level = await import('/src/level.js');
+    const m = window.KR.mission;
+    const spawn = m.level.playerSpawn;
+    const inside = m.level.objectivePoint;
+
+    const blockedAcross = () => {
+      let n = 0;
+      for (let x = -40; x <= 40; x += 2) {
+        if (!Level.hasLOS(m.level.obstacles, x, 4, x, -30, 1.5)) n++;
+      }
+      return n;
+    };
+
+    const before = {
+      blocked: blockedAcross(),
+      seesObjective: Level.hasLOS(m.level.obstacles, spawn.x, spawn.z, inside.x, inside.z, 1.5),
+      breached: !!m.breached,
+      charge: m.interactables.filter((i) => i.kind === 'breach').length,
+    };
+
+    m.completeInteraction(m.interactables.find((i) => i.kind === 'breach'));
+    for (let i = 0; i < 60; i++) m.step(1 / 60);
+
+    const path = m.nav.findPath(spawn.x, spawn.z, inside.x, inside.z);
+    return {
+      before,
+      blocked: blockedAcross(),
+      breached: !!m.breached,
+      seesThroughGate: Level.hasLOS(m.level.obstacles, 0, 10, 0, -30, 1.5),
+      // The route must run through the gateway, which only works if the nav
+      // grid was rebuilt — it has no rebuild() method, so blowing the gate
+      // reconstructs it outright.
+      throughGate: !!path && path.some((pt) => Math.abs(pt.x) < 9 && Math.abs(pt.z + 14) < 10),
+      hunting: m.entities.filter((e) => e.side === 'enemy' && !e.dead && e.state === 'hunt').length,
+    };
+  });
+
+  // The wall has to be a wall: no sight of what you came for, and the line
+  // across the compound almost entirely blocked.
+  expect(r.before.charge).toBe(1);
+  expect(r.before.breached).toBe(false);
+  expect(r.before.seesObjective).toBe(false);
+  expect(r.before.blocked).toBeGreaterThan(25);
+  // And blowing the gate has to actually open the ground, not just the view.
+  expect(r.breached).toBe(true);
+  expect(r.blocked).toBeLessThan(r.before.blocked);
+  expect(r.seesThroughGate).toBe(true);
+  // Everyone inside now knows exactly where you are coming from.
+  expect(r.hunting).toBeGreaterThan(0);
+});
+
+test('squad orders reach the squad', async ({ page }) => {
+  test.setTimeout(180000);
+  await boot(page);
+  await newCampaign(page);
+  await takeContractAt(page, 'grellan', 'recovery');
+  await enterLocation(page, '#modal [data-p]');
+  await selectWholeCompany(page);
+  await page.click('#modal [data-x="go"]');
+  await page.waitForFunction(() => window.KR.mission?.squad?.length > 0, null, { timeout: 30000 });
+  await waitForControl(page);
+
+  await page.keyboard.press('h');
+  await page.waitForTimeout(300);
+  expect(await page.evaluate(() => window.KR.mission.squad.every((s) => s.order === 'hold')))
+    .toBe(true);
+
+  await page.keyboard.press('f');
+  await page.waitForTimeout(300);
+  expect(await page.evaluate(() => window.KR.mission.squad.every((s) => s.order === 'follow')))
+    .toBe(true);
+});
+
+test('a settlement is a place you are in, not a panel you dismissed', async ({ page }) => {
+  test.setTimeout(120000);
+  await boot(page);
+  await newCampaign(page);
+
+  // Stand the company on a town that offers everything, so every verb the menu
+  // can put up is actually put up.
+  await page.evaluate(async () => {
+    const DATA = await import('/src/data.js');
+    const S = window.KR.campaign;
+    const loc = DATA.LOCATIONS.find((l) => ['market', 'recruit', 'medical', 'contracts']
+      .every((s) => l.services?.includes(s)));
+    S.credits = 20000;
+    S.pos.x = loc.x; S.pos.z = loc.z;
+    window.KR.dev.enterLocation();
+  });
+  await page.waitForSelector('#modal .sm-verbs', { timeout: 15000 });
+
+  // Each service opens its own screen and comes back here. A menu you fall out
+  // of every time you look at something is worse than one big panel.
+  for (const verb of ['market', 'board', 'recruit', 'medical']) {
+    await page.click(`#modal [data-verb="${verb}"]`);
+    await page.waitForTimeout(350);
+    expect(await page.evaluate(() => window.KR.dev.UI.modalOpen())).toBe(true);
+    await page.click('#modal [data-x="close"]');
+    await page.waitForTimeout(350);
+    expect(await page.evaluate(() => !!document.querySelector('#modal .sm-verbs'))).toBe(true);
+  }
+
+  // Standing down spends a day and leaves you standing where you were.
+  const before = await page.evaluate(() => window.KR.campaign.day);
+  await page.click('#modal [data-verb="rest"]');
+  await page.waitForTimeout(350);
+  expect(await page.evaluate(() => window.KR.campaign.day)).toBeGreaterThan(before);
+  expect(await page.evaluate(() => !!document.querySelector('#modal .sm-verbs'))).toBe(true);
+
+  // And leaving puts the map back in motion.
+  await page.click('#modal [data-x="close"]');
+  await page.waitForTimeout(400);
+  expect(await page.evaluate(() => window.KR.dev.UI.modalOpen())).toBe(false);
+  expect(await page.evaluate(() => window.KR.world.paused)).toBe(false);
+});
+
+test('the map clock halts, runs and fast-forwards', async ({ page }) => {
+  test.setTimeout(120000);
+  await boot(page);
+  await newCampaign(page);
+
+  const sample = async (speed, ms) => page.evaluate(async ([s, wait]) => {
+    const S = window.KR.campaign;
+    window.KR.world.setSpeed(s);
+    const a = S.day * 24 + S.hour;
+    await new Promise((r) => setTimeout(r, wait));
+    return (S.day * 24 + S.hour) - a;
+  }, [speed, ms]);
+
+  // Halted means stopped, not merely slow — a creeping halt quietly eats
+  // contract deadlines while the player reads a panel.
+  expect(await sample(0, 1200)).toBe(0);
+  const normal = await sample(1, 1500);
+  const fast = await sample(4, 1500);
+  expect(normal).toBeGreaterThan(0);
+  expect(fast).toBeGreaterThan(normal * 2);
+
+  // Fast-forward is a viewing speed, not free travel: the same road has to cost
+  // the same hours whichever setting you watched it go by at.
+  //
+  // Measured up the empty western edge rather than across the middle of the
+  // map. Driving through populated country meant the company kept arriving
+  // somewhere or running into somebody, which opens a panel and pauses the
+  // world — and a paused world covers no distance in no hours, so the rate came
+  // out 0/0 and the test failed as NaN roughly one run in three.
+  const rate = async (s) => page.evaluate(async (sp) => {
+    const S = window.KR.campaign;
+    const W = window.KR.world;
+    W.setSpeed(0);
+    document.getElementById('overlay').classList.add('hidden');
+    W.setPaused(false);
+    S.pos.x = -2950; S.pos.z = -2000;
+    W.setDestination(-2950, 2400);
+    const t0 = S.day * 24 + S.hour;
+    const from = { x: S.pos.x, z: S.pos.z };
+    W.setSpeed(sp);
+    await new Promise((r) => setTimeout(r, 1800));
+    const hours = (S.day * 24 + S.hour) - t0;
+    const dist = Math.hypot(S.pos.x - from.x, S.pos.z - from.z);
+    W.setSpeed(0);
+    return { hours, dist, rate: hours > 0 ? dist / hours : null, paused: W.paused };
+  }, s);
+  const r1 = await rate(1);
+  const r4 = await rate(4);
+  // Say which thing went wrong rather than reporting NaN.
+  expect(r1.rate, `no time passed at 1x (paused ${r1.paused})`).not.toBeNull();
+  expect(r4.rate, `no time passed at 4x (paused ${r4.paused})`).not.toBeNull();
+  expect(r1.dist, 'the company did not move at 1x').toBeGreaterThan(0);
+  expect(Math.abs(r4.rate - r1.rate) / r1.rate).toBeLessThan(0.1);
+
+  // An open panel reads as halted, because to the player it is.
+  await page.evaluate(() => { window.KR.world.setSpeed(1); window.KR.world.setPaused(true); });
+  await page.waitForTimeout(200);
+  expect(await page.evaluate(() => document.querySelector('#wh-spd .on')?.dataset.spd)).toBe('0');
+});
+
+test('the company screens are one window with tabs, not seven panels', async ({ page }) => {
+  test.setTimeout(120000);
+  await boot(page);
+  await newCampaign(page);
+  await page.evaluate(() => { window.KR.campaign.renown = 800; });
+
+  const TABS = await page.evaluate(() => window.KR.dev.UI.COMPANY_TABS);
+  await page.keyboard.press('c');
+  await page.waitForSelector('#modal .mtabs', { timeout: 15000 });
+
+  // The strip has to be on every one of them. The one that lacks it is a dead
+  // end you have to escape out to the map from.
+  for (const t of TABS) {
+    await page.click(`#modal [data-tab="${t.id}"]`);
+    await page.waitForTimeout(300);
+    expect(await page.evaluate(() => document.querySelectorAll('#modal .mtab').length))
+      .toBe(TABS.length);
+    expect(await page.evaluate(() => document.querySelector('#modal .mtab.on')?.dataset.tab))
+      .toBe(t.id);
+    // Switching must never go via the map.
+    expect(await page.evaluate(() => window.KR.world.paused)).toBe(true);
+  }
+
+  // The keys that open these screens move between them once you are inside.
+  for (const t of TABS) {
+    await page.keyboard.press(t.key.toLowerCase());
+    await page.waitForTimeout(280);
+    expect(await page.evaluate(() => document.querySelector('#modal .mtab.on')?.dataset.tab))
+      .toBe(t.id);
+  }
+
+  // And the world starts again exactly once, when you finally leave.
+  await page.keyboard.press('Escape');
+  await page.waitForTimeout(400);
+  expect(await page.evaluate(() => window.KR.dev.UI.modalOpen())).toBe(false);
+  expect(await page.evaluate(() => window.KR.world.paused)).toBe(false);
+});
+
+test('the company has opinions, and they do not all agree', async ({ page }) => {
+  test.setTimeout(120000);
+  await boot(page);
+  await newCampaign(page);
+
+  // The point of creeds is disagreement. If everybody moves the same way on the
+  // same decision, this is morale wearing a costume.
+  const table = await page.evaluate(async () => {
+    const State = await import('/src/state.js');
+    const DATA = await import('/src/data.js');
+    const out = {};
+    for (const ev of ['raid', 'press', 'release']) {
+      out[ev] = DATA.CREED_LIST.map((creed) => {
+        const S = State.newCampaign(99);
+        S.roster = S.roster.slice(0, 1).map((s) => ({ ...s, isCommander: false, creed, regard: 0 }));
+        State.companyReacts(S, ev);
+        return S.roster[0].regard;
+      });
+    }
+    return out;
+  });
+  for (const ev of ['raid', 'press', 'release']) {
+    expect(Math.max(...table[ev]), `${ev} pleases nobody`).toBeGreaterThan(0);
+    expect(Math.min(...table[ev]), `${ev} costs nobody`).toBeLessThan(0);
+  }
+
+  // Somebody who has had enough warns you before they walk. A soldier who
+  // vanishes because a number crossed a line reads as a bug.
+  const r = await page.evaluate(async () => {
+    const State = await import('/src/state.js');
+    const { rng } = await import('/src/util.js');
+    const S = State.newCampaign(7);
+    S.roster = S.roster.slice(0, 2).map((s, i) => ({
+      ...s, isCommander: i === 0, creed: 'straight', regard: 0,
+    }));
+    const who = S.roster[1].id;
+    const gen = rng(11);
+    let warnedOn = null, goneOn = null;
+    for (let day = 1; day <= 60 && !goneOn; day++) {
+      if (day % 2 === 0) State.companyReacts(S, 'raid');
+      State.tickResentment(S, gen);
+      const s = S.roster.find((x) => x.id === who);
+      if (!s) { goneOn = day; break; }
+      if (s.quitWarned && warnedOn === null) warnedOn = day;
+    }
+    return { warnedOn, goneOn };
+  });
+  expect(r.warnedOn).not.toBeNull();
+  expect(r.goneOn).not.toBeNull();
+  expect(r.warnedOn).toBeLessThan(r.goneOn);
+
+  // Assigning a creed must not take a number off the seeded generator — doing
+  // so would shift every roll after it and change every seeded campaign.
+  const stable = await page.evaluate(async () => {
+    const Roster = await import('/src/roster.js');
+    const { rng } = await import('/src/util.js');
+    const run = () => {
+      const gen = rng(31337);
+      return Array.from({ length: 6 }, () => Roster.makeSoldier(gen, {}))
+        .map((s) => `${s.name}|${s.role}|${s.creed}|${s.portraitSeed}`);
+    };
+    return { a: run(), b: run() };
+  });
+  expect(stable.a).toEqual(stable.b);
+
+  // And the roster shows what they believe.
+  await page.keyboard.press('c');
+  await page.waitForTimeout(500);
+  expect(await page.evaluate(() => !!document.querySelector('#modal .sol-creed'))).toBe(true);
+});
+
+test('notables ask for favours by name, and remember the answer', async ({ page }) => {
+  test.setTimeout(120000);
+  await boot(page);
+  await newCampaign(page);
+
+  // A favour resolves against machinery that already exists — goods in the
+  // truck — so it never needs a mission type of its own.
+  const run = await page.evaluate(async () => {
+    const State = await import('/src/state.js');
+    const DATA = await import('/src/data.js');
+    const { rng } = await import('/src/util.js');
+    const loc = DATA.LOCATIONS.find((l) => l.services?.length && l.contacts?.length);
+    let S = null, f = null;
+    for (let i = 0; i < 40 && !f; i++) {
+      const cand = State.newCampaign(77);
+      const got = State.offerFavour(cand, loc.id, rng(i));
+      if (got?.kind === 'goods') { S = cand; f = got; }
+    }
+    if (!f) return null;
+    const relBefore = State.relationOf(S, loc.id);
+    State.acceptFavour(S, loc.id);
+    const empty = State.favourProgress(S, f).ready;
+    S.cargo[f.good] = f.qty;
+    const loaded = State.favourProgress(S, f).ready;
+    const credits = S.credits;
+    State.completeFavour(S, loc.id);
+    return {
+      empty, loaded, paid: S.credits - credits, left: S.cargo[f.good],
+      relBefore, relAfter: State.relationOf(S, loc.id), open: !!State.favourAt(S, loc.id),
+    };
+  });
+  expect(run).not.toBeNull();
+  expect(run.empty, 'handed in with an empty truck').toBe(false);
+  expect(run.loaded).toBe(true);
+  expect(run.paid).toBeGreaterThan(0);
+  expect(run.left, 'the goods were not actually delivered').toBe(0);
+  expect(run.relAfter).toBeGreaterThan(run.relBefore);
+  expect(run.open, 'still open after being paid').toBe(false);
+
+  // The asymmetry is the mechanic: saying no is free, not turning up is not.
+  const cost = await page.evaluate(async () => {
+    const State = await import('/src/state.js');
+    const DATA = await import('/src/data.js');
+    const { rng } = await import('/src/util.js');
+    const loc = DATA.LOCATIONS.find((l) => l.services?.length && l.contacts?.length);
+    const mk = () => {
+      const S = State.newCampaign(88);
+      State.offerFavour(S, loc.id, rng(3));
+      return S;
+    };
+    const a = mk();
+    const a0 = State.relationOf(a, loc.id);
+    State.declineFavour(a, loc.id);
+    const b = mk();
+    const b0 = State.relationOf(b, loc.id);
+    State.acceptFavour(b, loc.id);
+    b.day = State.favourAt(b, loc.id).expiresDay + 1;
+    State.tickFavours(b, rng(5));
+    return {
+      declined: State.relationOf(a, loc.id) - a0,
+      dropped: State.relationOf(b, loc.id) - b0,
+      expired: !State.favourAt(b, loc.id),
+    };
+  });
+  expect(cost.declined, 'turning them down cost something').toBe(0);
+  expect(cost.dropped, 'letting them down cost nothing').toBeLessThan(0);
+  expect(cost.expired).toBe(true);
+
+  // Two towns must not ask for byte-identical things on the same day. They did:
+  // the stream was seeded off the LENGTH of the location id.
+  const varied = await page.evaluate(async () => {
+    const State = await import('/src/state.js');
+    const DATA = await import('/src/data.js');
+    const { rng } = await import('/src/util.js');
+    const towns = DATA.LOCATIONS.filter((l) => l.services?.length && l.contacts?.length);
+    const hashed = (loc) => {
+      let h = 0;
+      for (let i = 0; i < loc.id.length; i++) h = (h * 31 + loc.id.charCodeAt(i)) | 0;
+      return Math.abs(h);
+    };
+    let distinct = 0;
+    for (let day = 1; day <= 20; day++) {
+      const S = State.newCampaign(1234);
+      S.day = day;
+      const keys = new Set();
+      for (const loc of towns) {
+        const f = State.offerFavour(S, loc.id, rng(S.seed + day * 977 + hashed(loc)));
+        if (f) keys.add(`${f.tplId}|${f.good || ''}|${f.qty || ''}|${f.pay}`);
+      }
+      distinct += keys.size;
+    }
+    return { perDay: distinct / 20, towns: towns.length };
+  });
+  // Seeded off id length this was exactly half the towns.
+  expect(varied.perDay).toBeGreaterThan(varied.towns * 0.8);
+});
+
+test('a prisoner is worth different amounts in different places', async ({ page }) => {
+  test.setTimeout(120000);
+  await boot(page);
+  await newCampaign(page);
+
+  const market = await page.evaluate(async () => {
+    const State = await import('/src/state.js');
+    const DATA = await import('/src/data.js');
+    const S = State.newCampaign(4242);
+    const towns = DATA.LOCATIONS.filter((l) => State.hasBroker(l.id));
+    S.day = 12;
+    const across = towns.map((l) => State.brokerRate(S, l.id));
+    const over = [];
+    for (let d = 1; d <= 30; d++) { S.day = d; over.push(State.brokerRate(S, towns[0].id)); }
+    return { across, over };
+  });
+
+  // A market that pays the same everywhere is a fixed price wearing a hat.
+  const mean = market.across.reduce((a, b) => a + b, 0) / market.across.length;
+  const sd = Math.sqrt(market.across.reduce((a, b) => a + (b - mean) ** 2, 0) / market.across.length);
+  expect(sd, 'towns barely differ').toBeGreaterThan(0.15);
+
+  // And a price that only ever walks one way is a ramp, not a market. The first
+  // hash here did exactly that — 1.51, 1.68, 1.85, 2.01 — because `h * 31 + c`
+  // does not avalanche when one digit of the key is the day. Summary statistics
+  // hid it completely, so the direction of every step is what gets checked.
+  const steps = [];
+  for (let i = 1; i < market.over.length; i++) {
+    const d = market.over[i] - market.over[i - 1];
+    if (Math.abs(d) > 0.001) steps.push(Math.sign(d));
+  }
+  expect(steps.length, 'the rate hardly ever moves').toBeGreaterThan(4);
+  const ups = steps.filter((s) => s > 0).length;
+  expect(Math.max(ups, steps.length - ups) / steps.length,
+    'the price walks one way — that is a ramp').toBeLessThan(0.85);
+
+  // Selling pays better, costs more standing, and splits the company. All three
+  // together, or it is a strictly-better button rather than a trade.
+  const both = await page.evaluate(async () => {
+    const State = await import('/src/state.js');
+    const DATA = await import('/src/data.js');
+    const Roster = await import('/src/roster.js');
+    const { rng } = await import('/src/util.js');
+    const town = DATA.LOCATIONS.find((l) => State.hasBroker(l.id));
+    const mk = () => {
+      const S = State.newCampaign(31);
+      S.day = 12;
+      const r = rng(9);
+      const p = Roster.makeSoldier(r, { rank: 2 });
+      p.captiveFaction = 'trust';
+      S.prisoners = [p];
+      S.roster = [
+        { ...S.roster[0], isCommander: true },
+        ...['straight', 'hard', 'loyal', 'paid'].map((creed) => ({
+          ...Roster.makeSoldier(r, {}), isCommander: false, creed, regard: 0,
+        })),
+      ];
+      return { S, id: p.id };
+    };
+    const reg = (S, creed) => S.roster.find((s) => s.creed === creed && !s.isCommander).regard;
+    const a = mk(); const aC = a.S.credits, aR = a.S.rep.trust;
+    State.ransomPrisoner(a.S, a.id);
+    const b = mk(); const bC = b.S.credits, bR = b.S.rep.trust;
+    State.sellPrisoner(b.S, town.id, b.id);
+    return {
+      ransomPaid: a.S.credits - aC, ransomRep: a.S.rep.trust - aR,
+      sellPaid: b.S.credits - bC, sellRep: b.S.rep.trust - bR,
+      straight: reg(b.S, 'straight'), paid: reg(b.S, 'paid'),
+      left: b.S.prisoners.length,
+    };
+  });
+  expect(both.sellPaid).toBeGreaterThan(both.ransomPaid);
+  expect(both.sellRep).toBeLessThan(both.ransomRep);
+  expect(both.straight, 'the straight ones do not mind').toBeLessThan(0);
+  expect(both.paid, 'the professionals do not approve').toBeGreaterThan(0);
+  expect(both.left).toBe(0);
+});
+
+test('losing the company costs everything except the company', async ({ page }) => {
+  test.setTimeout(120000);
+  await boot(page);
+  await newCampaign(page);
+
+  const r = await page.evaluate(async () => {
+    const State = await import('/src/state.js');
+    const Roster = await import('/src/roster.js');
+    const { rng } = await import('/src/util.js');
+    const snap = (S) => ({
+      day: S.day, credits: S.credits, renown: S.renown,
+      cargo: Object.values(S.cargo).reduce((a, b) => a + b, 0),
+      arms: Object.values(S.armoury).reduce((a, b) => a + b, 0),
+      roster: S.roster.length, alive: State.living(S).length,
+      names: S.roster.map((s) => s.name).join('|'),
+      prisoners: S.prisoners.length,
+      wounded: State.living(S).filter((s) => s.wound).length,
+      pos: { x: S.pos.x, z: S.pos.z },
+    });
+    const lose = (reason, type) => {
+      const S = State.newCampaign(1717);
+      S.credits = 9000;
+      S.cargo = { water: 10, fuel_cells: 6, optics: 3 };
+      S.armoury = { rifle: 2, smg: 1, shotgun: 1 };
+      S.renown = 400;
+      S.prisoners = [Roster.makeSoldier(rng(2), { rank: 1 })];
+      const hurt = S.roster[1];
+      hurt.status = Roster.STATUS.WOUNDED;
+      hurt.wound = { id: 'leg', name: 'Shattered shin', days: 6 };
+      const before = snap(S);
+      State.applyMissionResult(S, {
+        success: false, reason, type, site: type === 'pit' ? 'vetch' : null,
+        enemyFaction: 'trust', kills: 3, soldierResults: [], recruits: [],
+        loot: { credits: 0, weapons: [] }, stats: { shotsFired: 40, medkitsUsed: 0 },
+        levelName: 'The Scour', partyId: null, suppliesUsed: 2, medicalUsed: 0, pitRounds: 4,
+      });
+      return { before, after: snap(S) };
+    };
+    return { taken: lose('wiped', 'skirmish'), pulled: lose('withdrew', 'skirmish'), pit: lose('pit', 'pit') };
+  });
+
+  const { before: b, after: a } = r.taken;
+  // Everything portable is gone...
+  expect(a.day).toBeGreaterThan(b.day);
+  expect(a.credits).toBeLessThan(b.credits);
+  expect(a.cargo).toBeLessThan(b.cargo);
+  expect(a.arms).toBeLessThan(b.arms);
+  expect(a.renown).toBeLessThan(b.renown);
+  expect(a.prisoners).toBe(0);
+  expect(Math.hypot(a.pos.x - b.pos.x, a.pos.z - b.pos.z)).toBeGreaterThan(50);
+  // ...and the time inside is the mercy as well as the cost.
+  expect(a.wounded).toBeLessThan(b.wounded);
+  // ...but nobody dies. Kill people on a loss and the player reloads anyway,
+  // which is the exact behaviour this whole mechanic exists to prevent.
+  expect(a.roster).toBe(b.roster);
+  expect(a.alive).toBe(b.alive);
+  expect(a.names).toBe(b.names);
+
+  // Pulling out in good order is not being carried off the field.
+  expect(r.pulled.after.day).toBe(r.pulled.before.day);
+  expect(r.pulled.after.credits).toBe(r.pulled.before.credits);
+  // Nor is a bad night in the pit — nobody is taken prisoner at a prizefight.
+  expect(r.pit.after.day).toBe(r.pit.before.day);
+
+  // And the screen must not call it a withdrawal.
+  const panel = await page.evaluate(async () => {
+    const State = await import('/src/state.js');
+    const S = window.KR.campaign;
+    S.credits = 9000;
+    const res = {
+      success: false, reason: 'wiped', type: 'skirmish', site: null,
+      enemyFaction: 'trust', kills: 3, soldierResults: [], recruits: [],
+      loot: { credits: 0, weapons: [] }, stats: { shotsFired: 40, medkitsUsed: 0 },
+      levelName: 'The Scour', partyId: null, suppliesUsed: 2, medicalUsed: 0,
+    };
+    const notes = State.applyMissionResult(S, res);
+    window.KR.dev.UI.afterAction(S, res, notes, { onClose: () => {} });
+    return {
+      verdict: document.querySelector('#modal .aar-verdict')?.textContent.trim(),
+      told: document.querySelector('#modal .taken .prose')?.textContent || '',
+    };
+  });
+  expect(panel.verdict).not.toBe('WITHDRAWN');
+  // The player has to be told the roster survived, in the same breath as the
+  // losses, or they reload before reading the numbers.
+  expect(panel.told).toMatch(/buried|nobody/i);
+});
+
+test('whoever took the company keeps your things until you take them back', async ({ page }) => {
+  test.setTimeout(120000);
+  await boot(page);
+  await newCampaign(page);
+
+  const lose = `
+    const S = State.newCampaign(2024);
+    S.credits = 9000;
+    S.cargo = { water: 10, fuel_cells: 6, optics: 3 };
+    S.armoury = { rifle: 2, smg: 1, shotgun: 1 };
+    S.renown = 500;
+    State.applyMissionResult(S, {
+      success: false, reason: 'wiped', type: 'skirmish', site: null,
+      enemyFaction: 'trust', kills: 2, soldierResults: [], recruits: [],
+      loot: { credits: 0, weapons: [] }, stats: { shotsFired: 30, medkitsUsed: 0 },
+      levelName: 'The Scour', partyId: null, suppliesUsed: 2, medicalUsed: 0,
+    });`;
+
+  const r = await page.evaluate(async (src) => {
+    const State = await import('/src/state.js');
+    // eslint-disable-next-line no-new-func
+    return new Function('State', `${src}
+      const g = { ...S.grudge, cargo: { ...S.grudge.cargo }, arms: [...S.grudge.arms] };
+      const p = S.parties.find((x) => x.id === g.partyId);
+      const taken = { named: !!g.who && /'s command$/.test(p.name), hostile: p.hostileToPlayer,
+        marked: !!p.grudge, holds: p.holds.credits === g.credits };
+
+      // Beating somebody else must not settle it.
+      const elsewhere = S.parties.find((x) => x.id !== g.partyId);
+      State.applyMissionResult(S, {
+        success: true, reason: 'cleared', type: 'skirmish', site: null,
+        enemyFaction: 'raider', kills: 4, soldierResults: [], recruits: [],
+        loot: { credits: 0, weapons: [] }, stats: { shotsFired: 40, medkitsUsed: 0 },
+        levelName: 'The Scour', partyId: elsewhere.id, suppliesUsed: 1, medicalUsed: 0,
+      });
+      const stillOwed = !!S.grudge;
+
+      // What comes back is checked against settleGrudge directly rather than
+      // against the credit balance after a deployment: applyMissionResult
+      // advances the clock, and a day tick pays wages, so a net-credits reading
+      // is short by a day's payroll whenever the fight happens to cross
+      // midnight. That is real behaviour, and it makes the balance the wrong
+      // instrument for an exactness claim.
+      const before = { credits: S.credits, cargo: { ...S.cargo }, armoury: { ...S.armoury } };
+      State.settleGrudge(S, g.partyId);
+      const exact = {
+        creditsBack: S.credits - before.credits,
+        cargoBack: Object.keys(g.cargo).map((k) => (S.cargo[k] || 0) - (before.cargo[k] || 0)),
+        armsBack: g.arms.map((id) => (S.armoury[id] || 0) - (before.armoury[id] || 0)),
+        closed: !S.grudge,
+      };
+
+      // And separately: winning the fight for real closes it and leaves the
+      // company better off, payroll and all.
+      const S2 = State.newCampaign(2024);
+      S2.credits = 9000;
+      S2.cargo = { water: 10 };
+      S2.armoury = { rifle: 2 };
+      State.applyMissionResult(S2, {
+        success: false, reason: 'wiped', type: 'skirmish', site: null,
+        enemyFaction: 'trust', kills: 2, soldierResults: [], recruits: [],
+        loot: { credits: 0, weapons: [] }, stats: { shotsFired: 30, medkitsUsed: 0 },
+        levelName: 'The Scour', partyId: null, suppliesUsed: 2, medicalUsed: 0,
+      });
+      const owed = S2.grudge.credits;
+      const cash = S2.credits;
+      State.applyMissionResult(S2, {
+        success: true, reason: 'cleared', type: 'skirmish', site: null,
+        enemyFaction: 'trust', kills: 9, soldierResults: [], recruits: [],
+        loot: { credits: 0, weapons: [] }, stats: { shotsFired: 90, medkitsUsed: 1 },
+        levelName: 'The Scour', partyId: S2.grudge.partyId, suppliesUsed: 2, medicalUsed: 1,
+      });
+      return {
+        taken, stillOwed, ...exact, owedCredits: g.credits, owedCargo: Object.values(g.cargo),
+        played: { closed: !S2.grudge, gained: S2.credits - cash, owed },
+      };`)(State);
+  }, lose);
+
+  expect(r.taken.named, 'the captor has no name').toBe(true);
+  expect(r.taken.hostile).toBe(true);
+  expect(r.taken.marked).toBe(true);
+  expect(r.taken.holds, 'they are not carrying what they took').toBe(true);
+  expect(r.stillOwed, 'beating an unrelated band closed the grudge').toBe(true);
+  expect(r.creditsBack).toBe(r.owedCredits);
+  expect(r.cargoBack).toEqual(r.owedCargo);
+  expect(r.armsBack.every((n) => n === 1), 'the weapons did not come back').toBe(true);
+  expect(r.closed).toBe(true);
+  // Played through rather than called directly: the grudge closes, and the
+  // company ends up better off by roughly what was owed — "roughly" because a
+  // day's wages leave in the same tick, which is correct.
+  expect(r.played.closed, 'winning the fight did not settle it').toBe(true);
+  expect(r.played.gained).toBeGreaterThan(r.played.owed * 0.9);
+
+  // They do not carry it forever — the deadline is what makes it a hunt rather
+  // than an errand sitting permanently on a list.
+  const cold = await page.evaluate(async () => {
+    const State = await import('/src/state.js');
+    const mk = (daysOn) => {
+      const S = State.newCampaign(2024);
+      S.grudge = { partyId: 'pty_x', who: 'Someone', captor: 'trust', since: 1,
+        credits: 100, cargo: {}, arms: [] };
+      S.parties = [{ id: 'pty_x', name: "Someone's command", grudge: true, holds: {} }];
+      S.day = 1 + daysOn;
+      State.tickGrudge(S);
+      return !!S.grudge;
+    };
+    return { early: mk(10), late: mk(State.GRUDGE_DAYS + 1) };
+  });
+  expect(cold.early).toBe(true);
+  expect(cold.late, 'the trail never goes cold').toBe(false);
+});
+
+test('collision matches what you can see', async ({ page }) => {
+  test.setTimeout(120000);
+  await boot(page);
+  // Models must be in the cache before anything can be measured against them.
+  await page.click('button[data-act="new"]');
+  await page.waitForSelector('#modal .modal-title', { timeout: 60000 });
+  await page.click('#modal [data-x="close"]');
+  await page.waitForTimeout(300);
+
+  const worst = await page.evaluate(async () => {
+    const THREE = await import('/vendor/three/three.module.min.js');
+    const Models = await import('/src/models.js');
+    const Level = await import('/src/level.js');
+    const mesh = (name) => {
+      const b = new THREE.Box3().setFromObject(Models.get(name));
+      if (b.isEmpty() || !isFinite(b.min.x)) return null;
+      return { hw: (b.max.x - b.min.x) / 2, hd: (b.max.z - b.min.z) / 2 };
+    };
+    const out = [];
+    for (const id of ['grellan', 'rampart', 'perran', 'settlement', 'works', 'fort', 'reclaimer']) {
+      let lvl = null;
+      try { lvl = Level.build(id, 7); } catch { continue; }
+      for (const o of lvl.obstacles) {
+        const p = lvl.props.find((q) => Math.abs(q.x - o.x) < 1e-3 && Math.abs(q.z - o.z) < 1e-3);
+        if (!p) continue;
+        const m = mesh(p.model);
+        if (!m) continue;
+        const dw = m.hw * p.scale, dd = m.hd * p.scale;
+        if (dw < 0.01 || dd < 0.01) continue;
+        out.push({ model: p.model, ratio: (o.hw * o.hd) / (dw * dd) });
+      }
+    }
+    return out;
+  });
+
+  expect(worst.length).toBeGreaterThan(100);
+  // An obstacle much larger than its mesh is an invisible wall: shots stop in
+  // open air. The scattered rocks were fifteen times their drawn area, because
+  // a hand-written box was being multiplied by a random scale.
+  const walls = worst.filter((r) => r.ratio > 2.5);
+  expect(walls.map((w) => w.model), 'collision extends well past the mesh').toEqual([]);
+  // Far smaller than the mesh is the same bug the other way round — except for
+  // props whose geometry legitimately overhangs above head height (a radar
+  // dish's bowl, a mast's arms), which is why this bound is generous.
+  const ghosts = worst.filter((r) => r.ratio < 0.35);
+  expect(ghosts.map((g) => g.model), 'shots pass through solid things').toEqual([]);
+});
+
+test('reinforcements arrive at a distance, unseen, and do not shoot on arrival', async ({ page }) => {
+  test.setTimeout(180000);
+  await boot(page);
+  await newCampaign(page);
+
+  const r = await page.evaluate(async () => {
+    const { Mission } = await import('/src/mission.js');
+    const Level = await import('/src/level.js');
+    const G = window.KR;
+    const S = G.campaign;
+    S.renown = 4000;
+    G.world?.dispose(); G.world = null;
+    document.getElementById('viewport').innerHTML = '';
+    const m = new Mission({
+      campaign: S,
+      spec: { type: 'skirmish', site: 'grellan', layout: 'grellan', siteName: 'T',
+        enemyFaction: 'trust' },
+      squad: S.roster.slice(0, 3),
+      container: document.getElementById('viewport'),
+      onHud: () => {}, onToast: () => {}, onIntro: () => {}, onWheel: () => {}, onEnd: () => {},
+    });
+    await m.start();
+    m.paused = false; m.hadLock = true;
+    if (m.intro) { m.intro.active = false; m.time = m.intro.graceUntil + 0.1; }
+
+    const dists = [];
+    let seen = 0, firedAtOnce = 0;
+    const b = m.level.bounds;
+    // Including hard against the boundary, which is where a ring measured from
+    // the middle of the map used to put people in the player's lap.
+    for (const p of [[0, 0], [24, -18], [b - 6, b - 6], [-(b - 5), b - 5]]) {
+      m.player.x = p[0]; m.player.z = p[1];
+      for (let i = 0; i < 20; i++) {
+        const a = (i / 20) * Math.PI * 2;
+        const e = m.reinforce(Math.cos(a) * 48, Math.sin(a) * 48, 'rifleman');
+        dists.push(Math.hypot(e.x - m.player.x, e.z - m.player.z));
+        if (Level.hasLOS(m.level.obstacles, e.x, e.z, m.player.x, m.player.z, 1.5)) seen++;
+        const ammo = e.ammo;
+        m.fire(e, m.player.x, 1.2, m.player.z);
+        if (e.ammo !== ammo) firedAtOnce++;
+        m.entities = m.entities.filter((x) => x !== e);
+      }
+    }
+
+    // The pit is the tightest case: a sixteen-metre ring with the player in it.
+    const o = m.level.objectivePoint;
+    const pit = [];
+    for (const off of [0, 6, 11, 14]) {
+      m.player.x = o.x + off; m.player.z = o.z;
+      for (let i = 0; i < 16; i++) {
+        const a = (i / 16) * Math.PI * 2;
+        const e = m.reinforce(o.x + Math.cos(a) * 16, o.z + Math.sin(a) * 16, 'rifleman', 17);
+        pit.push(Math.hypot(e.x - m.player.x, e.z - m.player.z));
+        m.entities = m.entities.filter((x) => x !== e);
+      }
+    }
+
+    // The grace has to lift, or arrivals are permanently harmless.
+    m.player.x = 0; m.player.z = 0;
+    const e = m.reinforce(40, 40, 'rifleman');
+    const a0 = e.ammo;
+    m.fire(e, 0, 1.2, 0);
+    const held = e.ammo === a0;
+    e.arriving = 0; e.cooldown = 0;
+    m.fire(e, 0, 1.2, 0);
+    return {
+      min: Math.min(...dists), n: dists.length, seen, firedAtOnce,
+      pitMin: Math.min(...pit), pitClose: pit.filter((d) => d < 8).length, pitN: pit.length,
+      held, lifts: e.ammo !== a0,
+    };
+  });
+
+  // Far enough to be seen coming. The pit used to put somebody two metres away.
+  expect(r.min).toBeGreaterThan(20);
+  expect(r.pitMin).toBeGreaterThan(12);
+  expect(r.pitClose, 'somebody arrived on top of the player').toBe(0);
+  // Nothing shoots on the frame it comes into existence.
+  expect(r.firedAtOnce).toBe(0);
+  expect(r.held).toBe(true);
+  expect(r.lifts, 'the grace never expires').toBe(true);
+  // Out of sight is a preference — on open ground there may be nowhere hidden —
+  // so this is a proportion, not an absolute.
+  expect(r.seen / r.n).toBeLessThan(0.5);
+});
+
+test('cover stops rounds, and leaning out spends that protection', async ({ page }) => {
+  test.setTimeout(120000);
+  await boot(page);
+  await newCampaign(page);
+
+  const r = await page.evaluate(async () => {
+    const { Mission, bodyCapsule } = await import('/src/mission.js');
+    const Level = await import('/src/level.js');
+    const G = window.KR;
+    const S = G.campaign;
+    S.renown = 4000;
+    G.world?.dispose(); G.world = null;
+    document.getElementById('viewport').innerHTML = '';
+    const m = new Mission({
+      campaign: S,
+      spec: { type: 'skirmish', site: 'grellan', layout: 'grellan', siteName: 'T',
+        enemyFaction: 'trust' },
+      squad: S.roster.slice(0, 3),
+      container: document.getElementById('viewport'),
+      onHud: () => {}, onToast: () => {}, onIntro: () => {}, onWheel: () => {}, onEnd: () => {},
+    });
+    await m.start();
+    m.paused = false; m.hadLock = true;
+    if (m.intro) { m.intro.active = false; m.time = m.intro.graceUntil + 0.1; }
+
+    const cov = m.level.covers.find((o) => o.h > 0.7 && o.h < 1.5);
+    const victim = m.entities.find((e) => e.side === 'enemy' && !e.dead);
+    const shooter = m.player;
+    const trial = (tuck) => {
+      victim.tuck = tuck;
+      let hits = 0;
+      for (let i = 0; i < 300; i++) {
+        // Aimed the way the AI aims: at the middle of what is showing. A fixed
+        // chest height would make any lowered body unhittable and the whole
+        // measurement meaningless.
+        const cap = bodyCapsule(victim);
+        const o = { x: shooter.x, y: Level.heightAt(shooter.x, shooter.z) + 1.5, z: shooter.z };
+        const ty = (cap.lo + cap.hi) / 2;
+        const dx = victim.x - o.x, dy = ty - o.y, dz = victim.z - o.z;
+        const len = Math.hypot(dx, dy, dz);
+        const d = { x: dx / len, y: dy / len, z: dz / len };
+        const hit = m.rayHit(o, d, 120, shooter);
+        if (hit.entity === victim) hits++;
+      }
+      return hits / 300;
+    };
+    const gap = 0.55;
+    victim.x = cov.x; victim.z = cov.z + cov.hd + gap;
+    shooter.x = cov.x; shooter.z = cov.z - cov.hd - 14;
+    const upright = trial(0);
+    const tucked = trial(1);
+    // Round the side: cover must not protect from ninety degrees, or the squad's
+    // flanking orders mean nothing.
+    shooter.x = cov.x + cov.hw + 14; shooter.z = cov.z + cov.hd + gap;
+    const flanked = trial(1);
+    // Control: crouching in the OPEN must not be protection by itself.
+    shooter.x = cov.x; shooter.z = cov.z - cov.hd - 14;
+    victim.z = cov.z - cov.hd - 6;
+    const openTucked = trial(1);
+
+    // And the player can get into it, lean out, and be knocked off it.
+    m.player.x = cov.x; m.player.z = cov.z + cov.hd + 0.6;
+    m.grounded = true;
+    const took = m.takeCover();
+    m.updateCover(0.016);
+    const tuckedIn = m.player.tuck;
+    m.aiming = true;
+    for (let i = 0; i < 40; i++) m.updateCover(0.016);
+    const leaning = m.player.tuck;
+    m.player.z += 4.5;
+    m.updateCover(0.016);
+    return { upright, tucked, flanked, openTucked, took, tuckedIn, leaning, broke: !m.cover };
+  });
+
+  expect(r.upright).toBeGreaterThan(0.8);
+  expect(r.tucked, 'cover is still decoration').toBeLessThan(r.upright * 0.3);
+  expect(r.flanked, 'cover holds from the flank — that is invulnerability').toBeGreaterThan(0.4);
+  expect(r.openTucked, 'crouching in the open is doing the work, not the cover')
+    .toBeGreaterThan(r.upright * 0.5);
+  expect(r.took).toBe(true);
+  expect(r.tuckedIn).toBeGreaterThan(0.8);
+  expect(r.leaning, 'leaning out costs nothing').toBeLessThan(0.35);
+  expect(r.broke).toBe(true);
+});
+
+test('there is somewhere to stand above the floor, and it is worth standing there', async ({ page }) => {
+  test.setTimeout(120000);
+  await boot(page);
+  await newCampaign(page);
+
+  const r = await page.evaluate(async () => {
+    const { Mission } = await import('/src/mission.js');
+    const Level = await import('/src/level.js');
+    const G = window.KR;
+    const S = G.campaign;
+    S.renown = 4000;
+    G.world?.dispose(); G.world = null;
+    document.getElementById('viewport').innerHTML = '';
+    const m = new Mission({
+      campaign: S,
+      spec: { type: 'skirmish', site: 'works', layout: 'works', siteName: 'T',
+        enemyFaction: 'trust' },
+      squad: S.roster.slice(0, 3),
+      container: document.getElementById('viewport'),
+      onHud: () => {}, onToast: () => {}, onIntro: () => {}, onWheel: () => {}, onEnd: () => {},
+    });
+    await m.start();
+    m.paused = false; m.hadLock = true;
+    if (m.intro) { m.intro.active = false; m.time = m.intro.graceUntil + 0.1; }
+
+    // Walk up whichever flight the builder actually laid, rather than assuming
+    // where it went — it places stairs on the first clear approach.
+    const treads = m.level.obstacles
+      .filter((o) => o.walk && o.h > 0.3 && o.h < 4.2 && (o.hw === 0.5 || o.hd === 0.5) && o.x < 0)
+      .sort((a, b) => a.h - b.h);
+    const foot = treads[0], next = treads[1];
+    const dx = Math.sign(next.x - foot.x), dz = Math.sign(next.z - foot.z);
+    const p = m.player;
+    p.x = foot.x - dx * 2.2; p.z = foot.z - dz * 2.2;
+    m.airY = 0; m.grounded = true;
+    m.camYaw = dz !== 0 ? (dz < 0 ? 0 : Math.PI) : (dx > 0 ? -Math.PI / 2 : Math.PI / 2);
+    m.keys.add('w');
+    for (let i = 0; i < 400; i++) m.updatePlayer(0.016);
+    m.keys.delete('w');
+    const climbed = m.airY;
+
+    // What the height buys: sightlines from the deck that the same spot on the
+    // floor does not have. A catwalk that sees no further is an awkward floor.
+    let hi = 0, lo = 0;
+    const base = Level.heightAt(p.x, p.z);
+    for (let i = 0; i < 40; i++) {
+      const a = (i / 40) * Math.PI * 2;
+      const t = { x: p.x + Math.cos(a) * 26, z: p.z + Math.sin(a) * 26 };
+      const ty = Level.heightAt(t.x, t.z) + 1.0;
+      const cast = (eyeY) => {
+        const ddx = t.x - p.x, ddy = ty - eyeY, ddz = t.z - p.z;
+        const len = Math.hypot(ddx, ddy, ddz);
+        return m.rayHit({ x: p.x, y: eyeY, z: p.z },
+          { x: ddx / len, y: ddy / len, z: ddz / len }, len - 0.4, m.player).kind === 'sky';
+      };
+      if (cast(base + climbed + 1.5)) hi++;
+      if (cast(base + 1.5)) lo++;
+    }
+
+    // The fort wall must not be strollable from the attacking side.
+    const fort = Level.build('fort', 7);
+    const outside = Level.surfaceAt(fort.obstacles, 0, -4, Level.heightAt(0, -4));
+    return {
+      climbed, hi, lo,
+      works: m.level.obstacles.filter((o) => o.walk).length,
+      fortWalk: fort.obstacles.filter((o) => o.walk).length,
+      strollable: outside - Level.heightAt(0, -4) > 1,
+    };
+  });
+
+  expect(r.works, 'the works has no walkable deck').toBeGreaterThan(0);
+  expect(r.fortWalk, 'the fort wall cannot be stood on').toBeGreaterThan(0);
+  expect(r.climbed, 'could not climb the stairs').toBeGreaterThan(2);
+  expect(r.hi, 'height grants no sightline it did not already have').toBeGreaterThan(r.lo);
+  expect(r.strollable, 'the wall can be walked up from outside').toBe(false);
+});

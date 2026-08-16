@@ -1,0 +1,2529 @@
+// Campaign simulation and persistence.
+//
+// Everything that survives a mission lives in this object. The renderer reads
+// it; the mission layer hands results back to it. Keeping the simulation free
+// of Three.js means the whole campaign can be stepped and tested headlessly.
+
+import {
+  LOCATIONS, MISSION_TYPES, FACTIONS, REGION, REGIONS, WEAPONS, KIT, ROLES, GOODS, GOODS_LIST,
+  HOLDING_UPGRADES, UPGRADE_LIST, HOLDING_YIELD, TROOP_PATHS, RANKS, PARTY_TIERS, PARTY_TIER_LIST, renownTier,
+  ARMOUR, ARMOUR_LIST, ORIGINS, originForLocation, CREEDS, REGARD_TIERS, FAVOURS,
+  FIRST_NAMES, LAST_NAMES,
+} from './data.js';
+import {
+  startingCompany, makeSoldier, dayTick, STATUS, deployable, addXp, maxHpOf,
+  effective, WOUNDS,
+} from './roster.js';
+import { companyMods } from './perks.js';
+import * as Dip from './diplomacy.js';
+import { rng, pick, irange, range, clamp, uid, uidFloor, setUidFloor } from './util.js';
+
+const SAVE_KEY = 'kettle_reach_save_v10';
+const SAVE_VERSION = 10;
+
+export function newCampaign(seed = Math.floor(Math.random() * 1e9)) {
+  const r = rng(seed);
+  const start = LOCATIONS.find((l) => l.id === 'vetch');
+  const S = {
+    seed,
+    version: SAVE_VERSION,
+    day: 1,
+    hour: 7,
+    credits: 480,
+    supplies: 12,      // ammunition/consumable state, spent per deployment
+    medical: 3,        // field kits — each one stabilises a casualty
+    roster: startingCompany(r),
+    // Weapons and kit the company owns but nobody is carrying. Counts, not
+    // instances — there is no reason to track individual rifles.
+    armoury: { smg: 1, shotgun: 1 },
+    kitPool: { plate: 1 },
+    armourPool: { head_light: 2, body_webbing: 2, legs_fatigues: 2 },
+    cargo: {},          // trade goods in the truck
+    prices: {},         // per-location price table, re-derived daily
+    priceDay: -1,
+    holdings: {},       // locId -> { upgrades, takenDay, threat }
+    renown: 0,          // how seriously the continent takes Bracket
+    allegiance: null,   // faction id if the player has taken a commission
+    ownFaction: null,   // { id, name, colour, declaredDay } once declared
+    diplomacy: {},      // pairKey -> { state, until }
+    prisoners: [],      // captured troops awaiting recruitment or release
+    // A company is a payroll. Wages come out every day whether or not there was
+    // work, which is what turns "recruit everybody" from an obvious move into a
+    // decision — see payday().
+    // Standing with individual PLACES, not factions. A settlement remembers
+    // who took its contracts, who bought its goods and who robbed its road,
+    // and it treats you accordingly — see relationOf().
+    relations: {},      // locId -> -100..100
+    morale: 70,         // 0..100. Pay them, feed them, win, and it holds.
+    rations: 14,        // days of food in the truck
+    unpaidDays: 0,      // how long they have gone without, for the record
+    lastPayroll: 0,
+    // Loot from the last engagement, held aside so the player sees it as
+    // spoils on the equipment screen rather than silently absorbed.
+    spoils: { credits: 0, cargo: {}, armoury: {}, armourPool: {}, kitPool: {} },
+    pos: { x: start.x, z: start.z + 26 },
+    dest: null,
+    travelPath: null,
+    atLocation: 'vetch',
+    parties: [],
+    contracts: [],
+    events: [],
+    rep: { trust: 0, syndic: 0 },
+    world: {
+      // Consequences the player can actually observe on the map.
+      rampartMastDown: false,
+      grellanCleared: false,
+      perranHeld: false,
+      trustPatrolDensity: 1.0,
+      syndicPatrolDensity: 1.0,
+      raiderDensity: 1.0,
+    },
+    stats: { missions: 0, kills: 0, lost: 0, recruited: 0 },
+    log: [],
+    seen: {},          // one-time tutorial/discovery flags
+    finale: false,     // vertical-slice completion reached
+  };
+  seedContracts(S, r);
+  // Fill out the rest of the board from the wider Reach.
+  for (let i = 0; i < 3; i++) generateContract(S, r);
+  seedParties(S, r);
+  seedPrices(S);
+  pushLog(S, 'Bracket makes camp outside Vetch Crossing. Four rifles, one truck, no retainer.');
+  return S;
+}
+
+// --------------------------------------------------------------------------
+// Log
+// --------------------------------------------------------------------------
+
+export function pushLog(S, text, tone = 'info') {
+  S.log.unshift({ day: S.day, hour: Math.floor(S.hour), text, tone });
+  if (S.log.length > 60) S.log.length = 60;
+}
+
+// --------------------------------------------------------------------------
+// Roster queries
+// --------------------------------------------------------------------------
+
+export const living = (S) => S.roster.filter((s) => s.status !== STATUS.DEAD);
+export const fallen = (S) => S.roster.filter((s) => s.status === STATUS.DEAD);
+export const ready = (S) => living(S).filter(deployable);
+export const commander = (S) => S.roster.find((s) => s.isCommander);
+export const hasMedic = (S) => ready(S).some((s) => s.role === 'medic');
+export const awaitingAnyPerk = (S) =>
+  S.roster.some((s) => s.status !== STATUS.DEAD && s.pendingPerks && s.pendingPerks.length);
+
+// --------------------------------------------------------------------------
+// Contracts
+// --------------------------------------------------------------------------
+
+// Prose for a generated posting, keyed by template. `%SITE%` is substituted.
+const CONTRACT_FLAVOUR = {
+  recovery: [
+    {
+      title: 'Missing Work Detail',
+      text: 'A survey detail went into %SITE% to strip cable and did not come out. '
+        + 'Whoever is holding that ground is still there. Bring back whoever is still breathing.',
+    },
+    {
+      title: 'Personnel Recovery',
+      text: 'Our people were taken off the road and are being held at %SITE%. '
+        + 'They are worth more to us alive than anything else you could bring back.',
+    },
+    {
+      title: 'They Kept The Wounded',
+      text: 'When the column broke at %SITE% the walking got out. The ones who could not '
+        + 'are still there. That was six days ago and we are done waiting for them to walk home.',
+    },
+  ],
+  sabotage: [
+    {
+      title: 'Blind The Rim',
+      text: '%SITE% coordinates every patrol above the basin. Put charges on the base and '
+        + 'be gone before the response column arrives.',
+    },
+    {
+      title: 'Break The Supply',
+      text: 'Everything that moves through this quarter is staged at %SITE%. '
+        + 'Take out the primary asset. We do not need it captured, we need it gone.',
+    },
+  ],
+  defense: [
+    {
+      title: 'Hold The Line',
+      text: 'A column is moving on %SITE% to enforce a seizure order. Stand in front of it '
+        + 'until they decide the paperwork is not worth the casualties.',
+    },
+    {
+      title: 'They Are Coming Tonight',
+      text: 'We have maybe a day before they hit %SITE%. We can pay, we cannot fight. '
+        + 'Be standing there when it starts.',
+    },
+  ],
+  skirmish: [
+    {
+      title: 'Clear The Road',
+      text: 'Something has made the road past %SITE% impassable and our haulage is sitting idle. '
+        + 'Go and make it passable again.',
+    },
+  ],
+};
+
+const CONTRACT_TEMPLATES = [
+  {
+    type: 'recovery', site: 'grellan', employer: 'syndic',
+    title: 'Missing Work Detail',
+    text:
+      'A Syndic survey detail went into the Grellan Array eight days ago to strip ' +
+      'cable and did not come out. Scrappers hold the pylon housings. Bring back ' +
+      'whoever is still breathing.',
+    pay: 620, days: 6,
+  },
+  {
+    type: 'sabotage', site: 'rampart', employer: 'syndic',
+    title: 'Blind the North Rim',
+    text:
+      'Rampart Twelve coordinates every Trust patrol above the basin. Put charges ' +
+      'on the mast base and be gone before the response column arrives.',
+    pay: 780, days: 8,
+  },
+  {
+    type: 'defense', site: 'perran', employer: 'syndic',
+    title: 'The Reclaimer Must Turn',
+    text:
+      'A Trust column is moving on the Perran reclaimer to enforce a seizure order. ' +
+      'Four thousand people drink from that stack. Hold the plant until they break off.',
+    pay: 850, days: 10,
+  },
+  {
+    type: 'recovery', site: 'grellan', employer: 'trust',
+    title: 'Recover Trust Personnel',
+    text:
+      'Two of our inventory staff were taken off the northern road and are being ' +
+      'held at the Array. They are carrying charter seals. Recover the people; ' +
+      'the seals are secondary.',
+    pay: 660, days: 6,
+  },
+  {
+    type: 'defense', site: 'vetch', employer: null,
+    title: 'Crossing Under Threat',
+    text:
+      'Scrappers have been massing south of the Crossing. The market pays in ' +
+      'advance if you stand in the road when they arrive.',
+    pay: 540, days: 5,
+  },
+];
+
+function seedContracts(S, r) {
+  // Open with exactly two, from opposing employers, so the very first strategic
+  // decision is a real one rather than a queue to work through.
+  S.contracts = [];
+  addContract(S, CONTRACT_TEMPLATES[0], r);
+  addContract(S, CONTRACT_TEMPLATES[1], r);
+}
+
+/**
+ * A standing offer to take a place for yourself. Not a contract from anybody —
+ * the reward is the ground.
+ */
+export function seizureOffer(S, locId) {
+  const l = locById(locId);
+  if (!l || isHolding(S, locId)) return null;
+  if (!l.missions) return null;
+  return {
+    id: `seize_${locId}`,
+    type: 'seize',
+    site: locId,
+    employer: null,
+    seizure: true,
+    title: `Take ${l.name}`,
+    text: `Nobody is paying for this. Break whoever is holding ${l.name}, stand in it `
+      + 'until it is yours, and it produces for Bracket from then on.',
+    pay: 0,
+    expiresDay: S.day + 999,
+    accepted: false,
+  };
+}
+
+/**
+ * Build a posting for a random site/template pair. Locations declare which
+ * templates they can host, so the same place offers a rescue this week and a
+ * demolition the next.
+ */
+export function generateContract(S, r) {
+  const sites = LOCATIONS.filter((l) => l.missions && l.missions.length);
+  if (!sites.length) return null;
+  // Prefer somewhere the player has no posting for already.
+  const open = sites.filter((l) => !S.contracts.some((c) => c.site === l.id));
+  const loc = pick(r, open.length ? open : sites);
+  const type = pick(r, loc.missions);
+  const flavours = CONTRACT_FLAVOUR[type];
+  if (!flavours) return null;
+  const f = pick(r, flavours);
+  if (S.contracts.some((c) => c.title === f.title && c.site === loc.id)) return null;
+
+  // Whoever is hiring is whoever does not own the ground.
+  let employer = null;
+  if (loc.faction === 'trust') employer = 'syndic';
+  else if (loc.faction === 'syndic') employer = 'trust';
+  else employer = pick(r, ['trust', 'syndic', null]);
+  // Sworn companies mostly get work from their own side.
+  if (S.allegiance && r() < 0.6) employer = S.allegiance;
+
+  const basePay = { recovery: 620, sabotage: 780, defense: 850, skirmish: 520 }[type] || 600;
+  // Distance from the company is worth paying for.
+  const away = Math.hypot(loc.x - S.pos.x, loc.z - S.pos.z) / 400;
+  const c = {
+    id: uid('con'),
+    type,
+    site: loc.id,
+    employer,
+    title: f.title,
+    text: f.text.replace(/%SITE%/g, loc.name),
+    pay: Math.round(basePay * range(r, 0.9, 1.2) * (1 + away * 0.35)),
+    days: 8,
+    expiresDay: S.day + irange(r, 5, 11),
+    accepted: false,
+  };
+  S.contracts.push(c);
+  return c;
+}
+
+function addContract(S, tpl, r) {
+  if (S.contracts.some((c) => c.title === tpl.title)) return null;
+  const c = {
+    id: uid('con'),
+    ...tpl,
+    pay: Math.round(tpl.pay * range(r, 0.9, 1.15)),
+    expiresDay: S.day + tpl.days,
+    accepted: false,
+  };
+  S.contracts.push(c);
+  return c;
+}
+
+export function acceptContract(S, id) {
+  const c = S.contracts.find((x) => x.id === id);
+  if (!c) return;
+  // One active contract at a time keeps the vertical slice legible.
+  S.contracts.forEach((x) => { x.accepted = false; });
+  c.accepted = true;
+  pushLog(S, `Contract accepted: ${c.title}. Site: ${locName(c.site)}.`, 'good');
+}
+
+export const activeContract = (S) => S.contracts.find((c) => c.accepted) || null;
+export const locName = (id) => LOCATIONS.find((l) => l.id === id)?.name || id;
+export const locById = (id) => LOCATIONS.find((l) => l.id === id);
+
+// --------------------------------------------------------------------------
+// Parties — the thing that makes the map feel inhabited rather than drawn
+// --------------------------------------------------------------------------
+
+/** Which region a point on the continent falls in. Drives what spawns there. */
+export function regionAt(x, z) {
+  let best = REGIONS.kettle, bd = Infinity;
+  for (const reg of Object.values(REGIONS)) {
+    const d = Math.hypot(reg.centre.x - x, reg.centre.z - z);
+    if (d < bd) { bd = d; best = reg; }
+  }
+  return best;
+}
+
+/** The named place closest to a point, for reporting things that happen out there. */
+export const nearestLocation = (x, z) => LOCATIONS.reduce((best, l) => {
+  const d = Math.hypot(l.x - x, l.z - z);
+  return !best || d < best.d ? { ...l, d } : best;
+}, null);
+
+export const locationsIn = (regionId) =>
+  LOCATIONS.filter((l) => (l.region || 'kettle') === regionId);
+
+/**
+ * Pick a party type appropriate to a region. This is the difficulty gradient:
+ * the basin the player starts in produces looters and caravans, the faction
+ * heartlands produce battle groups and armoured columns. A player who wanders
+ * into the Littoral on day two will meet something that will kill them, and
+ * the strength number on the marker tells them so before they commit.
+ */
+function partyTypeFor(r, region, faction = null) {
+  const maxTier = clamp(region.danger + (r() < 0.25 ? 1 : 0), 1, 5);
+  // A floor as well as a ceiling. Without it a danger-4 region drew looters as
+  // often as columns and the far country ended up *safer* than the basin.
+  const minTier = clamp(region.danger - 1, 1, 5);
+  let pool = PARTY_TIER_LIST.filter((k) => {
+    const t = PARTY_TIERS[k];
+    // Player-owned types are fitted out, never found. Without this the world
+    // spawned Bracket caravans as roadside traffic.
+    if (t.owned || t.lair) return false;
+    if (t.tier > maxTier || t.tier < minTier) return false;
+    if (faction && t.faction !== faction) return false;
+    return true;
+  });
+  if (!pool.length) {
+    pool = PARTY_TIER_LIST.filter((k) => !PARTY_TIERS[k].owned && !PARTY_TIERS[k].lair
+      && PARTY_TIERS[k].tier <= maxTier);
+  }
+  // Weight toward the top of the band so a dangerous region feels dangerous.
+  const weighted = [];
+  for (const k of pool) {
+    const t = PARTY_TIERS[k].tier;
+    const w = 1 + Math.max(0, t - minTier) * 2;
+    for (let i = 0; i < w; i++) weighted.push(k);
+  }
+  return weighted.length ? pick(r, weighted) : 'looters';
+}
+
+/**
+ * Put a Titan on the map, if the world is ready for one.
+ *
+ * Deliberately not part of the ordinary spawn table: partyTypeFor() clamps at
+ * tier 5 so the walker can never turn up as routine traffic. It arrives as an
+ * event — rarely, only out in the dangerous country, only once the company is
+ * big enough that hearing about it is a temptation rather than a death notice,
+ * and only ever one at a time.
+ */
+export function maybeSpawnTitan(S, r) {
+  if (S.parties.some((p) => p.kind === 'titan')) return false;
+  if ((S.renown || 0) < 500) return false;
+  if (r() > 0.055) return false;
+  const far = Object.values(REGIONS).filter((reg) => reg.danger >= 3);
+  if (!far.length) return false;
+  const reg = pick(r, far);
+  const homes = LOCATIONS.filter((l) => l.region === reg.id);
+  if (!homes.length) return false;
+  const p = spawnParty(S, r, 'titan', pick(r, homes).id);
+  pushLog(S,
+    `Something is walking in ${reg.name}. The word for it is Titan.`, 'bad');
+  return p;
+}
+
+/**
+ * Hideouts.
+ *
+ * The road danger in this game was weather: parties appeared, you fought them
+ * or avoided them, and more appeared. A hideout gives that a source — one
+ * dug-in camp per dangerous region, which keeps producing raiders until
+ * somebody goes and clears it. That turns "the north road is bad" from a fact
+ * into a problem with an address.
+ */
+export function maybeSpawnLair(S, r) {
+  for (const reg of Object.values(REGIONS)) {
+    if (reg.danger < 2) continue;
+    if (S.parties.some((p) => p.kind === 'lair'
+      && (locById(p.home)?.region || 'kettle') === reg.id)) continue;
+    if (r() > 0.05) continue;
+    const homes = locationsIn(reg.id);
+    if (!homes.length) continue;
+    const p = spawnParty(S, r, 'lair', pick(r, homes).id);
+    p.name = 'Scrapper Hideout';
+    pushLog(S, `Something has dug in near ${locName(p.home)}. The road there will get worse.`, 'bad');
+  }
+}
+
+/** A hideout throws out a raiding party every few days until it is cleared. */
+export function tickLairs(S, r) {
+  for (const lair of S.parties.filter((p) => p.kind === 'lair')) {
+    if (S.day < (lair.nextBrood || 0)) continue;
+    lair.nextBrood = S.day + irange(r, 3, 6);
+    const kind = r() < 0.6 ? 'looters' : 'scrappers';
+    const spawned = spawnParty(S, r, kind, lair.home);
+    spawned.x = lair.x + range(r, -60, 60);
+    spawned.z = lair.z + range(r, -60, 60);
+    spawned.fromLair = lair.id;
+  }
+}
+
+function seedParties(S, r) {
+  S.parties = [];
+  // The starting basin gets small, beatable things plus traffic worth robbing.
+  spawnParty(S, r, 'looters', 'grellan');
+  spawnParty(S, r, 'looters', 'sump');
+  spawnParty(S, r, 'scrappers', 'culvert');
+  spawnParty(S, r, 'caravan', 'perran');
+  spawnParty(S, r, 'refugees', 'sump');
+  spawnParty(S, r, 'patrol_trust', 'dolmet');
+  spawnParty(S, r, 'patrol_syndic', 'perran');
+  // Deliberately not at Vetch: the player starts there, and a party spawning
+  // in their lap makes the first thing that happens in the game a popup.
+  spawnParty(S, r, 'merc', 'dolmet');
+
+  // The wider continent, populated to its own danger level.
+  for (const reg of Object.values(REGIONS)) {
+    if (reg.id === 'kettle') continue;
+    const homes = locationsIn(reg.id);
+    if (!homes.length) continue;
+    const n = 3 + Math.round(reg.danger * 0.8);
+    for (let i = 0; i < n; i++) {
+      spawnParty(S, r, partyTypeFor(r, reg), pick(r, homes).id);
+    }
+  }
+}
+
+function spawnParty(S, r, kind, nearId) {
+  const def = PARTY_TIERS[kind] || PARTY_TIERS.looters;
+  const home = locById(nearId) || { x: 0, z: 0 };
+  const strength = irange(r, def.strength[0], def.strength[1]);
+  const p = {
+    id: uid('pty'),
+    kind,
+    name: def.name,
+    faction: def.faction,
+    model: def.model,
+    x: home.x + range(r, -90, 90),
+    z: home.z + range(r, -90, 90),
+    speed: def.speed,
+    strength,
+    tier: def.tier,
+    quality: def.quality,
+    armour: def.armour || 0,
+    vehicles: def.vehicles || 0,
+    // Raiders are always hostile; everyone else depends on politics, which is
+    // re-evaluated as standing and wars change.
+    baseHostile: !!def.hostile,
+    hostileToPlayer: !!def.hostile,
+    // Caravans are worth taking; everyone else is just in the way.
+    cargo: def.cargo ? rollCargo(r, strength) : null,
+    target: null,
+    home: nearId,
+    heading: r() * Math.PI * 2,
+  };
+  pickPartyTarget(S, r, p);
+  S.parties.push(p);
+  return p;
+}
+
+/** What a caravan is hauling, and therefore what looting it is worth. */
+function rollCargo(r, strength) {
+  const out = {};
+  const n = 2 + Math.floor(strength / 6);
+  for (let i = 0; i < n; i++) {
+    const g = pick(r, GOODS_LIST);
+    out[g] = (out[g] || 0) + irange(r, 2, 6);
+  }
+  return out;
+}
+
+function pickPartyTarget(S, r, p) {
+  // Parties work their own region, so the map reads as inhabited territory
+  // rather than everyone wandering the whole continent at random.
+  const home = locById(p.home);
+  const regionId = home?.region || 'kettle';
+  let candidates = locationsIn(regionId);
+  // Occasionally something travels between regions, which is what makes the
+  // roads feel used and puts the odd column somewhere unexpected.
+  if (r() < 0.12) candidates = LOCATIONS;
+  candidates = candidates.filter((l) => l.id !== p.target);
+  if (!candidates.length) candidates = LOCATIONS;
+  const l = pick(r, candidates);
+  p.target = l.id;
+  p.tx = l.x + range(r, -70, 70);
+  p.tz = l.z + range(r, -70, 70);
+}
+
+// --------------------------------------------------------------------------
+// Time & travel
+// --------------------------------------------------------------------------
+
+// Continent scale: the map is three times the size it was, so the company
+// covers ground three times faster in world units per hour.
+export const TRAVEL_SPEED = 132;
+
+/**
+ * How fast the company actually moves, and why.
+ *
+ * A flat speed made the map a menu: nothing you did to your company changed
+ * whether you could reach a contract in time, outrun a column, or catch a
+ * caravan. Now it is the sum of the decisions you have already made — how many
+ * people you are feeding, how loaded the truck is, whether they are fed at all,
+ * and how many wounded you are carrying.
+ *
+ * Returns the multiplier plus the reasons, so the interface can explain itself
+ * rather than just showing a number that mysteriously drops.
+ */
+export function partySpeed(S) {
+  const people = living(S).length;
+  const load = cargoUsed(S);
+  const cap = CARGO_CAPACITY + depotCapacity(S);
+  const wounded = living(S).filter((s) => !deployable(s)).length;
+  const factors = [];
+
+  // A small company moves at the pace of its truck; a big one at the pace of
+  // the slowest person in it.
+  let mul = 1;
+  if (people > 6) {
+    const f = -Math.min(0.34, (people - 6) * 0.028);
+    mul += f;
+    factors.push({ label: `${people} in the company`, effect: f });
+  }
+  // A loaded truck is a slow truck. This is what makes bulk trading a real
+  // trade-off rather than free money.
+  const loadFrac = cap > 0 ? load / cap : 0;
+  if (loadFrac > 0.25) {
+    const f = -Math.min(0.30, (loadFrac - 0.25) * 0.40);
+    mul += f;
+    factors.push({ label: `truck ${Math.min(100, Math.round(loadFrac * 100))}% loaded`, effect: f });
+  }
+  if (wounded > 0) {
+    const f = -Math.min(0.22, wounded * 0.05);
+    mul += f;
+    factors.push({ label: `${wounded} carried wounded`, effect: f });
+  }
+  // Hungry people walk slowly, and cheerful ones push on.
+  if ((S.rations || 0) <= 0) {
+    mul -= 0.18;
+    factors.push({ label: 'nobody has eaten', effect: -0.18 });
+  }
+  const morale = S.morale ?? 70;
+  if (morale >= 85) { mul += 0.08; factors.push({ label: 'devoted company', effect: 0.08 }); }
+  else if (morale < 25) { mul -= 0.12; factors.push({ label: 'morale is shot', effect: -0.12 }); }
+
+  mul = clamp(mul, 0.42, 1.25);
+  return { mul, speed: TRAVEL_SPEED * mul, factors, people, load, cap, wounded };
+}
+
+/**
+ * Advance the world by `hours`. Called continuously while the player travels
+ * and in chunks when they wait or use a service.
+ */
+export function advanceTime(S, hours) {
+  const r = rng((S.seed + Math.floor(S.day * 24 + S.hour)) | 0);
+  S.hour += hours;
+  while (S.hour >= 24) {
+    S.hour -= 24;
+    S.day++;
+    onNewDay(S, rng((S.seed + S.day * 7919) | 0));
+  }
+  moveParties(S, hours, r);
+}
+
+function onNewDay(S, r) {
+  maybeSpawnTitan(S, r);
+  payday(S, r);
+  const atMedical = !!(S.atLocation && locById(S.atLocation)?.services?.includes('medical'));
+  const mods = companyMods(S.roster);
+  for (const s of S.roster) {
+    const rec = dayTick(s, { atMedical, healMul: 1 + mods.healRate + upgradeTotal(S, 'infirmary') });
+    if (rec) pushLog(S, `${s.name} is fit for deployment again.`, 'good');
+  }
+  // Expire and replenish contracts so the board is never empty or stale.
+  const before = S.contracts.length;
+  S.contracts = S.contracts.filter((c) => c.accepted || c.expiresDay > S.day);
+  if (S.contracts.length < before) pushLog(S, 'A contract lapsed on the board.');
+  // A bigger Reach wants a fuller board — the player should be choosing
+  // between postings, not taking the only one available.
+  while (S.contracts.length < 5) {
+    const c = generateContract(S, r);
+    if (!c) break;
+    pushLog(S, `New posting at ${locName(c.site)}: ${c.title}.`);
+  }
+  // Patrol densities drift back toward normal — sabotage buys time, not permanence.
+  S.world.trustPatrolDensity = clamp(S.world.trustPatrolDensity + 0.06, 0, 1.2);
+  S.world.syndicPatrolDensity = clamp(S.world.syndicPatrolDensity + 0.05, 0, 1.2);
+
+  tickResentment(S, r);
+  tickFavours(S, r);
+  tickGrudge(S);
+  maybeSpawnLair(S, r);
+  tickLairs(S, r);
+  tickCaravans(S, r);
+  maintainParties(S, r);
+  collectHoldings(S);
+  tickHoldingThreat(S, r);
+  // Its own stream, deliberately. Every system added to the day tick draws
+  // from the shared generator, so politics would quietly re-roll every time
+  // something new was bolted on — which is exactly how a stable test starts
+  // failing for reasons nobody changed.
+  Dip.tickDiplomacy(S, rng((S.seed ^ 0x5150) + S.day * 2803), (text, tone) => pushLog(S, text, tone));
+  refreshHostility(S);
+}
+
+/**
+ * Politics decides who shoots at you. A Trust patrol is just traffic until the
+ * Trust is at war with whoever you are — then it is a threat on the road.
+ */
+export function refreshHostility(S) {
+  for (const p of S.parties) {
+    // Your own hauliers are never a target for you.
+    if (p.owner === 'player') { p.hostileToPlayer = false; continue; }
+    p.hostileToPlayer = p.baseHostile || Dip.isHostileToPlayer(S, p.faction);
+  }
+}
+
+function maintainParties(S, r) {
+  // Keep every region populated to roughly its danger level. The continent has
+  // to stay busy without the party list growing without bound.
+  for (const reg of Object.values(REGIONS)) {
+    const homes = locationsIn(reg.id);
+    if (!homes.length) continue;
+    const want = reg.id === 'kettle'
+      ? Math.round(6 * (S.world.raiderDensity + S.world.trustPatrolDensity) / 2)
+      : 3 + Math.round(reg.danger * 0.8);
+    const here = S.parties.filter((p) => !p.owner && p.kind !== 'lair'
+      && (locById(p.home)?.region || 'kettle') === reg.id);
+    if (here.length < want) {
+      spawnParty(S, r, partyTypeFor(r, reg), pick(r, homes).id);
+    } else if (here.length > want + 2) {
+      // Trim the one furthest from the player so nothing vanishes on screen.
+      const victim = here.slice().sort((a, b) =>
+        Math.hypot(b.x - S.pos.x, b.z - S.pos.z) - Math.hypot(a.x - S.pos.x, a.z - S.pos.z))[0];
+      if (victim) S.parties = S.parties.filter((p) => p !== victim);
+    }
+  }
+}
+
+function moveParties(S, hours, r) {
+  for (const p of S.parties) {
+    // A hideout is a place, not a patrol.
+    if (PARTY_TIERS[p.kind]?.static) continue;
+    const dx = p.tx - p.x, dz = p.tz - p.z;
+    const d = Math.hypot(dx, dz);
+    if (d < 6) { pickPartyTarget(S, r, p); continue; }
+    const step = Math.min(d, p.speed * hours);
+    p.x += (dx / d) * step;
+    p.z += (dz / d) * step;
+    p.heading = Math.atan2(dx, dz);
+  }
+}
+
+/** Parties close enough to interact with right now. */
+export function nearbyParties(S, radius = 34) {
+  return S.parties.filter((p) => Math.hypot(p.x - S.pos.x, p.z - S.pos.z) < radius);
+}
+
+export function locationAt(S, radius = 34) {
+  return LOCATIONS.find((l) => Math.hypot(l.x - S.pos.x, l.z - S.pos.z) < radius) || null;
+}
+
+// --------------------------------------------------------------------------
+// Mission results → strategic consequences
+// --------------------------------------------------------------------------
+
+/**
+ * Fold a completed deployment back into the campaign. This is the hinge the
+ * whole design turns on: if the mission does not visibly change the map, the
+ * strategic layer is decoration.
+ */
+/**
+ * Send the squad in without you.
+ *
+ * Wages come out every day, which means the company needs to fight often — and
+ * a five-minute deployment for six looters is a tax on the player's evening,
+ * not a decision. So you can hand the fight to your sergeants.
+ *
+ * It is deliberately WORSE than doing it yourself. Nobody is on the ground
+ * making the call, so the company fights at three-quarters of its real strength
+ * and takes casualties it would not have taken with you there. That is the
+ * whole trade: your time against your soldiers' lives.
+ *
+ * Crucially this produces the same shape of result object that a played mission
+ * does and hands it to applyMissionResult, so XP, wounds, permadeath, spoils,
+ * renown and prisoners all come out of one code path. An autoresolve that had
+ * its own consequence logic would drift away from the real one within a week.
+ */
+export function estimateFight(S, squad, party) {
+  const mods = companyMods(S.roster);
+  let power = 0;
+  for (const s of squad) {
+    const e = effective(s, mods);
+    // Accuracy and staying power, weighted the way they actually matter.
+    power += (e.accuracy * 1.35 + e.maxHp / 130) * (1 + s.rank * 0.22);
+  }
+  // Nobody is in command on the ground.
+  power *= 0.75;
+  const enemy = Math.max(1, (party?.strength || 4)) * (party?.quality || 0.75) * 1.15;
+  const odds = clamp(power / (power + enemy), 0.03, 0.97);
+  return { power: +power.toFixed(1), enemy: +enemy.toFixed(1), odds };
+}
+
+export function autoResolve(S, spec, squad) {
+  const party = spec.party || null;
+  const r = rng((S.seed + S.day * 613 + S.stats.missions * 29 + squad.length) | 0);
+  const { odds } = estimateFight(S, squad, party);
+  const success = r() < odds;
+
+  // How badly it went for the people who went. Losing multiplies the risk to
+  // everybody; winning still costs somebody something more often than not.
+  // Tuned against tools/autoresolve.mjs. Winning should usually cost bruises
+  // and occasionally cost somebody; losing is where people actually die.
+  const danger = success ? (1 - odds) * 0.40 : 0.28 + (1 - odds) * 0.38;
+  const strength = party?.strength || 4;
+
+  const soldierResults = [];
+  let kills = 0;
+  for (const s of squad) {
+    const e = effective(s, companyMods(S.roster));
+    // Kills are shared out by how good they are, not evenly.
+    const share = success ? strength / Math.max(1, squad.length) : strength * 0.35 / Math.max(1, squad.length);
+    const k = Math.max(0, Math.round(share * (0.55 + e.accuracy) * (0.6 + r() * 0.8)));
+    kills += k;
+
+    const roll = r() * (1 - clamp(e.cover, 0, 0.6));
+    let status = STATUS.READY;
+    let hp = s.maxHp;
+    let wound = null;
+    if (roll < danger * 0.12) {
+      // Nobody was there to drag them out — with the commander present this
+      // would have been a stabilise, not a burial.
+      status = STATUS.DEAD;
+      hp = 0;
+    } else if (roll < danger) {
+      status = STATUS.WOUNDED;
+      hp = Math.max(1, Math.round(s.maxHp * (0.25 + r() * 0.35)));
+      wound = pick(r, WOUNDS);
+    } else {
+      hp = Math.max(1, Math.round(s.maxHp * (0.55 + r() * 0.45)));
+    }
+    soldierResults.push({ id: s.id, kills: k, status, hp, wound });
+  }
+
+  return {
+    success,
+    auto: true,
+    site: spec.site,
+    type: spec.type,
+    party,
+    partyId: party?.id || null,
+    kills,
+    soldierResults,
+    suppliesUsed: Math.max(1, Math.round(squad.length * 0.6)),
+    outcome: success ? 'auto-win' : 'auto-loss',
+  };
+}
+
+export function applyMissionResult(S, res) {
+  const r = rng((S.seed + S.day * 31 + S.stats.missions * 17) | 0);
+  // The pit does not maim anybody. Whatever happened in there, everyone walks
+  // out of it — that promise is the entire reason the pit is worth having, so
+  // it is enforced here rather than trusted to the mission layer.
+  if (res.type === 'pit') {
+    for (const rec of res.soldierResults || []) {
+      rec.status = STATUS.HEALTHY;
+      rec.wound = null;
+      const s = S.roster.find((x) => x.id === rec.id);
+      if (s) rec.hp = Math.max(1, Math.round(s.maxHp * 0.5));
+    }
+  }
+  S.stats.missions++;
+  S.stats.kills += res.kills || 0;
+  const notes = [];
+
+  // --- personnel ---
+  for (const rec of res.soldierResults || []) {
+    const s = S.roster.find((x) => x.id === rec.id);
+    if (!s) continue;
+    s.deployments++;
+    s.kills += rec.kills || 0;
+    if (rec.status === STATUS.DEAD) {
+      s.status = STATUS.DEAD;
+      s.hp = 0;
+      S.stats.lost++;
+      notes.push({ tone: 'bad', text: `${s.name} was killed at ${locName(res.site)}.` });
+      pushLog(S, `${s.name} did not come back from ${locName(res.site)}.`, 'bad');
+    } else {
+      s.status = rec.status;
+      s.wound = rec.wound || s.wound;
+      s.hp = Math.max(1, rec.hp ?? s.hp);
+      if (rec.status === STATUS.WOUNDED) {
+        notes.push({ tone: 'warn', text: `${s.name} is wounded: ${s.wound?.name || 'in recovery'}.` });
+      }
+      const xp = (rec.kills || 0) * 25 + (res.success ? 90 : 35) + 20;
+      const promo = addXp(s, xp, r);
+      if (promo) {
+        notes.push({
+          tone: 'good',
+          text: `${s.name} is promoted to ${promo.name}${s.pendingPerks ? ' — a training choice is waiting' : ''}.`,
+        });
+        pushLog(S, `${s.name} promoted to ${promo.name}.`, 'good');
+      }
+    }
+  }
+
+  if (res.lostPrisoners) {
+    notes.push({
+      tone: 'bad',
+      text: `${res.lostPrisoners} of the people you were sent for did not survive the recovery.`,
+    });
+  }
+
+  // --- recruits found in the field ---
+  for (const rec of res.recruits || []) {
+    S.roster.push(rec);
+    S.stats.recruited++;
+    notes.push({ tone: 'good', text: `${rec.name} (${rec.joinedHow}) has joined Bracket.` });
+    pushLog(S, `${rec.name} signed on with Bracket at ${locName(res.site)}.`, 'good');
+  }
+
+  // --- payment & materiel ---
+  const mods = companyMods(S.roster);
+  const c = activeContract(S);
+  if (res.success && c && c.site === res.site) {
+    // A liege pays its own people better than it pays hired help.
+    const liegeBonus = (S.allegiance && c.employer === S.allegiance) ? 1.35 : 1;
+    const paid = Math.round(c.pay * mods.payMul * liegeBonus);
+    S.credits += paid;
+    notes.push({ tone: 'good', text: `Contract paid: ${paid} credits.` });
+    if (c.employer) {
+      S.rep[c.employer] = (S.rep[c.employer] || 0) + 2;
+      const other = c.employer === 'trust' ? 'syndic' : 'trust';
+      S.rep[other] = (S.rep[other] || 0) - 1;
+    }
+    S.contracts = S.contracts.filter((x) => x.id !== c.id);
+    // The place you did the work for remembers it.
+    changeRelation(S, c.site, 6);
+  }
+  if (res.loot?.credits) {
+    const salvage = Math.round(res.loot.credits * mods.lootMul);
+    S.credits += salvage;
+    notes.push({ tone: 'good', text: `Recovered ${salvage} credits of salvage.` });
+  }
+  for (const w of res.loot?.weapons || []) {
+    S.armoury[w] = (S.armoury[w] || 0) + 1;
+    notes.push({
+      tone: 'good',
+      text: `Recovered a weapon: ${WEAPONS[w]?.name || w}. It is in the armoury.`,
+    });
+  }
+  S.supplies = Math.max(0, S.supplies - Math.round((res.suppliesUsed || 2) * mods.supplyMul));
+  S.medical = Math.max(0, S.medical - (res.medicalUsed || 0));
+
+  // --- territory ---
+  if (res.type === 'seize') {
+    if (res.success && seizeLocation(S, res.site)) {
+      notes.push({
+        tone: 'world',
+        text: `${locName(res.site)} belongs to Bracket. It will produce for you every day, `
+          + 'and it can be built up with credits and the goods in your truck.',
+      });
+    } else if (!res.success) {
+      notes.push({ tone: 'bad', text: `${locName(res.site)} held. The garrison is still there.` });
+    }
+  }
+  if (res.retake) {
+    if (res.success) {
+      const h = S.holdings[res.retake];
+      if (h) h.threat = 0;
+      notes.push({ tone: 'good', text: `${locName(res.retake)} held. The attack has broken off.` });
+      S.contracts = S.contracts.filter((c) => c.retake !== res.retake);
+    } else {
+      loseHolding(S, res.retake);
+      S.contracts = S.contracts.filter((c) => c.retake !== res.retake);
+      notes.push({ tone: 'bad', text: `${locName(res.retake)} has been taken from you.` });
+    }
+  }
+
+  // The pit pays by the round whether you walked out or were carried, so it
+  // sits OUTSIDE the success gate. Nested inside it, every run that did not
+  // clear the whole card paid nothing — which is exactly the case the pit
+  // exists to cover.
+  // --- the pit: paid by the round, win or lose ---
+  if (res.type === 'pit') {
+    const rounds = res.pitRounds || 0;
+    // Rising per round, because round six is a different proposition from
+    // round one and the purse should say so.
+    const purse = Math.round(rounds * 90 * (1 + rounds * 0.11));
+    S.credits += purse;
+    const up = addRenown(S, Math.round(rounds * 4));
+    if (up) notes.push({ tone: 'good', text: `Bracket is ${up.name}.` });
+    notes.push({
+      tone: rounds > 0 ? 'good' : 'warn',
+      text: rounds > 0
+        ? `${rounds} round(s) in the pit. Purse: ${purse} credits.`
+        : 'Put down in the first round. The crowd got its money back.',
+    });
+    // A commander who fights in front of the town is a commander people talk
+    // about, and the company likes working for somebody like that.
+    if (rounds >= 3) {
+      changeRelation(S, res.site, Math.min(10, rounds));
+      S.morale = clamp((S.morale ?? 70) + 3, 0, 100);
+    }
+    S.stats.pitRounds = Math.max(S.stats.pitRounds || 0, rounds);
+  }
+
+  // --- world consequences, and they must be legible ---
+  if (res.success) {
+    if (res.type === 'lair' && res.partyId) {
+      const lair = S.parties.find((p) => p.id === res.partyId);
+      const spoils = spoilsFor(S, lair, (res.soldierResults || []).length);
+      clearLair(S, res.partyId);
+      S.spoils.credits += spoils.credits;
+      const up = addRenown(S, Math.round(spoils.renown * 1.4));
+      if (up) notes.push({ tone: 'good', text: `Bracket is ${up.name}.` });
+      notes.push({
+        tone: 'good',
+        text: 'The hideout is gone. The road it was feeding will quieten down.',
+      });
+    }
+
+    if (res.type === 'skirmish' && res.partyId) {
+      const party = S.parties.find((p) => p.id === res.partyId);
+      companyReacts(S, 'win');
+      // Winning is the cheapest morale there is.
+      S.morale = clamp((S.morale ?? 70) + 6, 0, 100);
+      const spoils = spoilsFor(S, party || res.party, (res.soldierResults || []).length);
+      // If these were the people who took the company, everything they were
+      // carrying comes back before the party is swept off the map.
+      const won = settleGrudge(S, res.partyId);
+      if (won) {
+        notes.push({
+          tone: 'good',
+          text: `${won.who} is finished. ${won.credits} credits`
+            + `${won.arms ? ` and ${won.arms} weapons` : ''} back where they belong.`,
+        });
+      }
+      // The band you just fought is gone from the map. Immediate, visible.
+      S.parties = S.parties.filter((p) => p.id !== res.partyId);
+      addSpoils(S, 'credits', null, spoils.credits);
+      notes.push({
+        tone: 'world',
+        text: `The road is clear. ${spoils.credits} credits taken off the bodies.`,
+      });
+
+      // Anything they were hauling is now yours, up to what the truck will hold.
+      if (spoils.cargo) {
+        const took = [];
+        for (const [g, n] of Object.entries(spoils.cargo)) {
+          addSpoils(S, 'cargo', g, n);
+          took.push(`${n} ${GOODS[g]?.name || g}`);
+        }
+        if (took.length) notes.push({ tone: 'good', text: `Cargo taken: ${took.join(', ')}.` });
+      }
+      // Stripped off the bodies: weapons and armour, scaled to how many fell.
+      const sr = rng((S.seed + S.day * 977 + S.stats.missions * 13) | 0);
+      const strip = Math.max(1, Math.round((party?.strength || 4) * 0.16));
+      for (let i = 0; i < strip; i++) {
+        if (sr() < 0.45) addSpoils(S, 'armoury', pick(sr, ['rifle', 'smg', 'shotgun', 'dmr']));
+        else addSpoils(S, 'armourPool', pick(sr, ARMOUR_LIST));
+      }
+      notes.push({
+        tone: 'good',
+        text: `Weapons and armour stripped from the field — waiting on the equipment screen.`,
+      });
+
+      // Survivors who threw down their weapons.
+      if (spoils.prisoners > 0) {
+        const pr = rng((S.seed + S.day * 61 + S.stats.missions) | 0);
+        for (let i = 0; i < spoils.prisoners; i++) {
+          const captiveOf = party?.faction || null;
+          S.prisoners.push(Object.assign(makeSoldier(pr, {
+            role: pick(pr, ['rifleman', 'rifleman', 'breacher', 'marksman']),
+            how: `Taken prisoner on the road, day ${S.day}`,
+            day: S.day,
+            avoid: S.roster.map((x) => x.name),
+          }), { captiveFaction: captiveOf }));
+        }
+        notes.push({
+          tone: 'good',
+          text: `${spoils.prisoners} prisoner(s) taken. They can be pressed into the company from the roster.`,
+        });
+      }
+
+      const up = addRenown(S, spoils.renown);
+      notes.push({ tone: 'world', text: `Renown +${spoils.renown}.` });
+      if (up) {
+        notes.push({
+          tone: 'world',
+          text: `Bracket is ${up.name} — you can now deploy ${deployLimit(S)} into the field.`,
+        });
+      }
+      pushLog(S, 'Broke a hostile party on the road.', 'good');
+    }
+    // --- a raid: goods now, and a place that will remember it ---
+    if (res.type === 'raid') {
+      const took = res.raidTaken || 0;
+      const r2 = rng((S.seed + S.day * 811 + took) | 0);
+      let credits = 0;
+      // Tally by good rather than per store, so a raid that pulled the same
+      // thing twice reads as one line instead of two.
+      const haul = {};
+      for (let i = 0; i < took; i++) {
+        credits += irange(r2, 260, 520);
+        const g = pick(r2, GOODS_LIST);
+        const n = irange(r2, 2, 5);
+        addSpoils(S, 'cargo', g, n);
+        haul[g] = (haul[g] || 0) + n;
+      }
+      const goods = Object.entries(haul).map(([g, n]) => `${n} ${GOODS[g].name}`);
+      S.spoils.credits += credits;
+      notes.push({
+        tone: 'good',
+        text: `Carried out of ${locName(res.site)}: ${credits} credits`
+          + `${goods.length ? `, ${goods.join(', ')}` : ''}.`,
+      });
+
+      // This is the whole cost of it. A raided settlement will not sell to you
+      // and will not put anyone forward, for a long time.
+      changeRelation(S, res.site, -45);
+      const loc = locById(res.site);
+      if (loc?.faction) {
+        S.rep[loc.faction] = (S.rep[loc.faction] || 0) - 8;
+        notes.push({ tone: 'bad', text: `${FACTIONS[loc.faction].name} will hear about this.` });
+      }
+      // Soldiers know what they just did.
+      S.morale = clamp((S.morale ?? 70) - 3, 0, 100);
+      companyReacts(S, 'raid');
+      pushLog(S, `Bracket raided ${locName(res.site)}.`, 'bad');
+    }
+
+    if (res.type === 'sabotage' && res.site === 'rampart') {
+      S.world.rampartMastDown = true;
+      S.world.trustPatrolDensity = 0.25;
+      S.parties = S.parties.filter((p) => p.faction !== 'trust' || Math.random() > 0.6);
+      notes.push({
+        tone: 'world',
+        text: 'Rampart 12 is off the air. Trust patrol coverage across the north rim has collapsed.',
+      });
+      pushLog(S, 'The northern rim has gone quiet. Trust patrols are not being coordinated.', 'good');
+    }
+    if (res.type === 'recovery' && res.site === 'grellan') {
+      S.world.grellanCleared = true;
+      S.world.raiderDensity = 0.4;
+      notes.push({
+        tone: 'world',
+        text: 'The Array nest is broken. Scrapper activity across the east has thinned.',
+      });
+      pushLog(S, 'Scrappers have abandoned the Grellan pylons.', 'good');
+    }
+    if (res.type === 'defense' && res.site === 'perran') {
+      S.world.perranHeld = true;
+      S.rep.syndic += 3;
+      notes.push({
+        tone: 'world',
+        text: 'The Perran reclaimer is still turning. The Flats will open their roster to you.',
+      });
+      pushLog(S, 'Perran Flats held. The council is speaking well of Bracket.', 'good');
+    }
+  } else {
+    notes.push({ tone: 'bad', text: 'The contract was not completed. Word travels.' });
+    if (c) S.rep[c.employer] = (S.rep[c.employer] || 0) - 2;
+
+    // Being wiped or losing the commander is not the same as pulling out. An
+    // orderly withdrawal costs you the contract; being broken on the field
+    // costs you everything you were carrying and a fortnight.
+    if ((res.reason === 'wiped' || res.reason === 'commander') && res.type !== 'pit') {
+      const captor = res.enemyFaction || locById(res.site)?.faction || 'raider';
+      const taken = captureCompany(S, captor,
+        rng((S.seed + S.day * 977 + (S.stats.missions || 0) * 17) | 0));
+      notes.push({
+        tone: 'bad',
+        text: `The company was taken. ${taken.days} days gone, ${taken.credits} credits`
+          + `${taken.arms.length ? ' and the weapons off the truck' : ''} with them.`
+          + (taken.where ? ` You were put out on the road near ${taken.where}.` : ''),
+      });
+      if (taken.freed) {
+        notes.push({ tone: 'bad', text: `The prisoners you were carrying walked out with them.` });
+      }
+      res.captured = taken;
+    }
+  }
+
+  // Service to a liege is remembered, and eventually rewarded with ground.
+  if (res.success && S.allegiance && c && c.employer === S.allegiance) {
+    S.service = (S.service || 0) + 1;
+    if (S.service >= 4 && !S.fiefGranted) {
+      const candidates = LOCATIONS.filter((l) => l.faction === S.allegiance
+        && !isHolding(S, l.id) && l.missions);
+      const grant = candidates.length ? candidates[0] : null;
+      if (grant) {
+        S.fiefGranted = true;
+        S.holdings[grant.id] = {
+          upgrades: {}, takenDay: S.day, threat: 0, formerFaction: null, granted: true,
+        };
+        notes.push({
+          tone: 'world',
+          text: `${FACTIONS[S.allegiance].name} has granted Bracket ${grant.name} for its service.`,
+        });
+        pushLog(S, `${grant.name} granted to Bracket by charter.`, 'good');
+      }
+    }
+  }
+
+  // Contract work builds a name too, just more slowly than beating a column.
+  if (res.success && res.type !== 'skirmish') {
+    const gain = { recovery: 30, sabotage: 40, defense: 45, seize: 80 }[res.type] || 25;
+    const up = addRenown(S, gain);
+    notes.push({ tone: 'world', text: `Renown +${gain}.` });
+    if (up) {
+      notes.push({
+        tone: 'world',
+        text: `Bracket is ${up.name} — you can now deploy ${deployLimit(S)} into the field.`,
+      });
+    }
+  }
+
+  // Deployment takes most of a day.
+  advanceTime(S, 6);
+
+  // Vertical-slice end state: enough has happened that the larger game is visible.
+  if (!S.finale && S.stats.missions >= 3 && S.stats.recruited >= 1) {
+    S.finale = true;
+    notes.push({
+      tone: 'world',
+      text:
+        'Bracket is now a name people in the Reach use. Both parties have started ' +
+        'asking what you would charge for something larger.',
+    });
+  }
+  return notes;
+}
+
+// --------------------------------------------------------------------------
+// Settlement services
+// --------------------------------------------------------------------------
+
+export function recruitPool(S, locId) {
+  // Deterministic per location per day, so the player cannot reroll by leaving
+  // and coming back — a small thing that makes the world feel like it exists.
+  const l = locById(locId);
+  const r = rng((S.seed + S.day * 977 + locId.charCodeAt(0) * 31 + locId.length) | 0);
+  const mods = companyMods(S.roster);
+  const barracks = S.holdings?.[locId]?.upgrades?.barracks || 0;
+  // How many they will put forward, and how good. A place that trusts you
+  // offers more people and better ones; a place that resents you offers
+  // nobody at all.
+  const rel = relationOf(S, locId);
+  if (rel <= -60) return [];
+  const relBonus = rel >= 70 ? 2 : rel >= 35 ? 1 : rel <= -25 ? -1 : 0;
+  const n = Math.max(0, 2 + (l.faction && S.rep[l.faction] > 2 ? 1 : 0)
+    + mods.extraRecruit + barracks + relBonus);
+  const pool = [];
+  // Who a place raises, and what they were trained to do.
+  const originId = originForLocation(l);
+  const origin = ORIGINS[originId];
+  const roles = origin.roles;
+  for (let i = 0; i < n; i++) {
+    const s = makeSoldier(r, {
+      role: pick(r, roles),
+      rank: r() < 0.22 + barracks * 0.08 + Math.max(0, rel) * 0.004 ? 1 : 0,
+      how: `Hired at ${l.name}`,
+      day: S.day,
+      origin: originId,
+      avoid: [...S.roster.map((x) => x.name), ...pool.map((x) => x.name)],
+    });
+    // They arrive wearing what their people issue.
+    if (origin.kit.armour) s.equip.body = origin.kit.armour;
+    if (origin.kit.head) s.equip.head = origin.kit.head;
+    s.maxHp = maxHpOf(s);
+    s.hp = s.maxHp;
+    pool.push(s);
+  }
+  return pool;
+}
+
+/**
+ * Buy days of food. Priced off ration blocks so the trade economy and the
+ * payroll are the same economy — hoarding rations to sell is a real option, and
+ * a bad harvest year is a real problem.
+ */
+export function buyRations(S, locId, days = 7) {
+  const l = locById(locId);
+  if (!l?.services?.includes('market')) return false;
+  const cost = Math.round(priceAt(S, locId, 'rations') * 0.42 * days);
+  if (S.credits < cost) return false;
+  S.credits -= cost;
+  S.rations = (S.rations || 0) + days;
+  S.morale = clamp((S.morale ?? 70) + 2, 0, 100);
+  pushLog(S, `${days} days of rations bought at ${l.name} for ${cost}.`, 'good');
+  return true;
+}
+
+export function rationCost(S, locId, days = 7) {
+  return Math.round(priceAt(S, locId, 'rations') * 0.42 * days);
+}
+
+/**
+ * Prisoners.
+ *
+ * They were being captured, stored, and — despite a log line promising they
+ * "can be pressed into the company" — could never be anything at all. Three
+ * things you can now do with a prisoner, each with a real cost:
+ *
+ *  press    they join, cheap, but resentful: it costs morale and they start
+ *           unhappy. A company built from prisoners is a company that deserts.
+ *  ransom   sell them back to their own people. Pays well, costs standing with
+ *           that faction, and is the only reason to take prisoners for money.
+ *  release  free, and the one thing that BUYS standing back.
+ */
+export function pressPrisoner(S, id) {
+  const i = S.prisoners.findIndex((p) => p.id === id);
+  if (i < 0) return false;
+  const [p] = S.prisoners.splice(i, 1);
+  p.how = `Pressed into service, day ${S.day}`;
+  p.pressed = true;
+  S.roster.push(p);
+  S.stats.recruited++;
+  // Nobody likes serving next to somebody who was shooting at them last week.
+  S.morale = clamp((S.morale ?? 70) - 5, 0, 100);
+  companyReacts(S, 'press');
+  pushLog(S, `${p.name} was pressed into the company. The others noticed.`, 'world');
+  return true;
+}
+
+export function ransomValue(S, p) {
+  return Math.round(120 * (1 + (p.rank || 0) * 0.6));
+}
+
+export function ransomPrisoner(S, id) {
+  const i = S.prisoners.findIndex((x) => x.id === id);
+  if (i < 0) return false;
+  const [p] = S.prisoners.splice(i, 1);
+  const paid = ransomValue(S, p);
+  S.credits += paid;
+  const f = p.captiveFaction;
+  if (f && S.rep[f] != null) S.rep[f] -= 2;
+  companyReacts(S, 'ransom');
+  pushLog(S, `${p.name} was ransomed back for ${paid} credits.`, 'good');
+  return true;
+}
+
+/**
+ * What a broker in a given town will pay for a prisoner today.
+ *
+ * A prisoner had exactly one price and it was the same everywhere, which made
+ * the whole roster of captives a button rather than a decision. A broker is a
+ * market: the rate moves by town and drifts every few days, so carrying two
+ * officers to the right place is worth doing, and dumping them at the first
+ * market you pass is a choice you are making rather than the only option.
+ *
+ * Derived rather than stored, so it survives a save without a version bump and
+ * cannot drift out of step with the day.
+ */
+export const BROKER_FLOOR = 1.35;
+export const BROKER_CEIL = 2.45;
+
+export function brokerRate(S, locId) {
+  if (!locId) return 1;
+  const key = `${locId}:${Math.floor(S.day / 3)}:${S.seed}`;
+  // FNV-1a with a murmur3 finalizer. The obvious `h * 31 + c` hash does not
+  // avalanche: the day block is one digit of the key, so stepping it by one
+  // moved the result by a near-constant amount and the price climbed in a
+  // straight line — 1.51, 1.68, 1.85, 2.01 — which is a ramp a player can read
+  // off, not a market.
+  let h = 2166136261;
+  for (let i = 0; i < key.length; i++) {
+    h ^= key.charCodeAt(i);
+    h = Math.imul(h, 16777619);
+  }
+  h ^= h >>> 15; h = Math.imul(h, 2246822507);
+  h ^= h >>> 13; h = Math.imul(h, 3266489909);
+  h ^= h >>> 16;
+  const t = (h >>> 0) / 4294967296;
+  return BROKER_FLOOR + t * (BROKER_CEIL - BROKER_FLOOR);
+}
+
+export const brokerPrice = (S, locId, p) =>
+  Math.round(ransomValue(S, p) * brokerRate(S, locId));
+
+/** Whether this place has anyone who deals in people. */
+export const hasBroker = (locId) => {
+  const l = LOCATIONS.find((x) => x.id === locId);
+  return !!l && (l.services || []).includes('market');
+};
+
+/**
+ * Sell a prisoner on rather than ransoming them home.
+ *
+ * Pays roughly twice what their own people would, and costs three times as much
+ * standing with them — and unlike a ransom, half the company has an opinion
+ * about it. That is the trade: the money is real and so is what it makes you.
+ */
+export function sellPrisoner(S, locId, id) {
+  const i = S.prisoners.findIndex((x) => x.id === id);
+  if (i < 0 || !hasBroker(locId)) return null;
+  const [p] = S.prisoners.splice(i, 1);
+  const paid = brokerPrice(S, locId, p);
+  S.credits += paid;
+  const f = p.captiveFaction;
+  if (f && S.rep[f] != null) S.rep[f] -= 6;
+  // The town does not mind; brokers are business. Their own people do.
+  companyReacts(S, 'sell');
+  S.stats.sold = (S.stats.sold || 0) + 1;
+  pushLog(S, `${p.name} was sold on for ${paid} credits.`, 'bad');
+  return { paid, name: p.name };
+}
+
+export function releasePrisoner(S, id) {
+  const i = S.prisoners.findIndex((x) => x.id === id);
+  if (i < 0) return false;
+  const [p] = S.prisoners.splice(i, 1);
+  const f = p.captiveFaction;
+  if (f && S.rep[f] != null) S.rep[f] += 3;
+  S.morale = clamp((S.morale ?? 70) + 1, 0, 100);
+  companyReacts(S, 'release');
+  pushLog(S, `${p.name} was let go. Word gets around.`, 'good');
+  return true;
+}
+
+/**
+ * The upgrades available to one soldier right now, each with why it is or is
+ * not possible. Returning the blocked ones too is deliberate — a player needs
+ * to see what this person could become before deciding whether to keep them
+ * alive for it.
+ */
+export function upgradesFor(S, s) {
+  if (!s || s.isCommander) return [];
+  const paths = TROOP_PATHS[s.role] || [];
+  const mods = companyMods(S.roster);
+  return paths.map((p) => {
+    // Workshops make kit cheaper, and re-roling somebody is mostly kit.
+    const cost = Math.round(p.cost * (1 - Math.min(0.36, upgradeTotal(S, 'workshop') * 0.12))
+      * (mods.hireMul || 1));
+    const rankOk = s.rank >= p.rank;
+    const canPay = S.credits >= cost;
+    return {
+      ...p, cost, rankOk, canPay,
+      ok: rankOk && canPay && deployable(s),
+      why: !rankOk ? `Needs ${RANKS[p.rank].name} rank — they are ${RANKS[s.rank].name}.`
+        : !deployable(s) ? 'They are in no state for it.'
+          : !canPay ? `Costs ${cost}; you have ${S.credits}.`
+            : p.why,
+      wageNow: wageOf(s),
+      wageAfter: wageOf({ ...s, role: p.to }),
+    };
+  });
+}
+
+/**
+ * Promote a soldier into a new role. Their history, rank and perks come with
+ * them — this is the same person with a different job, not a replacement.
+ */
+export function upgradeTroop(S, id, toRole) {
+  const s = S.roster.find((x) => x.id === id);
+  if (!s) return false;
+  const opt = upgradesFor(S, s).find((o) => o.to === toRole);
+  if (!opt || !opt.ok) return false;
+  S.credits -= opt.cost;
+  const was = ROLES[s.role].name;
+  s.role = toRole;
+  s.weapon = ROLES[toRole].weapon;
+  s.maxHp = maxHpOf(s);
+  s.hp = Math.min(s.hp, s.maxHp);
+  s.retrainedDay = S.day;
+  // Being retrained is a promotion in everything but name; people like it.
+  S.morale = clamp((S.morale ?? 70) + 2, 0, 100);
+  pushLog(S, `${s.name} retrained from ${was} to ${ROLES[toRole].name}.`, 'good');
+  return true;
+}
+
+/**
+ * Standing with one settlement.
+ *
+ * Faction reputation is about politics; this is about the people who live in a
+ * particular place. It is what makes a settlement somewhere you have a history
+ * with rather than a vending machine: the town whose contracts you have been
+ * taking for a month should offer you their better people and a fair price, and
+ * the town whose road you have been robbing should not.
+ */
+export const RELATION_TIERS = [
+  { at: -100, name: 'Hated', note: 'They will not deal with you at all.' },
+  { at: -60, name: 'Resented', note: 'No one here will take your money for a recruit.' },
+  { at: -25, name: 'Wary', note: 'Nobody here is especially pleased to see you.' },
+  { at: 0, name: 'Known', note: 'A company that passes through. No history either way.' },
+  { at: 35, name: 'Trusted', note: 'They put their better people forward.' },
+  { at: 70, name: 'Ours', note: 'This is somewhere you can call on.' },
+];
+
+export const relationOf = (S, locId) => S.relations?.[locId] ?? 0;
+
+export const relationTier = (S, locId) => [...RELATION_TIERS].reverse()
+  .find((t) => relationOf(S, locId) >= t.at) || RELATION_TIERS[0];
+
+export function changeRelation(S, locId, delta, why = null) {
+  if (!locId || !delta) return;
+  if (!S.relations) S.relations = {};
+  const before = relationOf(S, locId);
+  const after = clamp(before + delta, -100, 100);
+  S.relations[locId] = after;
+  // Only announce a crossing, not every point — otherwise the company log
+  // becomes a stream of numbers nobody reads.
+  const t0 = [...RELATION_TIERS].reverse().find((t) => before >= t.at);
+  const t1 = [...RELATION_TIERS].reverse().find((t) => after >= t.at);
+  if (t0 !== t1) {
+    pushLog(S, `${locName(locId)} now regards Bracket as ${t1.name}.`,
+      after > before ? 'good' : 'bad');
+  } else if (why) {
+    pushLog(S, why, delta > 0 ? 'good' : 'bad');
+  }
+}
+
+/**
+ * How standing bends a price, in the direction that actually makes sense.
+ *
+ * A place that likes you sells to you cheaper AND pays you better. Folding one
+ * multiplier into priceAt() would have done the first and the exact opposite of
+ * the second — being well liked would have cost you money on every sale.
+ */
+const REL_PRICE_SWING = 0.18;
+export const buyPriceAt = (S, locId, goodId) => Math.max(1, Math.round(
+  priceAt(S, locId, goodId) * (1 - clamp(relationOf(S, locId) / 100, -1, 1) * REL_PRICE_SWING)));
+export const sellPriceAt = (S, locId, goodId) => Math.max(1, Math.round(
+  priceAt(S, locId, goodId) * (1 + clamp(relationOf(S, locId) / 100, -1, 1) * REL_PRICE_SWING)));
+
+/**
+ * Caravans of your own.
+ *
+ * Holdings pay a fixed yield whether or not the roads around them are safe,
+ * which makes them a number that goes up rather than a place you have to look
+ * after. A caravan is the opposite: it is money that has to physically survive
+ * the map. It earns more the better your standing is at the places it trades
+ * with, and it can be taken off you by anything hostile it walks into.
+ *
+ * That is the whole point of it — it gives you a reason to care about the road
+ * between two towns rather than only about the towns.
+ */
+export const CARAVAN_COST = 2600;
+
+export function canBuyCaravan(S, locId) {
+  if (!isHolding(S, locId)) {
+    return { ok: false, why: 'You can only fit out a caravan somewhere you hold.' };
+  }
+  const depot = S.holdings[locId].upgrades?.depot || 0;
+  if (!depot) return { ok: false, why: 'Needs a Depot here to load one.' };
+  const owned = (S.parties || []).filter((p) => p.kind === 'own_caravan'
+    && p.homeHolding === locId).length;
+  if (owned >= depot) {
+    return { ok: false, why: `A level ${depot} depot runs ${depot}; raise it for more.` };
+  }
+  if (S.credits < CARAVAN_COST) {
+    return { ok: false, why: `Costs ${CARAVAN_COST}; you have ${S.credits}.` };
+  }
+  return { ok: true };
+}
+
+export function buyCaravan(S, locId) {
+  if (!canBuyCaravan(S, locId).ok) return false;
+  S.credits -= CARAVAN_COST;
+  const r = rng((S.seed + S.day * 71 + (S.parties?.length || 0)) | 0);
+  const p = spawnParty(S, r, 'own_caravan', locId);
+  p.name = `Bracket Caravan`;
+  p.owner = 'player';
+  p.baseHostile = false;
+  p.hostileToPlayer = false;
+  p.homeHolding = locId;
+  p.nextPayDay = S.day + 4;
+  pushLog(S, `A caravan was fitted out at ${locName(locId)}.`, 'good');
+  return p;
+}
+
+/**
+ * Run every caravan for a day: pay out on arrival, and roll for whether the
+ * road ate one. Losses are always announced with a place, because a number
+ * quietly going down is a bug as far as the player is concerned.
+ */
+export function tickCaravans(S, r) {
+  const mine = (S.parties || []).filter((p) => p.kind === 'own_caravan');
+  for (const c of mine) {
+    // Anything hostile close by is a real risk to an escorted truck.
+    const threat = S.parties.filter((p) => p.hostileToPlayer && !p.owner
+      && Math.hypot(p.x - c.x, p.z - c.z) < 260).length;
+    if (threat && r() < Math.min(0.055, 0.018 * threat)) {
+      S.parties = S.parties.filter((p) => p.id !== c.id);
+      S.stats.caravansLost = (S.stats.caravansLost || 0) + 1;
+      const near = nearestLocation(c.x, c.z);
+      pushLog(S, `The caravan was taken on the road near ${near ? near.name : 'open country'}.`, 'bad');
+      S.morale = clamp((S.morale ?? 70) - 4, 0, 100);
+      continue;
+    }
+
+    if (S.day < (c.nextPayDay || 0)) continue;
+    // A completed leg. What it earns depends on how welcome it is where it
+    // trades, which is what ties caravans to the standing system.
+    const where = locById(c.target) || locById(c.homeHolding);
+    const rel = where ? relationOf(S, where.id) : 0;
+    const depot = S.holdings?.[c.homeHolding]?.upgrades?.depot || 0;
+    const profit = Math.round(range(r, 190, 340)
+      * (1 + depot * 0.18)
+      * (1 + clamp(rel / 100, -1, 1) * 0.35));
+    S.credits += profit;
+    c.nextPayDay = S.day + irange(r, 4, 7);
+    if (where) changeRelation(S, where.id, 0.8);
+    pushLog(S, `Caravan takings from ${where ? where.name : 'the road'}: ${profit} credits.`, 'good');
+  }
+}
+
+/**
+ * Tell the company what you just did, and let them have an opinion about it.
+ *
+ * Every soldier reacts through their own creed, so one decision earns credit
+ * with some of your people and costs it with others. Announcing is deliberately
+ * sparing — only when somebody crosses a tier line — because a line of log per
+ * soldier per event would bury everything else the log is for.
+ */
+export function companyReacts(S, event) {
+  const tierOf = (v) => [...REGARD_TIERS].reverse().find((t) => v >= t.at) || REGARD_TIERS[0];
+  const moved = [];
+  for (const s of living(S)) {
+    if (s.isCommander) continue;
+    const creed = CREEDS[s.creed] || CREEDS.paid;
+    const delta = creed.react[event] || 0;
+    if (!delta) continue;
+    const before = s.regard || 0;
+    s.regard = clamp(before + delta, -100, 100);
+    const t0 = tierOf(before), t1 = tierOf(s.regard);
+    if (t0 !== t1) {
+      moved.push({ name: s.name, tier: t1.name, up: s.regard > before, line: creed.line });
+      pushLog(S, `${s.name} is ${t1.name.toLowerCase()} on the company. ${creed.line}`,
+        s.regard > before ? 'good' : 'bad');
+    }
+  }
+  return moved;
+}
+
+export function breakOathReaction(S) { return companyReacts(S, 'oathbreak'); }
+
+/**
+ * Somebody who has had enough leaves — but only after warning you, and only
+ * once they have been unhappy for a while. A soldier who vanishes because a
+ * number crossed a line reads as a bug; one who told you first reads as a
+ * consequence you could have done something about.
+ */
+export function tickResentment(S, r) {
+  for (const s of living(S)) {
+    if (s.isCommander) continue;
+    if ((s.regard || 0) > -45) { s.quitWarned = false; continue; }
+    if (!s.quitWarned) {
+      s.quitWarned = true;
+      pushLog(S, `${s.name} has said they are thinking about leaving.`, 'bad');
+      continue;
+    }
+    if (r() < 0.12) {
+      S.roster = S.roster.filter((x) => x.id !== s.id);
+      S.stats.quit = (S.stats.quit || 0) + 1;
+      pushLog(S, `${s.name} took their kit and went. They had warned you.`, 'bad');
+    }
+  }
+}
+
+// --------------------------------------------------------------------------
+// Favours
+// --------------------------------------------------------------------------
+
+export const favourAt = (S, locId) => (S.favours || {})[locId] || null;
+
+const favourText = (f, key) => (f[key] || '')
+  .replace(/%WHO%/g, f.who)
+  .replace(/%QTY%/g, f.qty || '')
+  .replace(/%GOOD%/g, f.good ? GOODS[f.good].name.toLowerCase() : '');
+
+/**
+ * Ask one of the named people in a settlement for something.
+ *
+ * Only one favour is ever open per settlement, and only from somebody who
+ * actually lives there — a favour from a stranger is just a contract with worse
+ * pay. There is a cooldown after each one so a town does not become a queue.
+ */
+export function offerFavour(S, locId, r) {
+  if (!S.favours) S.favours = {};
+  if (S.favours[locId]) return S.favours[locId];
+  if ((S.favourCooldown?.[locId] || 0) > S.day) return null;
+  const loc = LOCATIONS.find((l) => l.id === locId);
+  if (!loc || !loc.contacts?.length || !loc.services?.length) return null;
+
+  const who = pick(r, loc.contacts);
+  const tpl = pick(r, FAVOURS);
+  const f = {
+    id: uid('fav'),
+    site: locId,
+    kind: tpl.kind,
+    who: who.name,
+    role: who.role,
+    tplId: tpl.id,
+    ask: tpl.ask, done: tpl.done, fail: tpl.fail,
+    accepted: false,
+    expiresDay: S.day + irange(r, 9, 16),
+  };
+  if (tpl.kind === 'goods') {
+    f.good = pick(r, GOODS_LIST);
+    f.qty = irange(r, 3, 7);
+    // Worth rather more than the goods, because you are also carrying them.
+    f.pay = Math.round(GOODS[f.good].base * f.qty * range(r, 1.15, 1.5));
+  } else {
+    f.pay = Math.round(range(r, 700, 1200));
+  }
+  S.favours[locId] = f;
+  return f;
+}
+
+export function acceptFavour(S, locId) {
+  const f = favourAt(S, locId);
+  if (!f || f.accepted) return null;
+  f.accepted = true;
+  f.acceptedDay = S.day;
+  // Clearing a camp is measured from the moment you agreed to do it, so an old
+  // kill cannot be handed in as a new favour.
+  if (f.kind === 'lair') f.mark = S.stats.lairsCleared || 0;
+  pushLog(S, `${f.who} asked Bracket for something.`, 'world');
+  return f;
+}
+
+/** Whether the favour can be handed in, and what is still outstanding. */
+export function favourProgress(S, f) {
+  if (!f || !f.accepted) return { ready: false, note: '' };
+  if (f.kind === 'goods') {
+    const have = (S.cargo || {})[f.good] || 0;
+    return {
+      ready: have >= f.qty,
+      note: `${have} of ${f.qty} ${GOODS[f.good].name.toLowerCase()} in the truck`,
+    };
+  }
+  const cleared = (S.stats.lairsCleared || 0) - (f.mark || 0);
+  return {
+    ready: cleared > 0,
+    note: cleared > 0 ? 'The camp is cleared' : 'No camp cleared since you agreed',
+  };
+}
+
+/**
+ * Hand it in. The pay is the smaller half of this: what a favour buys is
+ * standing with the people who live here, and they are the ones who decide who
+ * they will put forward and what they will charge.
+ */
+export function completeFavour(S, locId) {
+  const f = favourAt(S, locId);
+  if (!f || !favourProgress(S, f).ready) return null;
+  if (f.kind === 'goods') S.cargo[f.good] -= f.qty;
+  S.credits += f.pay;
+  S.renown = (S.renown || 0) + 12;
+  changeRelation(S, locId, 14, `a favour for ${f.who}`);
+  S.stats.favours = (S.stats.favours || 0) + 1;
+  pushLog(S, favourText(f, 'done'), 'good');
+  delete S.favours[locId];
+  if (!S.favourCooldown) S.favourCooldown = {};
+  S.favourCooldown[locId] = S.day + 6;
+  return { pay: f.pay, who: f.who };
+}
+
+export function declineFavour(S, locId) {
+  const f = favourAt(S, locId);
+  if (!f) return;
+  // Saying no costs nothing. It is not turning up after saying yes that costs.
+  delete S.favours[locId];
+  if (!S.favourCooldown) S.favourCooldown = {};
+  S.favourCooldown[locId] = S.day + irange(rng(S.day + 1), 4, 9);
+}
+
+export function tickFavours(S, r) {
+  if (!S.favours) return;
+  for (const [locId, f] of Object.entries(S.favours)) {
+    if (S.day <= f.expiresDay) continue;
+    if (f.accepted) {
+      changeRelation(S, locId, -10, `let ${f.who} down`);
+      pushLog(S, favourText(f, 'fail'), 'bad');
+    }
+    delete S.favours[locId];
+    if (!S.favourCooldown) S.favourCooldown = {};
+    S.favourCooldown[locId] = S.day + irange(r, 5, 10);
+  }
+}
+
+/** The words a notable uses to ask. */
+export const favourAsk = (f) => favourText(f, 'ask');
+
+// --------------------------------------------------------------------------
+// Being taken
+// --------------------------------------------------------------------------
+
+/**
+ * What happens when the company is broken in the field.
+ *
+ * Losing used to cost a line of log and two points of standing with whoever
+ * hired you, which meant the honest response to a bad fight was to reload —
+ * and a game you reload is a game with no difficulty curve, only a patience
+ * curve. Losing has to be survivable and expensive at the same time.
+ *
+ * So the company is taken. Weeks go by, most of the money and half the cargo
+ * goes, and you are put out on the road somewhere belonging to whoever beat
+ * you. Nobody dies who was not already dead: the roster is the thing the player
+ * is attached to, and killing it on a loss would send them straight back to the
+ * reload they were being spared.
+ */
+export function captureCompany(S, captor, r) {
+  const days = irange(r, 4, 11);
+
+  // Everything portable. What they leave you is the truck and the people in it.
+  const tookCredits = Math.round(S.credits * range(r, 0.4, 0.65));
+  S.credits -= tookCredits;
+  const tookCargo = {};
+  for (const [g, n] of Object.entries(S.cargo || {})) {
+    const take = Math.ceil(n * range(r, 0.45, 0.8));
+    if (take <= 0) continue;
+    S.cargo[g] -= take;
+    if (S.cargo[g] <= 0) delete S.cargo[g];
+    tookCargo[g] = take;
+  }
+  const tookArms = [];
+  const arms = Object.entries(S.armoury || {}).filter(([, n]) => n > 0);
+  for (let i = 0; i < 2 && arms.length; i++) {
+    const [id] = arms[irange(r, 0, arms.length - 1)];
+    if (!S.armoury[id]) continue;
+    S.armoury[id] -= 1;
+    if (S.armoury[id] <= 0) delete S.armoury[id];
+    tookArms.push(id);
+  }
+  // Prisoners you were carrying walk out with their own side.
+  const freed = (S.prisoners || []).length;
+  S.prisoners = [];
+
+  // The time is the real cost, and it is also the mercy: wounds close while you
+  // are sitting in a room. Wages and rations are deliberately NOT run for these
+  // days — a company in a cell is not buying food or drawing pay, and running
+  // the payroll through captivity would produce a cascade of "nobody was paid"
+  // for something the player could not have prevented.
+  S.day += days;
+  for (const s of living(S)) {
+    if (s.wound) {
+      s.wound.days -= days;
+      if (s.wound.days <= 0) {
+        s.wound = null;
+        s.status = STATUS.HEALTHY;
+        s.maxHp = maxHpOf(s);
+      }
+    }
+    s.hp = s.maxHp;
+  }
+
+  // Put out on the road somewhere that belongs to whoever took you.
+  const theirs = LOCATIONS.filter((l) => l.faction === captor && l.kind !== 'open');
+  const drop = theirs.length ? pick(r, theirs) : locById('vetch');
+  if (drop) {
+    S.pos.x = drop.x + range(r, -90, 90);
+    S.pos.z = drop.z + range(r, -90, 90);
+    S.dest = null;
+  }
+
+  S.renown = Math.max(0, (S.renown || 0) - 60);
+  S.morale = clamp((S.morale ?? 70) - 14, 0, 100);
+  if (captor && S.rep[captor] != null) S.rep[captor] -= 3;
+  S.stats.captured = (S.stats.captured || 0) + 1;
+  companyReacts(S, 'captured');
+  pushLog(S, `Bracket was broken and held for ${days} days.`, 'bad');
+
+  const took = { credits: tookCredits, cargo: tookCargo, arms: tookArms };
+  // Only one grudge at a time: two named commanders each holding a share of
+  // your things is bookkeeping, not a story.
+  if (!S.grudge) openGrudge(S, r, captor, took);
+
+  return {
+    days, captor, ...took, freed, where: drop ? drop.name : null,
+    grudge: S.grudge ? S.grudge.who : null,
+  };
+}
+
+/**
+ * Whoever broke the company keeps what they took — and keeps carrying it.
+ *
+ * Capture on its own is a tax: you lose a fortnight and most of your money to
+ * nobody in particular, and the only thing to do about it is earn it again.
+ * Giving the loot to a named commander who stays on the map turns the worst
+ * afternoon in the game into the start of something — there is a person out
+ * there with your rifles, and you can go and find them.
+ *
+ * They are deliberately beatable. A grudge party is one tier above a patrol,
+ * not a battle group: this is meant to be a hunt you can actually finish, some
+ * weeks later, with the company you rebuilt.
+ */
+export function openGrudge(S, r, captor, took) {
+  const tier = captor === 'syndic' ? 'patrol_syndic'
+    : captor === 'trust' ? 'patrol_trust' : 'scrappers';
+  const near = LOCATIONS.filter((l) => l.faction === captor && l.kind !== 'open');
+  const p = spawnParty(S, r, tier, (near.length ? pick(r, near) : locById('vetch')).id);
+  const who = `${pick(r, FIRST_NAMES)} ${pick(r, LAST_NAMES)}`;
+  p.name = `${who}'s command`;
+  p.commander = who;
+  // Marked so the map can call it out and the campaign can recognise it later.
+  p.grudge = true;
+  p.hostileToPlayer = true;
+  p.baseHostile = true;
+  // What they are carrying is exactly what they took, so recovering it is a
+  // real recovery rather than a consolation payout.
+  p.holds = { credits: took.credits, cargo: { ...took.cargo }, arms: [...took.arms] };
+
+  S.grudge = {
+    partyId: p.id, who, captor, since: S.day,
+    credits: took.credits, cargo: { ...took.cargo }, arms: [...took.arms],
+  };
+  pushLog(S, `${who} has your money and your weapons, and is not hiding.`, 'bad');
+  return S.grudge;
+}
+
+/** Did we just beat the people who took us? */
+export function settleGrudge(S, partyId) {
+  const g = S.grudge;
+  if (!g || g.partyId !== partyId) return null;
+  S.credits += g.credits;
+  for (const [good, n] of Object.entries(g.cargo || {})) {
+    S.cargo[good] = (S.cargo[good] || 0) + n;
+  }
+  for (const id of g.arms || []) S.armoury[id] = (S.armoury[id] || 0) + 1;
+  const back = addRenown(S, 90);
+  S.morale = clamp((S.morale ?? 70) + 10, 0, 100);
+  S.stats.grudges = (S.stats.grudges || 0) + 1;
+  companyReacts(S, 'win');
+  pushLog(S, `${g.who} is finished. Bracket has its own back.`, 'good');
+  S.grudge = null;
+  return { who: g.who, credits: g.credits, arms: (g.arms || []).length, renown: back };
+}
+
+/**
+ * They do not carry it forever. Left long enough the money is spent and the
+ * rifles are issued to somebody, and the trail is cold — which is the pressure
+ * that makes a grudge something you act on rather than a chore on a list.
+ */
+export const GRUDGE_DAYS = 40;
+
+export function tickGrudge(S) {
+  const g = S.grudge;
+  if (!g) return;
+  const stillThere = S.parties.some((p) => p.id === g.partyId);
+  if (!stillThere) { S.grudge = null; return; }
+  if (S.day - g.since < GRUDGE_DAYS) return;
+  const p = S.parties.find((x) => x.id === g.partyId);
+  if (p) { p.grudge = false; p.holds = null; p.name = p.name.replace(/'s command$/, "'s people"); }
+  pushLog(S, `${g.who} has spent what was taken from Bracket. It is gone.`, 'bad');
+  S.grudge = null;
+}
+
+export function hireCost(S, s) {
+  const base = { rifleman: 240, breacher: 320, marksman: 360, gunner: 380, medic: 420, signals: 400 };
+  const mods = companyMods(S.roster);
+  // Better-trained people cost more, and Scour hands are cheap for a reason.
+  const originMul = ORIGINS[s.origin]?.costMul ?? 1;
+  // They come wearing kit, and kit is worth money. Without this a Trust
+  // regular is a 25% price rise for a 60%-odd health advantage.
+  let kitValue = 0;
+  for (const id of Object.values(s.equip || {})) {
+    const a = ARMOUR[id];
+    if (a) kitValue += Math.round(a.price * 0.8);
+  }
+  return Math.round((base[s.role] || 250) * (1 + s.rank * 0.45) * mods.hireMul * originMul)
+    + kitValue;
+}
+
+export function hire(S, s) {
+  const cost = hireCost(S, s);
+  if (S.credits < cost) return false;
+  S.credits -= cost;
+  S.roster.push(s);
+  S.stats.recruited++;
+  pushLog(S, `${s.name} hired at ${locName(S.atLocation)}.`, 'good');
+  return true;
+}
+
+// --------------------------------------------------------------------------
+// Armoury and loadout
+// --------------------------------------------------------------------------
+
+const bump = (map, id, n) => {
+  map[id] = (map[id] || 0) + n;
+  if (map[id] <= 0) delete map[id];
+};
+
+export const armouryList = (S) =>
+  Object.entries(S.armoury || {}).filter(([, n]) => n > 0)
+    .map(([id, n]) => ({ id, n, def: WEAPONS[id] })).filter((x) => x.def);
+
+export const kitList = (S) =>
+  Object.entries(S.kitPool || {}).filter(([, n]) => n > 0)
+    .map(([id, n]) => ({ id, n, def: KIT[id] })).filter((x) => x.def);
+
+export const armourList = (S, slot = null) =>
+  Object.entries(S.armourPool || {}).filter(([, n]) => n > 0)
+    .map(([id, n]) => ({ id, n, def: ARMOUR[id] }))
+    .filter((x) => x.def && (!slot || x.def.slot === slot));
+
+/** Move an armour piece onto a soldier; whatever they wore returns to stores. */
+export function equipArmour(S, soldier, slot, armourId) {
+  if (armourId && (!ARMOUR[armourId] || ARMOUR[armourId].slot !== slot)) return false;
+  if (armourId && !(S.armourPool[armourId] > 0)) return false;
+  soldier.equip = soldier.equip || { head: null, body: null, legs: null };
+  const worn = soldier.equip[slot];
+  if (worn) bump(S.armourPool, worn, 1);
+  if (armourId) bump(S.armourPool, armourId, -1);
+  soldier.equip[slot] = armourId || null;
+  soldier.maxHp = maxHpOf(soldier);
+  soldier.hp = Math.min(soldier.hp, soldier.maxHp);
+  return true;
+}
+
+export function buyArmour(S, armourId) {
+  const a = ARMOUR[armourId];
+  if (!a) return false;
+  const price = Math.round(a.price * (1 - Math.min(0.36, upgradeTotal(S, 'workshop') * 0.12)));
+  if (S.credits < price) return false;
+  S.credits -= price;
+  bump(S.armourPool, armourId, 1);
+  pushLog(S, `Bought ${a.name}.`);
+  return true;
+}
+
+/**
+ * Move a weapon from the armoury onto a soldier; whatever they were carrying
+ * goes back into the armoury. Nothing is ever created or destroyed, so the
+ * armoury screen is a real inventory rather than a shop front.
+ */
+export function equipWeapon(S, soldier, weaponId) {
+  if (!WEAPONS[weaponId]) return false;
+  if (soldier.weapon === weaponId) return false;
+  if (!(S.armoury[weaponId] > 0)) return false;
+  bump(S.armoury, weaponId, -1);
+  if (soldier.weapon) bump(S.armoury, soldier.weapon, 1);
+  soldier.weapon = weaponId;
+  return true;
+}
+
+export function equipKit(S, soldier, kitId) {
+  if (kitId && !KIT[kitId]) return false;
+  if (kitId && !(S.kitPool[kitId] > 0)) return false;
+  if (soldier.kit) bump(S.kitPool, soldier.kit, 1);
+  if (kitId) bump(S.kitPool, kitId, -1);
+  soldier.kit = kitId || null;
+  soldier.maxHp = maxHpOf(soldier);
+  soldier.hp = Math.min(soldier.hp, soldier.maxHp);
+  return true;
+}
+
+export function buyWeapon(S, weaponId) {
+  const w = WEAPONS[weaponId];
+  if (!w || !w.price) return false;
+  const price = Math.round(w.price * (1 - Math.min(0.36, upgradeTotal(S, 'workshop') * 0.12)));
+  if (S.credits < price) return false;
+  S.credits -= price;
+  bump(S.armoury, weaponId, 1);
+  pushLog(S, `Bought a ${w.name}.`);
+  return true;
+}
+
+export function buyKit(S, kitId) {
+  const k = KIT[kitId];
+  if (!k) return false;
+  const price = Math.round(k.price * (1 - Math.min(0.36, upgradeTotal(S, 'workshop') * 0.12)));
+  if (S.credits < price) return false;
+  S.credits -= price;
+  bump(S.kitPool, kitId, 1);
+  pushLog(S, `Bought ${k.name}.`);
+  return true;
+}
+
+// --------------------------------------------------------------------------
+// Trade
+//
+// Mount & Blade's shape: every settlement produces a couple of things cheaply
+// and wants a couple of things badly, prices drift daily, and the profit is in
+// knowing the routes. Cargo is capped by the company transport, so hauling
+// bulk means giving up the ability to haul anything else.
+// --------------------------------------------------------------------------
+
+export const CARGO_CAPACITY = 60;
+
+export function cargoUsed(S) {
+  let n = 0;
+  for (const [id, qty] of Object.entries(S.cargo || {})) {
+    n += (GOODS[id]?.bulk || 1) * qty;
+  }
+  return n;
+}
+
+/** Total capacity including any Depot upgrades the company has built. */
+export const cargoCap = (S) => CARGO_CAPACITY + depotCapacity(S);
+export const cargoFree = (S) => cargoCap(S) - cargoUsed(S);
+
+function seedPrices(S) {
+  S.priceDay = -1;
+  S.prices = {};
+  refreshPrices(S);
+}
+
+/**
+ * Prices are deterministic per location per day: a producer sells its own
+ * output cheap and pays over the odds for what it cannot make. Re-derived
+ * rather than stored, so the player cannot reroll a market by leaving.
+ */
+export function refreshPrices(S) {
+  if (S.priceDay === S.day) return;
+  S.priceDay = S.day;
+  S.prices = {};
+  for (const l of LOCATIONS) {
+    if (!l.trade) continue;
+    const r = rng((S.seed + S.day * 5651 + l.id.length * 313 + l.id.charCodeAt(0) * 17) | 0);
+    const row = {};
+    for (const id of GOODS_LIST) {
+      const g = GOODS[id];
+      let mul = 1;
+      if (l.trade.sell?.includes(id)) mul = range(r, 0.55, 0.75);   // produced here
+      else if (l.trade.buy?.includes(id)) mul = range(r, 1.30, 1.65); // wanted here
+      else mul = range(r, 0.88, 1.14);
+      row[id] = Math.max(5, Math.round(g.base * mul));
+    }
+    S.prices[l.id] = row;
+  }
+}
+
+/**
+ * The cheapest places on the map to buy a given good right now.
+ *
+ * Upgrades are paid in goods, and a player looking at "needs 6 MCH" has no way
+ * to know whether that means shopping, looting, or waiting — so the holdings
+ * screen asks this and prints the answer.
+ */
+export function sourcesFor(S, goodId, limit = 2) {
+  refreshPrices(S);
+  const out = [];
+  for (const l of LOCATIONS) {
+    if (!l.services?.includes('market')) continue;
+    out.push({ id: l.id, name: l.name, price: priceAt(S, l.id, goodId) });
+  }
+  out.sort((a, b) => a.price - b.price);
+  return out.slice(0, limit);
+}
+
+export function priceAt(S, locId, goodId) {
+  refreshPrices(S);
+  return S.prices?.[locId]?.[goodId] ?? GOODS[goodId]?.base ?? 0;
+}
+
+/** Does this settlement produce (green) or want (ochre) this good? */
+export function priceTrend(locId, goodId) {
+  const l = locById(locId);
+  if (!l?.trade) return 'flat';
+  if (l.trade.sell?.includes(goodId)) return 'cheap';
+  if (l.trade.buy?.includes(goodId)) return 'dear';
+  return 'flat';
+}
+
+export function buyGood(S, locId, goodId, qty = 1) {
+  const g = GOODS[goodId];
+  if (!g) return false;
+  const unit = buyPriceAt(S, locId, goodId);
+  const cost = unit * qty;
+  if (S.credits < cost) return false;
+  if (cargoUsed(S) + g.bulk * qty > cargoCap(S)) return false;
+  S.credits -= cost;
+  S.cargo[goodId] = (S.cargo[goodId] || 0) + qty;
+  return true;
+}
+
+export function sellGood(S, locId, goodId, qty = 1) {
+  if (!GOODS[goodId]) return false;
+  const have = S.cargo[goodId] || 0;
+  if (have < qty) return false;
+  // Your own depots move stock better than a stranger's yard.
+  const depot = isHolding(S, locId) ? (S.holdings[locId].upgrades?.depot || 0) : 0;
+  const unit = Math.round(sellPriceAt(S, locId, goodId) * (1 + depot * 0.08));
+  S.credits += unit * qty;
+  // Trading somewhere regularly makes you part of the furniture.
+  changeRelation(S, locId, 0.4);
+  S.cargo[goodId] = have - qty;
+  if (S.cargo[goodId] <= 0) delete S.cargo[goodId];
+  return true;
+}
+
+/** Add something to the spoils bag rather than straight into stores. */
+export function addSpoils(S, bucket, id, n = 1) {
+  S.spoils = S.spoils || { credits: 0, cargo: {}, armoury: {}, armourPool: {}, kitPool: {} };
+  if (bucket === 'credits') { S.spoils.credits += n; return; }
+  S.spoils[bucket] = S.spoils[bucket] || {};
+  S.spoils[bucket][id] = (S.spoils[bucket][id] || 0) + n;
+}
+
+export const hasSpoils = (S) => {
+  const sp = S.spoils;
+  if (!sp) return false;
+  return !!sp.credits || ['cargo', 'armoury', 'armourPool', 'kitPool']
+    .some((b) => Object.keys(sp[b] || {}).length);
+};
+
+/** Move everything in the spoils bag into the company's actual stores. */
+export function claimSpoils(S) {
+  const sp = S.spoils;
+  if (!sp) return;
+  S.credits += sp.credits || 0;
+  for (const [id, n] of Object.entries(sp.armoury || {})) S.armoury[id] = (S.armoury[id] || 0) + n;
+  for (const [id, n] of Object.entries(sp.armourPool || {})) S.armourPool[id] = (S.armourPool[id] || 0) + n;
+  for (const [id, n] of Object.entries(sp.kitPool || {})) S.kitPool[id] = (S.kitPool[id] || 0) + n;
+  for (const [id, n] of Object.entries(sp.cargo || {})) {
+    const room = Math.floor(cargoFree(S) / (GOODS[id]?.bulk || 1));
+    const take = Math.min(n, room);
+    if (take > 0) S.cargo[id] = (S.cargo[id] || 0) + take;
+  }
+  S.spoils = { credits: 0, cargo: {}, armoury: {}, armourPool: {}, kitPool: {} };
+}
+
+// --------------------------------------------------------------------------
+// Renown — how many people you can put in the field
+// --------------------------------------------------------------------------
+
+/** Maximum deployment size. This is the main progression lever in the game. */
+export function deployLimit(S) {
+  const tier = renownTier(S.renown || 0);
+  // Sergeants let you run bigger formations than your name alone would.
+  const sergeants = living(S).filter((s) => !s.isCommander && s.rank >= 3).length;
+  return Math.min(16, tier.deploy + Math.floor(sergeants / 2));
+}
+
+export const renownName = (S) => renownTier(S.renown || 0).name;
+
+export function addRenown(S, n, why) {
+  if (!n) return null;
+  const before = renownTier(S.renown || 0);
+  S.renown = Math.max(0, (S.renown || 0) + n);
+  const after = renownTier(S.renown);
+  if (after.name !== before.name) {
+    pushLog(S, `Bracket is now ${after.name.toLowerCase()} across Dovan.`, 'good');
+    return after;
+  }
+  if (why) pushLog(S, why);
+  return null;
+}
+
+/**
+ * What beating a party is worth. Renown scales with how badly outnumbered you
+ * were, so clearing looters stops paying once you are a real company and
+ * breaking a column is the making of you.
+ */
+/**
+ * Clearing a hideout: the camp goes, and every settlement near enough to have
+ * been suffering for it notices. This is the cheapest standing in the game and
+ * it should be, because it is the one thing you can do that makes somebody
+ * else's road safer.
+ */
+export function clearLair(S, partyId) {
+  const lair = S.parties.find((p) => p.id === partyId && p.kind === 'lair');
+  if (!lair) return false;
+  S.parties = S.parties.filter((p) => p.id !== partyId);
+  // Anything it had already put on the road stays there — clearing the camp
+  // stops the bleeding, it does not undo it.
+  const near = LOCATIONS.filter((l) => l.kind !== 'open'
+    && Math.hypot(l.x - lair.x, l.z - lair.z) < 620);
+  for (const l of near) changeRelation(S, l.id, 12);
+  S.stats.lairsCleared = (S.stats.lairsCleared || 0) + 1;
+  companyReacts(S, 'lair');
+  pushLog(S, `The hideout near ${locName(lair.home)} has been cleared out.`, 'good');
+  if (near.length) {
+    pushLog(S, `${near.length} settlement(s) will remember who did it.`, 'good');
+  }
+  return true;
+}
+
+export function spoilsFor(S, party, squadSize) {
+  // A Titan is one unit on the marker and the hardest thing in the Reach, so
+  // the ordinary strength-based formula would pay it out like a lone looter.
+  // Killing one is a story the company tells for the rest of the campaign.
+  if (party?.kind === 'titan') {
+    return {
+      renown: 420,
+      credits: 6500,
+      cargo: { machine_parts: 14, salvage: 22, optics: 5, fuel_cells: 8 },
+      prisoners: 0,
+      titan: true,
+    };
+  }
+  const strength = party?.strength || 4;
+  const odds = clamp(strength / Math.max(1, squadSize), 0.3, 4);
+  return {
+    renown: Math.round(strength * 1.4 * odds),
+    credits: Math.round(strength * 12 * (party?.tier || 1) * 0.6),
+    cargo: party?.cargo || null,
+    prisoners: Math.max(0, Math.round(strength * 0.18)),
+  };
+}
+
+// --------------------------------------------------------------------------
+// Holdings — taking and improving ground
+// --------------------------------------------------------------------------
+
+export const isHolding = (S, locId) => !!S.holdings?.[locId];
+export const holdingList = (S) =>
+  Object.keys(S.holdings || {}).map((id) => ({ id, loc: locById(id), h: S.holdings[id] }))
+    .filter((x) => x.loc);
+
+/** Total level of an upgrade across every holding. */
+export function upgradeTotal(S, key) {
+  let n = 0;
+  for (const id of Object.keys(S.holdings || {})) n += S.holdings[id].upgrades?.[key] || 0;
+  return n;
+}
+
+export function seizeLocation(S, locId) {
+  const l = locById(locId);
+  if (!l || isHolding(S, locId)) return false;
+  S.holdings[locId] = {
+    upgrades: {}, takenDay: S.day, threat: 0, formerFaction: l.faction || null,
+  };
+  // Taking ground from a faction is not a neutral act.
+  if (l.faction) S.rep[l.faction] = (S.rep[l.faction] || 0) - 6;
+  // Taking a place by force is not how you make friends inside it.
+  changeRelation(S, locId, -30);
+  pushLog(S, `${l.name} is under Bracket control.`, 'good');
+  return true;
+}
+
+export function loseHolding(S, locId) {
+  const l = locById(locId);
+  if (!isHolding(S, locId)) return false;
+  delete S.holdings[locId];
+  pushLog(S, `${l?.name || locId} has been lost.`, 'bad');
+  return true;
+}
+
+export function upgradeCost(S, locId, key) {
+  const def = HOLDING_UPGRADES[key];
+  if (!def) return null;
+  const lv = S.holdings?.[locId]?.upgrades?.[key] || 0;
+  if (lv >= def.max) return null;
+  return def.cost(lv);
+}
+
+export function canAfford(S, cost) {
+  if (!cost) return false;
+  if (S.credits < (cost.credits || 0)) return false;
+  for (const [g, n] of Object.entries(cost)) {
+    if (g === 'credits') continue;
+    if ((S.cargo[g] || 0) < n) return false;
+  }
+  return true;
+}
+
+/** Spend credits and goods from the truck to raise an upgrade one level. */
+export function buildUpgrade(S, locId, key) {
+  const cost = upgradeCost(S, locId, key);
+  if (!cost || !canAfford(S, cost)) return false;
+  S.credits -= cost.credits || 0;
+  for (const [g, n] of Object.entries(cost)) {
+    if (g === 'credits') continue;
+    S.cargo[g] = (S.cargo[g] || 0) - n;
+    if (S.cargo[g] <= 0) delete S.cargo[g];
+  }
+  const h = S.holdings[locId];
+  h.upgrades[key] = (h.upgrades[key] || 0) + 1;
+  pushLog(S,
+    `${HOLDING_UPGRADES[key].name} at ${locName(locId)} raised to level ${h.upgrades[key]}.`, 'good');
+  return true;
+}
+
+/** Extra cargo space from every Depot the company owns. */
+export const depotCapacity = (S) => upgradeTotal(S, 'depot') * 20;
+
+/** Daily production from holdings, paid into credits and the truck. */
+/**
+ * What a soldier costs to keep, per day.
+ *
+ * Scaled by rank, because a sergeant who has survived thirty deployments does
+ * not work for recruit money — which is the quiet pressure that stops a company
+ * from being purely additive. A veteran roster is expensive to sit still with.
+ */
+export function wageOf(s) {
+  if (s.isCommander) return 0;               // you do not pay yourself
+  const base = { rifleman: 9, breacher: 12, marksman: 13, gunner: 14, medic: 15, signals: 14 };
+  return Math.round((base[s.role] || 10) * (1 + s.rank * 0.55));
+}
+
+export function payrollOf(S) {
+  return living(S).reduce((a, s) => a + wageOf(s), 0);
+}
+
+/** Food eaten per day. Everyone eats, including the wounded and the commander. */
+export function upkeepOf(S) {
+  return { wages: payrollOf(S), food: Math.max(1, Math.ceil(living(S).length * 0.5)) };
+}
+
+export const MORALE_TIERS = [
+  { at: 0, name: 'Mutinous', note: 'People are walking. Fix this now.' },
+  { at: 25, name: 'Sullen', note: 'They do as they are told and nothing more.' },
+  { at: 45, name: 'Steady', note: 'No complaints worth hearing.' },
+  { at: 65, name: 'Willing', note: 'They believe the company is going somewhere.' },
+  { at: 85, name: 'Devoted', note: 'They would follow you into the Scour on foot.' },
+];
+
+export const moraleTier = (S) => [...MORALE_TIERS].reverse()
+  .find((t) => (S.morale ?? 70) >= t.at) || MORALE_TIERS[0];
+
+/**
+ * The daily reckoning: wages out, food eaten, morale adjusted, and — if it has
+ * been bad for long enough — somebody leaves in the night.
+ *
+ * Desertion is deliberately slow and always announced. A soldier vanishing with
+ * no warning would be a bug as far as the player is concerned; a soldier
+ * vanishing after three days of being unpaid and hungry is a consequence.
+ */
+export function payday(S, r) {
+  const { wages, food } = upkeepOf(S);
+  S.lastPayroll = wages;
+
+  let drift = 0;
+
+  if (S.credits >= wages) {
+    S.credits -= wages;
+    // Catching up on arrears is worth more than a day of ordinary pay. Without
+    // this, fixing your finances still left the company deserting for a week
+    // while a lagging number climbed — people leave because you cannot pay
+    // them, not because of arithmetic.
+    if (S.unpaidDays > 0) {
+      drift += 9;
+      pushLog(S, `Back pay settled after ${S.unpaidDays} day(s).`, 'good');
+    }
+    S.unpaidDays = 0;
+    drift += 1.5;
+  } else {
+    // Pay what there is. Partial pay is still noticed, and still resented.
+    const paid = Math.max(0, S.credits);
+    S.credits = 0;
+    S.unpaidDays = (S.unpaidDays || 0) + 1;
+    drift -= 6 + S.unpaidDays * 2;
+    companyReacts(S, 'unpaid');
+    pushLog(S, paid > 0
+      ? `Payroll short by ${wages - paid} credits. They noticed.`
+      : `Nobody was paid today. Wages owed: ${wages}.`, 'bad');
+  }
+
+  if ((S.rations || 0) >= food) {
+    S.rations -= food;
+    drift += 1;
+    if (S.rations <= 3) {
+      pushLog(S, `Rations down to ${S.rations} days. Buy food.`, 'bad');
+    }
+  } else {
+    S.rations = 0;
+    drift -= 7;
+    pushLog(S, 'The company went hungry.', 'bad');
+  }
+
+  // A big company on nothing in particular grumbles; a small tight one does not.
+  const n = living(S).length;
+  if (n > 8) drift -= (n - 8) * 0.4;
+
+  S.morale = clamp((S.morale ?? 70) + drift, 0, 100);
+
+  // Desertion. Only from the bottom of the roster, never the commander, and
+  // never silently.
+  // Desertion needs a live grievance, not just a low number: somebody walks
+  // because they are hungry or unpaid RIGHT NOW. A company that has been paid
+  // and fed keeps its people while morale recovers.
+  const aggrieved = (S.unpaidDays || 0) > 0 || (S.rations || 0) <= 0;
+  if (aggrieved && S.morale < 20 && n > 1 && r() < (20 - S.morale) / 90) {
+    const pool = living(S).filter((s) => !s.isCommander)
+      .sort((a, b) => a.rank - b.rank || a.xp - b.xp);
+    const gone = pool[0];
+    if (gone) {
+      S.roster = S.roster.filter((s) => s.id !== gone.id);
+      S.stats.deserted = (S.stats.deserted || 0) + 1;
+      pushLog(S, `${gone.name} was gone before first light. No note.`, 'bad');
+    }
+  }
+}
+
+function collectHoldings(S) {
+  const notes = [];
+  for (const { id, loc, h } of holdingList(S)) {
+    const base = HOLDING_YIELD[loc.kind] || HOLDING_YIELD.outpost;
+    let credits = base.credits;
+    const goods = { ...base.goods };
+    // Workshops fabricate; depots make the place worth more.
+    const work = h.upgrades.workshop || 0;
+    if (work) goods.machine_parts = (goods.machine_parts || 0) + work * 2;
+    credits = Math.round(credits * (1 + (h.upgrades.depot || 0) * 0.15));
+
+    S.credits += credits;
+    for (const [g, n] of Object.entries(goods)) {
+      if (cargoUsed(S) + (GOODS[g]?.bulk || 1) * n > CARGO_CAPACITY + depotCapacity(S)) continue;
+      S.cargo[g] = (S.cargo[g] || 0) + n;
+    }
+    // Infirmaries top the medical stores up.
+    const inf = h.upgrades.infirmary || 0;
+    if (inf) S.medical = Math.min(12, S.medical + inf);
+
+    // Holding ground makes your name, and building it up makes it faster.
+    // Without this, growing a settlement paid credits and nothing else — so the
+    // one thing that is supposed to lead to founding a faction did not visibly
+    // lead anywhere. A developed holding is a statement about who runs here.
+    const built = UPGRADE_LIST.reduce((a, k) => a + (h.upgrades[k] || 0), 0);
+    const fame = (loc.kind === 'settlement' ? 1.4 : 0.8) * (1 + built * 0.35);
+    S.renown = (S.renown || 0) + fame;
+
+    notes.push(`${loc.name} produced ${credits} credits`);
+  }
+  if (notes.length) pushLog(S, `Holdings: ${notes.join('; ')}.`);
+}
+
+/**
+ * Whoever used to own a holding wants it back. Threat climbs daily, faster if
+ * the place is undefended, and when it boils over a retake contract appears —
+ * ignore it and the holding is lost.
+ */
+function tickHoldingThreat(S, r) {
+  for (const { id, loc, h } of holdingList(S)) {
+    const works = h.upgrades.works || 0;
+    // A flag of your own invites everyone to take it down; a liege's protection
+    // takes some of the weight off.
+    const politics = S.ownFaction ? 1.7 : (S.allegiance ? 0.75 : 1);
+    const rate = 0.10 * (1 - works * 0.25) * politics;
+    h.threat = clamp((h.threat || 0) + rate, 0, 1.4);
+
+    if (h.threat >= 1 && !S.contracts.some((c) => c.retake === id)) {
+      const enemy = h.formerFaction || 'raider';
+      S.contracts.push({
+        id: uid('con'),
+        type: 'defense',
+        site: id,
+        employer: null,
+        retake: id,
+        title: `Hold ${loc.name}`,
+        text: `${FACTIONS[enemy]?.name || 'A hostile column'} is moving to retake `
+          + `${loc.name}. Be standing in it when they arrive, or it is theirs.`,
+        pay: 400,
+        expiresDay: S.day + 4,
+        accepted: false,
+      });
+      pushLog(S, `${loc.name} is about to be attacked.`, 'bad');
+    }
+    // Left too long and it falls.
+    if (h.threat >= 1.4) {
+      loseHolding(S, id);
+      S.contracts = S.contracts.filter((c) => c.retake !== id);
+    }
+  }
+}
+
+// --------------------------------------------------------------------------
+// Save / load — must never be able to prevent the game from starting
+// --------------------------------------------------------------------------
+
+export function save(S) {
+  try {
+    localStorage.setItem(SAVE_KEY, JSON.stringify({ ...S, _uid: uidFloor() }));
+    return true;
+  } catch (e) {
+    console.warn('save failed', e);
+    return false;
+  }
+}
+
+export function hasSave() {
+  try { return !!localStorage.getItem(SAVE_KEY); } catch { return false; }
+}
+
+export function load() {
+  try {
+    const raw = localStorage.getItem(SAVE_KEY);
+    if (!raw) return null;
+    const S = JSON.parse(raw);
+    // Structural sanity check. A corrupt or older save is discarded rather than
+    // allowed to half-load and wedge the player on a broken campaign.
+    if (!S || S.version !== SAVE_VERSION || !Array.isArray(S.roster) || !S.roster.length) return null;
+    if (!S.pos || typeof S.pos.x !== 'number') return null;
+    if (!Array.isArray(S.parties)) S.parties = [];
+    if (!Array.isArray(S.contracts)) S.contracts = [];
+    if (!S.world) return null;
+    setUidFloor((S._uid || 1000) + 1);
+    delete S._uid;
+    // Who shoots at whom is derived, not stored.
+    refreshHostility(S);
+    return S;
+  } catch (e) {
+    console.warn('load failed, discarding save', e);
+    try { localStorage.removeItem(SAVE_KEY); } catch { /* ignore */ }
+    return null;
+  }
+}
+
+export function clearSave() {
+  try { localStorage.removeItem(SAVE_KEY); } catch { /* ignore */ }
+}

@@ -1,0 +1,3841 @@
+// Third-person deployment runtime.
+//
+// This is where the campaign is decided. Everything else exists to give this
+// layer stakes: the people in your squad are the same objects that were on the
+// roster screen a minute ago, and whatever happens to them here is permanent.
+//
+// Design notes that drove the tuning:
+//  - Slower than an arena shooter. Base move is 4.2 m/s, ADS drops you to 2.0.
+//  - Bullets are hitscan but tracers are drawn, so misses are readable.
+//  - Cover is real: shots are traced in 3D, so a low barrier stops a standing
+//    shot at range and does nothing at three metres.
+//  - Nobody dies instantly. Going down is a state with a timer, and that timer
+//    is the source of most of the tension in the game.
+
+import * as THREE from '../vendor/three/three.module.min.js';
+import * as Models from './models.js';
+import * as Level from './level.js';
+import { NavGrid } from './nav.js';
+import * as Audio from './audio.js';
+import { WEAPONS, ROLES, FACTIONS, MISSION_TYPES, PARTY_TIERS, ORIGINS } from './data.js';
+import {
+  effective, weaponOf, roleOf, label, makeSoldier, STATUS, resolveCasualty,
+} from './roster.js';
+import { companyMods } from './perks.js';
+import { clamp, lerp, rng, range, pick, irange, approachAngle, angleDelta } from './util.js';
+
+const EYE = 1.55;
+const CHEST = 1.15;
+const BLEED_OUT = 55;      // seconds a downed soldier has before it is permanent
+
+// How many hostiles stand on the field at once. Larger parties commit the rest
+// in waves as the front rank falls, which is both how a big formation actually
+// fights and what keeps the frame budget honest.
+const FIELD_CAP = 34;
+
+// How far a focus-fire mark survives. Past this the squad could not engage it
+// anyway, and a marker on someone nobody can shoot is worse than no marker.
+const MARK_RANGE = 85;
+// How far off a reinforcement must arrive, and how long it stands there before
+// it is allowed to shoot. Both exist because of the same complaint: enemies
+// popping into being next to the player and hitting them immediately.
+const ARRIVE_MIN_DIST = 30;
+const ARRIVE_GRACE = 1.3;
+
+/**
+ * How much of a body a shot can actually find.
+ *
+ * Cover was never protection, only a spread penalty applied to the shooter —
+ * because the target capsule was the same height whatever the target was doing.
+ * You could be crouched behind a sandbag wall and still be a full-height
+ * silhouette to the ray test, so the wall in front of you did nothing and the
+ * only thing keeping you alive was a multiplier.
+ *
+ * Making the body genuinely shorter puts the geometry back in charge: a tucked
+ * body sits under the top of low cover, so the ray hits the box instead of the
+ * capsule, and it does so for the AI on exactly the same terms. That is the
+ * difference between cover you stand near and cover you are behind.
+ */
+export function bodyCapsule(e) {
+  // Feet, not terrain: somebody on a catwalk is a target up there, not a
+  // silhouette buried in the deck they are standing on.
+  const base = Level.heightAt(e.x, e.z) + (e.elev || 0);
+  if (e.down) return { lo: base + 0.1, hi: base + 0.6 };
+  // 0 = upright, 1 = fully tucked. Crouching counts for part of it.
+  const tuck = clamp(e.tuck || 0, 0, 1);
+  return { lo: base + 0.35 - tuck * 0.1, hi: base + 1.78 - tuck * 0.86 };
+}
+
+// How close you have to be to a piece of cover to get into it, and how far
+// above the ground a thing has to stand to be worth hiding behind.
+const COVER_REACH = 2.6;
+const COVER_MIN_H = 0.7;
+
+/**
+ * How the squad stands when it is on you.
+ *
+ * A single fixed wedge meant the only spacing decision in the game was made
+ * once by me, in code. These are the three shapes that actually matter in a
+ * firefight and they trade against each other honestly:
+ *
+ *  wedge   the default. Compact, everyone can see forward, easy to move.
+ *  line    abreast and level with you. Maximum guns facing front, and a wide
+ *          frontage — good for holding ground, bad for moving through a street.
+ *  spread  wide intervals and staggered depth. Costs you concentration of fire
+ *          and gains you not losing three people to the same burst.
+ *
+ * Each returns a lateral bearing offset and a distance behind the commander.
+ */
+const FORMATIONS = {
+  wedge: {
+    id: 'wedge', name: 'WEDGE', desc: 'Compact behind you. Moves well.',
+    slot: (i) => {
+      const perRank = 3;
+      const rank = Math.floor(i / perRank);
+      const s = i % perRank;
+      return { lateral: s === 0 ? 0 : (s === 1 ? -1.25 : 1.25), off: 5.4 + rank * 2.6 };
+    },
+  },
+  line: {
+    id: 'line', name: 'LINE', desc: 'Abreast of you. Every gun forward.',
+    slot: (i) => {
+      // Alternate out from the commander so the line grows evenly both ways.
+      const step = Math.ceil((i + 1) / 2);
+      const side = i % 2 === 0 ? -1 : 1;
+      // Nearly perpendicular: they stand beside you, not behind.
+      return { lateral: side * (Math.PI / 2) * 0.92, off: 2.6 + step * 2.4 };
+    },
+  },
+  spread: {
+    id: 'spread', name: 'SPREAD', desc: 'Wide intervals. One burst cannot take three.',
+    slot: (i) => {
+      const perRank = 2;
+      const rank = Math.floor(i / perRank);
+      const s = i % perRank;
+      return { lateral: s === 0 ? -1.9 : 1.9, off: 7.5 + rank * 5.5 };
+    },
+  },
+};
+
+export class Mission {
+  constructor({ campaign, spec, squad, container, onEnd, onHud, onToast, onIntro, onWheel }) {
+    this.onIntro = onIntro;
+    this.onWheel = onWheel || (() => {});
+    this.S = campaign;
+    this.spec = spec;               // { type, site, contract }
+    this.squadSoldiers = squad;     // persistent soldier objects, commander first
+    this.container = container;
+    this.onEnd = onEnd;
+    this.onHud = onHud || (() => {});
+    this.onToast = onToast || (() => {});
+
+    this.r = rng((campaign.seed + campaign.stats.missions * 7717 + spec.site.length) | 0);
+    // Commander perks apply to the whole company; resolved once per deployment.
+    this.company = companyMods(campaign.roster);
+    this.selection = new Set();   // squad indices under command; empty = all
+    this.time = 0;
+    this.over = false;
+    this.paused = false;
+    this.entities = [];
+    this.effects = [];
+    this.interactables = [];
+    this.keys = new Set();
+    this.mouse = { down: false, right: false };
+    this.marker = null;
+    this.result = null;
+    this.stats = { kills: 0, shotsFired: 0, medkitsUsed: 0 };
+    this.hudCache = {};
+    this._boundHandlers = [];
+  }
+
+  // ======================================================================
+  // Setup
+  // ======================================================================
+
+  async start() {
+    this.buildScene();
+    this.buildLevel();
+    this.buildSquad();
+    this.buildObjective();
+    this.bindInput();
+    Audio.ambience('mission');
+    Audio.deployTone();
+
+    // Insertion. The player used to materialise inside an already-alerted
+    // garrison and be under fire before they had found the horizon. Now the
+    // deployment opens on the site itself, sweeps back to the squad, and only
+    // then hands over control — and nothing may shoot at them until it does.
+    this.intro = {
+      active: true,
+      t: 0,
+      dur: 6.0,
+      // Contact is additionally held off for a moment after control returns,
+      // so the first thing that happens is never a bullet.
+      graceUntil: 7.6,
+    };
+    this.onIntro?.({
+      site: this.level.name,
+      type: MISSION_TYPES[this.spec.type]?.name || 'Deployment',
+      objective: this.objective.text,
+      squad: [this.player, ...this.squad]
+        .filter((e) => e.soldier)
+        .map((e) => ({ name: e.soldier.name, role: ROLES[e.soldier.role].name })),
+    });
+
+    this.last = performance.now();
+    this.loop = this.loop.bind(this);
+    this.raf = requestAnimationFrame(this.loop);
+  }
+
+  /** True while the deployment cinematic is running or during its grace. */
+  get inserting() {
+    return !!this.intro && this.time < this.intro.graceUntil;
+  }
+
+  buildScene() {
+    const w = this.container.clientWidth || 1280;
+    const h = this.container.clientHeight || 800;
+    this.renderer = new THREE.WebGLRenderer({ antialias: false, powerPreference: 'high-performance' });
+    // Render below native resolution and upscale. This is the single biggest
+    // contributor to the period look, and it costs nothing — it buys frames.
+    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1) * 0.75);
+    this.renderer.setSize(w, h);
+    this.renderer.shadowMap.enabled = true;
+    this.renderer.shadowMap.type = THREE.BasicShadowMap; // hard-edged, period-correct
+    this.renderer.domElement.className = 'game-canvas';
+    this.container.appendChild(this.renderer.domElement);
+
+    this.scene = new THREE.Scene();
+    this.camera = new THREE.PerspectiveCamera(62, w / h, 0.12, 400);
+    this.camYaw = 0;
+    this.camPitch = 0.09;
+
+    this.onResize = () => {
+      const cw = this.container.clientWidth, ch = this.container.clientHeight;
+      this.camera.aspect = cw / ch;
+      this.camera.updateProjectionMatrix();
+      this.renderer.setSize(cw, ch);
+    };
+    window.addEventListener('resize', this.onResize);
+  }
+
+  buildLevel() {
+    // Locations map onto shared layouts but keep their own name, light and
+    // garrison faction.
+    this.level = Level.build(this.spec.layout || this.spec.site,
+      this.S.seed + this.S.stats.missions, {
+        name: this.spec.siteName ? this.spec.siteName.toUpperCase() : null,
+        enemyFaction: this.spec.enemyFaction || null,
+      });
+    // Built once: everything in these sites is static.
+    this.nav = new NavGrid(this.level.obstacles, this.level.bounds, 0.65);
+    this.scene.add(this.level.group);
+    const p = this.level.palette;
+
+    this.scene.background = new THREE.Color(p.sky);
+    // Heavy fog is the whole atmosphere budget. It hides the draw distance and
+    // — because the fog is LIGHTER than the objects in it — turns everything at
+    // distance into a flat silhouette, which is the entire look.
+    this.scene.fog = new THREE.Fog(p.fog, 26, 145);
+
+    const amb = new THREE.HemisphereLight(p.amb, 0x0d0f0c, p.ambI);
+    this.scene.add(amb);
+
+    // One key light, low and raking, so every object throws a long hard shadow.
+    // Three uses physical light units, so these numbers are much larger than
+    // the pre-r155 values that look equivalent.
+    const sun = new THREE.DirectionalLight(p.sun, p.sunI);
+    sun.position.set(-46, 38, 30);
+    sun.castShadow = true;
+    sun.shadow.mapSize.set(1024, 1024);
+    const d = 62;
+    sun.shadow.camera.left = -d; sun.shadow.camera.right = d;
+    sun.shadow.camera.top = d; sun.shadow.camera.bottom = -d;
+    sun.shadow.camera.far = 160;
+    sun.shadow.bias = -0.002;
+    this.scene.add(sun);
+    this.sun = sun;
+
+    // A cool fill from the opposite side keeps shadowed faces from going pure
+    // black — a silhouette needs a rim to read against, not a void.
+    const fill = new THREE.DirectionalLight(0x4a5a72, 0.9);
+    fill.position.set(40, 22, -30);
+    this.scene.add(fill);
+
+    this.extractMarker = this.makeMarker(0xb8863f);
+    this.extractMarker.visible = false;
+    this.scene.add(this.extractMarker);
+
+    // Bone rather than the blue that was fighting the ochre/rust palette.
+    this.orderMarker = this.makeMarker(0x9c9683);
+    this.orderMarker.visible = false;
+    this.scene.add(this.orderMarker);
+
+    // The focus-fire mark. Unlike an order marker this is not a place, it is a
+    // person: it follows them, and it stays until they are dead or out of it.
+    this.markMesh = this.makeTargetMark();
+    this.markMesh.visible = false;
+    this.scene.add(this.markMesh);
+    this.marked = null;
+  }
+
+  /**
+   * A caret over a marked target. Deliberately not a ring on the ground — the
+   * whole point is to find them again in a crowd, and a crowd is exactly when
+   * you cannot see the ground.
+   */
+  makeTargetMark() {
+    const g = new THREE.Group();
+    const mat = new THREE.MeshBasicMaterial({
+      color: 0xd9452f, transparent: true, opacity: 0.95, depthTest: false,
+    });
+    const caret = new THREE.Mesh(new THREE.ConeGeometry(0.30, 0.52, 4), mat);
+    caret.rotation.x = Math.PI;      // point down at them
+    caret.position.y = 0.55;
+    g.add(caret);
+    const ring = new THREE.Mesh(
+      new THREE.RingGeometry(0.52, 0.66, 4),
+      new THREE.MeshBasicMaterial({
+        color: 0xd9452f, transparent: true, opacity: 0.7,
+        side: THREE.DoubleSide, depthTest: false,
+      }),
+    );
+    ring.rotation.x = -Math.PI / 2;
+    g.add(ring);
+    // Drawn last so it is never hidden by the body it is marking.
+    g.renderOrder = 900;
+    return g;
+  }
+
+  /**
+   * Mark a hostile and put every commanded soldier onto them.
+   *
+   * This fires the moment the wheel is OPENED over a body rather than waiting
+   * for a release, because "that one, now" is the single most common thing a
+   * player wants to say in a firefight and it should cost one button, not a
+   * button and a menu choice. The wheel still opens behind it, so any other
+   * order can override — but if you press and release over a target, you have
+   * already said the thing you meant.
+   */
+  markTarget(e) {
+    if (!e || e.dead || e.side !== 'enemy') return false;
+    this.marked = e;
+    const targets = this.commanded();
+    for (const s of targets) {
+      s.order = 'attack';
+      s.forceTarget = e;
+      s.orderPoint = null;
+      s.suppressPoint = null;
+      s.suppressOrder = false;
+      s.flankPoint = null;
+    }
+    if (!this.selection.size) this.squadOrder = 'attack';
+    Audio.order();
+    this.onToast(this.selectionLabel(), `FOCUS FIRE — ${e.name || 'TARGET'}`, 'order');
+    return true;
+  }
+
+  clearMark(reason) {
+    if (!this.marked) return;
+    const was = this.marked;
+    this.marked = null;
+    this.markMesh.visible = false;
+    for (const s of this.squad) {
+      if (s.forceTarget === was) s.forceTarget = null;
+    }
+    if (reason === 'range') this.onToast('', 'TARGET LOST', 'order');
+  }
+
+  /**
+   * Keep the mark honest. It survives until the target is down or has broken
+   * far enough away that the squad could not engage it anyway — anything else
+   * and the marker becomes a lie the player is still acting on.
+   */
+  updateMark() {
+    const e = this.marked;
+    if (!e) { this.markMesh.visible = false; return; }
+    if (e.dead || e.down) { this.clearMark('dead'); return; }
+    const d = Math.hypot(e.x - this.player.x, e.z - this.player.z);
+    if (d > MARK_RANGE) { this.clearMark('range'); return; }
+    const y = Level.heightAt(e.x, e.z);
+    this.markMesh.position.set(e.x, y + 1.95, e.z);
+    this.markMesh.rotation.y += 0.03;
+    this.markMesh.visible = true;
+  }
+
+  makeMarker(color, scale = 1) {
+    const g = new THREE.Group();
+    const ring = new THREE.Mesh(
+      new THREE.RingGeometry(0.85 * scale, 1.12 * scale, 12),
+      new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.55, side: THREE.DoubleSide }),
+    );
+    ring.rotation.x = -Math.PI / 2;
+    g.add(ring);
+    const post = new THREE.Mesh(
+      new THREE.BoxGeometry(0.07, 2.2 * scale, 0.07),
+      new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.32 }),
+    );
+    post.position.y = 1.1 * scale;
+    g.add(post);
+    return g;
+  }
+
+  // ----------------------------------------------------------------------
+
+  /**
+   * Resolve a spawn point to somewhere a soldier can actually stand and be
+   * shot at.
+   *
+   * Ring-and-arc spawning drops bodies wherever the maths lands, which on a
+   * site full of containers and rocks put up to half a wave *inside* solid
+   * geometry. An embedded soldier is shielded — every shot stops on the
+   * obstacle before it reaches them — so an "eliminate all" objective could
+   * never be completed. Anything blocked is nudged to the nearest open cell.
+   */
+  safeSpawn(x, z) {
+    const b = this.level.bounds - 3;
+    let px = clamp(x, -b, b);
+    let pz = clamp(z, -b, b);
+    if (!this.nav) return { x: px, z: pz };
+    if (!this.nav.isBlockedWorld(px, pz)) return { x: px, z: pz };
+    const c = this.nav.cellOf(px, pz);
+    const open = this.nav.nearestOpen(c.gx, c.gz, 14);
+    if (open) {
+      const w = this.nav.worldOf(open.gx, open.gz);
+      px = clamp(w.x, -b, b);
+      pz = clamp(w.z, -b, b);
+    }
+    return { x: px, z: pz };
+  }
+
+  /**
+   * Where a reinforcement is allowed to appear.
+   *
+   * Waves used to be placed at a fixed radius from the middle of the map, which
+   * has nothing to do with where the player is standing — so on a sixty-metre
+   * site a wave at radius forty-eight could arrive on top of somebody who had
+   * pushed to the edge, and open fire the same instant it existed. Three things
+   * have to hold at once, because any one of them on its own still allows a
+   * soldier to appear behind you and shoot:
+   *
+   *   - far enough away to be seen coming,
+   *   - out of sight when it happens, so nothing is watched popping into being,
+   *   - and unable to fire for a moment after arriving.
+   *
+   * This handles the first two. The third is `arriving`, set by reinforce().
+   */
+  /**
+   * Get behind the nearest piece of cover.
+   *
+   * The face chosen is the one the player is already standing on, snapped to an
+   * axis because every obstacle box is axis-aligned. Returns false when there is
+   * nothing to get behind, so the caller can fall through to a vault.
+   */
+  takeCover() {
+    const p = this.player;
+    if (!p || p.down || !this.grounded) return false;
+    let best = null;
+    for (const o of this.level.covers) {
+      if (o.h < COVER_MIN_H) continue;
+      // Distance to the box, not to its centre — a long barricade is reachable
+      // anywhere along its length.
+      const dx = Math.max(Math.abs(p.x - o.x) - o.hw, 0);
+      const dz = Math.max(Math.abs(p.z - o.z) - o.hd, 0);
+      const d = Math.hypot(dx, dz);
+      if (d > COVER_REACH) continue;
+      if (!best || d < best.d) best = { o, d };
+    }
+    if (!best) return false;
+
+    const o = best.o;
+    // Which face are we on? Whichever axis we are furthest outside.
+    const ox = (p.x - o.x) / (o.hw + 0.001);
+    const oz = (p.z - o.z) / (o.hd + 0.001);
+    const nx = Math.abs(ox) >= Math.abs(oz) ? Math.sign(ox || 1) : 0;
+    const nz = nx === 0 ? Math.sign(oz || 1) : 0;
+    this.cover = { o, nx, nz };
+    // Snap against the face so the body reads as touching the wall.
+    const gap = 0.52;
+    if (nx) { p.x = o.x + nx * (o.hw + gap); p.z = clamp(p.z, o.z - o.hd, o.z + o.hd); }
+    else { p.z = o.z + nz * (o.hd + gap); p.x = clamp(p.x, o.x - o.hw, o.x + o.hw); }
+    this.coverLean = 0;
+    Audio.uiSelect();
+    this.onToast('IN COVER', 'Aim to lean out · Space to break', 'order');
+    return true;
+  }
+
+  leaveCover() {
+    if (!this.cover) return;
+    this.cover = null;
+    this.coverLean = 0;
+    this.player.tuck = 0;
+  }
+
+  /**
+   * Hold the player against the cover face, and decide how much of them is
+   * showing.
+   *
+   * Tucked, the body drops below the top of the cover and the ray test puts the
+   * wall in the way. Aiming leans out: the body comes up and sideways, and the
+   * wall stops helping. That trade — you cannot shoot and be safe in the same
+   * instant — is the whole mechanic.
+   */
+  updateCover(dt) {
+    const p = this.player;
+    if (!this.cover) { p.tuck = this.crouch * 0.55; return; }
+    const { o, nx, nz } = this.cover;
+
+    // Stepping away from the wall, or being knocked off it, breaks cover.
+    const offX = p.x - o.x, offZ = p.z - o.z;
+    const outward = nx ? offX * nx : offZ * nz;
+    const along = nx ? Math.abs(offZ) - o.hd : Math.abs(offX) - o.hw;
+    if (outward > (nx ? o.hw : o.hd) + 1.8 || along > 1.4 || p.down || !this.grounded) {
+      this.leaveCover();
+      return;
+    }
+
+    // Leaning is driven by aiming, and by which shoulder you are on.
+    const want = this.aiming ? 1 : 0;
+    this.coverLean += (want - this.coverLean) * Math.min(1, dt * 9);
+    p.tuck = 1 - this.coverLean;
+
+    // Leaning slides the body out past the edge of the cover, so the shot has
+    // somewhere to go — and so does return fire.
+    const side = this.shoulder >= 0 ? 1 : -1;
+    const lean = this.coverLean * 0.62 * side;
+    if (nx) p.z = clamp(p.z + lean * dt * 6, o.z - o.hd - 0.7, o.z + o.hd + 0.7);
+    else p.x = clamp(p.x + lean * dt * 6, o.x - o.hw - 0.7, o.x + o.hw + 0.7);
+  }
+
+  spawnPointFor(x, z, minDist = ARRIVE_MIN_DIST) {
+    const p = this.player;
+    if (!p) return this.safeSpawn(x, z);
+    const b = this.level.bounds - 4;
+    let best = null;
+    // Walk outward around the requested bearing looking for somewhere that is
+    // far enough and unobserved; keep the furthest candidate as a fallback so
+    // this can never fail outright.
+    for (let i = 0; i < 24; i++) {
+      const a = Math.atan2(z - p.z, x - p.x) + (i % 2 ? 1 : -1) * Math.ceil(i / 2) * 0.42;
+      const d = Math.max(minDist, Math.hypot(x - p.x, z - p.z)) + (i > 11 ? 6 : 0);
+      const cx = clamp(p.x + Math.cos(a) * d, -b, b);
+      const cz = clamp(p.z + Math.sin(a) * d, -b, b);
+      const safe = this.safeSpawn(cx, cz);
+      const away = Math.hypot(safe.x - p.x, safe.z - p.z);
+      if (away < minDist * 0.8) continue;
+      const seen = Level.hasLOS(this.level.obstacles, safe.x, safe.z, p.x, p.z, 1.5);
+      if (!seen) return safe;
+      if (!best || away > best.away) best = { ...safe, away };
+    }
+    return best ? { x: best.x, z: best.z } : this.safeSpawn(x, z);
+  }
+
+  /**
+   * Bring somebody in as a reinforcement rather than placing them.
+   *
+   * Everything that arrives mid-fight goes through here so the rules are in one
+   * place instead of being re-derived at each call site — which is how the pit,
+   * the raid and the siege all ended up with their own spawn radius and none of
+   * them looked at the player.
+   */
+  reinforce(x, z, role, minDist = ARRIVE_MIN_DIST) {
+    const at = this.spawnPointFor(x, z, minDist);
+    const e = this.spawnEnemy(at.x, at.z, role);
+    // A beat on arrival: long enough that nobody is killed by something that
+    // did not exist a frame ago, short enough not to read as a free hit.
+    e.arriving = ARRIVE_GRACE;
+    return e;
+  }
+
+  spawnEntity(opts) {
+    // Never trust a caller's coordinates: resolve them to open ground first.
+    //
+    // Except where the placement IS the level design. Held personnel stand in a
+    // pen; nudging them to the nearest walkable cell pushed them through its
+    // walls and left them milling about outside their own cage, several metres
+    // from the objective marker. Authored objective positions opt out.
+    if (!opts.keepExact) {
+      const safe = this.safeSpawn(opts.x, opts.z);
+      opts = { ...opts, x: safe.x, z: safe.z };
+    }
+    const e = {
+      id: opts.id,
+      side: opts.side,                 // 'player' | 'enemy' | 'civil'
+      soldier: opts.soldier || null,
+      faction: opts.faction,
+      x: opts.x, z: opts.z, y: 0,
+      yaw: opts.yaw || 0,
+      hp: opts.hp, maxHp: opts.hp,
+      weapon: opts.weapon ? WEAPONS[opts.weapon] : null,
+      ammo: opts.weapon ? WEAPONS[opts.weapon].mag : 0,
+      reserve: 999,
+      reloading: 0,
+      cooldown: 0,
+      down: false,
+      bleed: 0,
+      stabilised: false,
+      dead: false,
+      acc: opts.acc ?? 0.6,
+      speed: opts.speed ?? 4.2,
+      sight: opts.sight ?? 55,
+      aggression: opts.aggression ?? 0.5,
+      coverPref: opts.coverPref ?? 0.4,
+      order: 'follow',
+      orderPoint: null,
+      target: null,
+      state: opts.state || 'idle',
+      alert: 0,
+      patrol: opts.patrol || null,
+      patrolIdx: 0,
+      thinkAt: 0,
+      moveTarget: null,
+      coverPos: null,
+      lastFire: -99,
+      // Suppression is the tactical spine of the firefight: fire that lands
+      // near you degrades your aim and pins you in cover whether or not it hits.
+      suppression: 0,
+      eff: opts.eff || null,
+      name: opts.name || 'Unknown',
+      isPlayer: !!opts.isPlayer,
+      follower: !!opts.follower,
+      rescued: false,
+    };
+    const wModel = e.weapon ? e.weapon.model : null;
+    e.char = opts.model === 'titan'
+      ? Models.makeTitan()
+      : Models.makeCharacter(opts.model, wModel, opts.tint);
+    e.char.group.position.set(e.x, Level.heightAt(e.x, e.z), e.z);
+    e.char.group.rotation.y = e.yaw;
+    this.scene.add(e.char.group);
+    // The player's own body is hidden from the head up when aiming so the
+    // camera never looks through a skull; simplest fix is to keep the model.
+    this.entities.push(e);
+    return e;
+  }
+
+  buildSquad() {
+    const sp = this.level.playerSpawn;
+    this.camYaw = sp.ry;
+
+    const cmd = this.squadSoldiers[0];
+    const ef = effective(cmd, this.company);
+    this.player = this.spawnEntity({
+      id: cmd.id, side: 'player', soldier: cmd, faction: 'player',
+      x: sp.x, z: sp.z, yaw: sp.ry, hp: cmd.hp, weapon: cmd.weapon,
+      model: 'soldier_commander', acc: ef.accuracy, speed: ef.speed,
+      sight: ef.sight, eff: ef,
+      isPlayer: true, name: cmd.name, tint: FACTIONS.player.accent,
+    });
+    this.player.maxHp = ef.maxHp;
+    this.player.hp = Math.min(cmd.hp, ef.maxHp);
+    if (this.player.weapon) {
+      this.player.ammo = Math.round(this.player.weapon.mag * (ef.magMul || 1));
+    }
+
+    this.squad = [];
+    for (let i = 1; i < this.squadSoldiers.length; i++) {
+      const s = this.squadSoldiers[i];
+      const e2 = effective(s, this.company);
+      const a = (i - 1) * 1.6 - 1.6;
+      const ent = this.spawnEntity({
+        id: s.id, side: 'player', soldier: s, faction: 'player',
+        x: sp.x + a, z: sp.z + 2.4, yaw: sp.ry, hp: s.hp, weapon: s.weapon,
+        // A soldier looks like the people who raised them.
+        model: ORIGINS[s.origin]?.model || 'soldier_bracket',
+        acc: e2.accuracy, speed: e2.speed,
+        sight: e2.sight, aggression: roleOf(s).aggression, coverPref: e2.cover,
+        eff: e2, name: s.name, tint: FACTIONS.player.accent,
+      });
+      ent.maxHp = e2.maxHp;
+      ent.hp = Math.min(s.hp, e2.maxHp);
+      if (ent.weapon) ent.ammo = Math.round(ent.weapon.mag * (e2.magMul || 1));
+      this.squad.push(ent);
+    }
+    this.squadOrder = 'follow';
+    // How they stand when formed up. See FORMATIONS.
+    this.formation = 'wedge';
+    // Stance. Crouch is a held pose blended 0..1 rather than a boolean, so the
+    // camera, the aim penalty and the character all move together instead of
+    // snapping. Airborne is tracked as a height above the ground plus a
+    // velocity, because the terrain under the player is not flat.
+    this.crouch = 0;
+    this.crouchHeld = false;
+    this.airY = 0;
+    this.vy = 0;
+    this.grounded = true;
+    // Which shoulder the camera looks over. Swapping matters because the body
+    // occludes exactly the side you are leaning past — being stuck on the right
+    // makes left-hand corners unfightable.
+    this.shoulder = 1;
+    // Which piece of cover the player is behind, and how far out they are
+    // leaning from it. Null when standing in the open.
+    this.cover = null;
+    this.coverLean = 0;
+  }
+
+  /**
+   * The Titan.
+   *
+   * A siege walker that a rifle cannot meaningfully hurt. Every hit lands on
+   * armour and does almost nothing until a plate is beaten off; underneath each
+   * plate is a core, and a core takes crits. That is the whole fight: pick a
+   * plate, concentrate everything on it until it sheds, then put rounds through
+   * the hole before it turns that side away from you.
+   *
+   * It is deliberately not a big soldier. It does not take cover, it cannot be
+   * suppressed, and it does not care about your flanking order — the only
+   * tactic that works on it is the one the design is about.
+   */
+  spawnTitan(x, z) {
+    const e = this.spawnEntity({
+      id: 'titan', side: 'enemy', faction: this.level.enemyFaction,
+      x, z, yaw: Math.PI, hp: 9000, weapon: 'lmg',
+      model: 'titan',
+      acc: 0.55, speed: 1.9, sight: 90, aggression: 1, coverPref: 0,
+      name: 'TITAN', keepExact: true,
+    });
+    e.isTitan = true;
+    e.titan = true;
+    // Armour plates are not health. They are locks.
+    e.plates = e.char.plates || [];
+    e.platesLeft = e.plates.length;
+    e.stomp = 0;
+    e.sweep = 0;
+    e.turnRate = 0;
+    // Nothing about the small-unit AI applies, so it runs its own update.
+    e.state = 'titan';
+    this.titan = e;
+    return e;
+  }
+
+  spawnEnemy(x, z, role, patrol = null) {
+    const f = this.level.enemyFaction;
+    const rd = ROLES[role];
+    const skill = this.difficultyScale();
+    return this.spawnEntity({
+      id: `e_${this.entities.length}`,
+      side: 'enemy', faction: f,
+      x, z, yaw: this.r() * 6.28,
+      hp: Math.round(rd.hp * 0.85),
+      weapon: rd.weapon,
+      model: FACTIONS[f].model,
+      acc: rd.accuracy * skill,
+      speed: 3.6 + this.r() * 0.5,
+      // Kept near the fog distance on purpose: engagements should start at a
+      // range where the player can actually see who is shooting at them.
+      sight: 34 + this.r() * 12,
+      aggression: rd.aggression,
+      coverPref: f === 'trust' ? 0.75 : 0.45,  // doctrine, expressed as behaviour
+      name: `${FACTIONS[f].short} ${rd.abbr}`,
+      state: patrol ? 'patrol' : 'guard',
+      patrol,
+    });
+  }
+
+  difficultyScale() {
+    // Trust troops are drilled; scrappers are not. Keeps factions distinct
+    // in play, not just in colour.
+    return this.level.enemyFaction === 'trust' ? 1.0 : 0.82;
+  }
+
+  // ======================================================================
+  // Objectives
+  // ======================================================================
+
+  buildObjective() {
+    const t = this.spec.type;
+    this.extractArmed = false;
+    this.prisoners = [];
+    this.optional = null;
+
+    if (t === 'recovery') this.buildRecovery();
+    else if (t === 'sabotage') this.buildSabotage();
+    else if (t === 'skirmish') this.buildSkirmish();
+    else if (t === 'seize') this.buildSeize();
+    else if (t === 'titan') this.buildTitan();
+    else if (t === 'raid') this.buildRaid();
+    else if (t === 'lair') this.buildLair();
+    else if (t === 'pit') this.buildPit();
+    else if (t === 'siege') this.buildSiege();
+    else this.buildDefense();
+
+    // Optional objective: a cache placed deliberately AWAY from the exfil
+    // route, so taking it costs time exactly when time is expensive.
+    if (t !== 'defense') {
+      // Placed off to one side of the objective and away from the exfil route,
+      // so taking it always costs time in the wrong direction.
+      const o = this.level.objectivePoint;
+      const ex = this.level.extraction;
+      const away = Math.atan2(o.z - ex.z, o.x - ex.x) + (this.r() < 0.5 ? 1.15 : -1.15);
+      const cx = clamp(o.x + Math.cos(away) * 26, -this.level.bounds + 6, this.level.bounds - 6);
+      const cz = clamp(o.z + Math.sin(away) * 26, -this.level.bounds + 6, this.level.bounds - 6);
+      this.optional = {
+        kind: 'cache', x: cx, z: cz, taken: false, progress: 0, need: 3.0,
+        label: 'Weapons cache',
+      };
+      const crate = Models.get('crate');
+      crate.position.set(cx, Level.heightAt(cx, cz), cz);
+      crate.scale.setScalar(1.3);
+      this.scene.add(crate);
+      this.optional.mesh = crate;
+      this.interactables.push(this.optional);
+    }
+  }
+
+  buildRecovery() {
+    const pen = this.level.objectivePoint;
+    this.objective = {
+      text: 'Release the held personnel', progress: 0, need: 3, done: false,
+      type: 'recovery',
+    };
+    // Three held personnel. The third is the one worth caring about — a trained
+    // medic — and the game says so out loud when they are released.
+    const specs = [
+      { role: 'rifleman', medic: false },
+      { role: 'rifleman', medic: false },
+      { role: 'medic', medic: true },
+    ];
+    specs.forEach((sp, i) => {
+      const x = pen.x + (i - 1) * 2.0, z = pen.z - 1.2;
+      const ent = this.spawnEntity({
+        id: `p_${i}`, side: 'civil', faction: null, keepExact: true,
+        x, z, yaw: 0, hp: 60, weapon: null, model: 'soldier_prisoner',
+        speed: 3.4, name: 'Held personnel', follower: true,
+      });
+      ent.released = false;
+      ent.isMedic = sp.medic;
+      ent.roleId = sp.role;
+      this.prisoners.push(ent);
+      this.interactables.push({
+        kind: 'prisoner', entity: ent, x: ent.x, z: ent.z, progress: 0, need: 1.6,
+        label: 'Cut restraints',
+      });
+    });
+
+    this.spawnGarrison(['rifleman', 'rifleman', 'breacher', 'marksman']);
+  }
+
+  /**
+   * Populate a site from its own garrison posts and patrol routes, so every
+   * mission template can be run at every location. Falls back to a ring around
+   * the objective when a layout does not declare posts.
+   */
+  spawnGarrison(roles, extra = 0) {
+    const meta = this.level;
+    const posts = meta.garrison && meta.garrison.length ? meta.garrison : null;
+    if (posts) {
+      posts.forEach(([x, z]) => this.spawnEnemy(x, z, pick(this.r, roles)));
+    } else {
+      const o = meta.objectivePoint;
+      for (let i = 0; i < 6; i++) {
+        const a = (i / 6) * Math.PI * 2;
+        this.spawnEnemy(o.x + Math.cos(a) * 8, o.z + Math.sin(a) * 8, pick(this.r, roles));
+      }
+    }
+    for (const route of meta.patrols || []) {
+      this.spawnEnemy(route[0][0], route[0][1], pick(this.r, roles),
+        route.map(([x, z]) => ({ x, z })));
+    }
+    for (let i = 0; i < extra; i++) {
+      const o = meta.objectivePoint;
+      const a = this.r() * Math.PI * 2;
+      const d = 10 + this.r() * 14;
+      this.spawnEnemy(o.x + Math.cos(a) * d, o.z + Math.sin(a) * d, pick(this.r, roles));
+    }
+  }
+
+  buildSabotage() {
+    const p = this.level.objectivePoint;
+    this.objective = {
+      text: 'Place charges on the mast base', progress: 0, need: 4.5, done: false,
+      type: 'sabotage',
+    };
+    this.interactables.push({
+      kind: 'charge', x: p.x, z: p.z + 2.2, progress: 0, need: 4.5,
+      label: 'Place charges',
+    });
+    this.chargeTimer = 0;
+    this.chargesPlaced = false;
+
+    this.spawnGarrison(['rifleman', 'rifleman', 'gunner', 'marksman'], 1);
+  }
+
+  /**
+   * Road ambush. No installation, no timer — just the party that was on the
+   * map a second ago, standing in the open ground you chose to drive into.
+   * Its strength comes from the strategic party, so picking a fight with a
+   * six-strong scrapper band is a genuinely worse idea than a three-strong one.
+   */
+  /**
+   * Road engagement against a party from the map. The enemy count is the
+   * party's actual strength, so a looter band is four rifles and an armoured
+   * column is genuinely a battle. Very large parties commit in waves rather
+   * than standing on the field all at once — both because that is how a
+   * hundred-strong formation fights, and because it keeps the frame budget.
+   */
+  buildSkirmish() {
+    const party = this.spec.party || {};
+    const total = clamp(party.strength || 4, 2, 120);
+    const roles = PARTY_TIERS[party.kind]?.roles
+      || ['rifleman', 'rifleman', 'breacher', 'marksman'];
+    this.skirmishTotal = total;
+    this.skirmishRemaining = total;
+    this.enemyQuality = party.quality || 0.75;
+
+    this.objective = {
+      text: `Break the hostile party — ${total} hostile${total === 1 ? '' : 's'}`,
+      progress: 0, need: total, done: false, type: 'skirmish',
+    };
+
+    const first = Math.min(total, FIELD_CAP);
+    this.deployEnemyWave(first, roles, true);
+    this.skirmishCommitted = first;
+  }
+
+  /** Put a batch of hostiles on the field, arced across the approach. */
+  deployEnemyWave(n, roles, initial = false) {
+    for (let i = 0; i < n; i++) {
+      const a = (i / Math.max(1, n)) * Math.PI * 1.3 - Math.PI * 0.65;
+      // Pushed out and left unaware: a road ambush that opens with rounds
+      // already incoming gives the player nothing to do.
+      const d = (initial ? 32 : 48) + this.r() * 18;
+      const e = this.spawnEnemy(
+        Math.sin(a) * d + range(this.r, -6, 6),
+        -Math.cos(a) * d + range(this.r, -6, 6),
+        pick(this.r, roles));
+      if (initial) { e.state = 'guard'; e.alert = 0.2; }
+      else { e.state = 'hunt'; e.alert = 1; e.lastSeen = { x: this.player.x, z: this.player.z }; }
+    }
+  }
+
+  /** Feed the rest of a large party in as the front rank is destroyed. */
+  updateSkirmishWaves() {
+    if (this.spec.type !== 'skirmish') return;
+    const alive = this.entities.filter((e) => e.side === 'enemy' && !e.dead).length;
+    const left = this.skirmishTotal - (this.skirmishCommitted || 0);
+    if (left > 0 && alive < Math.max(4, FIELD_CAP * 0.45)) {
+      const n = Math.min(left, Math.round(FIELD_CAP * 0.5));
+      const roles = PARTY_TIERS[this.spec.party?.kind]?.roles
+        || ['rifleman', 'breacher', 'marksman'];
+      this.deployEnemyWave(n, roles, false);
+      this.skirmishCommitted += n;
+      Audio.uiAlert();
+      this.onToast('THEY ARE COMMITTING MORE',
+        `${this.skirmishTotal - this.skirmishCommitted + n} still on the field`, 'bad');
+    }
+  }
+
+  /**
+   * Seizure. Break the garrison, then stand on the ground long enough to own
+   * it. The hold phase is the whole point: clearing the position is not the
+   * same as keeping it, and the garrison sends a counter-attack while you wait.
+   */
+  /**
+   * The Titan fight. One walker, a handful of escorts to stop the squad simply
+   * standing still, and an objective that is only satisfied by taking the
+   * machine apart.
+   */
+  buildTitan() {
+    this.objective = {
+      text: 'Break the walker — strip its armour, then hit the cores',
+      progress: 0, need: 6, done: false, type: 'titan',
+    };
+    const o = this.level.objectivePoint;
+    this.spawnTitan(o.x, o.z - 6);
+    // A small screen of infantry. Not a threat next to the walker, but enough
+    // that the squad cannot simply park and shoot.
+    this.spawnGarrison(['rifleman', 'rifleman', 'marksman'], 0);
+    this.level.extraction = { ...this.level.playerSpawn };
+  }
+
+  updateTitanObjective() {
+    const e = this.titan;
+    if (!e) return;
+    // Progress is armour stripped, which is the thing the player is actually
+    // doing — a health bar on a machine this size reads as no progress at all
+    // for the first minute.
+    this.objective.progress = e.plates.length - e.platesLeft;
+    this.objective.need = e.plates.length;
+    if (e.dead && !this.objective.done) {
+      this.completeObjective();
+    }
+  }
+
+  /**
+   * A raid.
+   *
+   * The one thing the standing system was missing was a reason to spend it.
+   * Everything else you can do at a settlement builds the relationship; this
+   * burns it, deliberately and profitably. You break open three stores, carry
+   * out what you can, and leave — and the place never forgets it.
+   *
+   * Mechanically it is the inverse of a recovery: instead of walking somebody
+   * slowly OUT past a garrison that wakes up behind you, you are carrying
+   * their goods.
+   */
+  /**
+   * A hideout. Everyone who lives here is here, all at once, and there are
+   * only a handful of you — so this is the one deployment where the field cap
+   * is the point rather than a performance concession.
+   */
+  /**
+   * The pit.
+   *
+   * Wages come out every day from day one, and the only answers to that were a
+   * contract or a fight on the road — both of which can cost you a soldier you
+   * cannot replace. The pit is the answer that costs nothing but time and
+   * pride: you go in alone, nobody dies, and you are paid by the round.
+   *
+   * It is deliberately the only place in the game where losing is survivable
+   * by construction rather than by luck. That is what makes it the thing a
+   * broke company does on a bad week.
+   */
+  /**
+   * A siege.
+   *
+   * Two phases, and the first one is the point. Until the gate is down the wall
+   * is impassable and the defenders on it have a free shot at everyone crossing
+   * the approach — so the opening is a problem of covering fire and timing
+   * rather than aim. Once it is open the fight becomes an ordinary, very
+   * dangerous, room-by-room clearance.
+   *
+   * The charge takes long enough that somebody has to be holding the wall's
+   * attention while it is set. That is the whole design.
+   */
+  buildSiege() {
+    this.objective = {
+      text: 'Breach the gate', progress: 0, need: 2, done: false, type: 'siege',
+    };
+    this.breached = false;
+
+    // The charge goes on the gate, which the layout puts on the wall line.
+    const gate = this.level.obstacles.find((o) => o.h > 5.5 && Math.abs(o.x) < 6)
+      || { x: 0, z: -14 };
+    this.gateObstacle = gate;
+    this.interactables.push({
+      kind: 'breach', x: gate.x, z: gate.z + 2.6, progress: 0, need: 6.5,
+      label: 'Set the charge',
+    });
+
+    this.spawnGarrison(['rifleman', 'rifleman', 'marksman', 'gunner'], 2);
+    // You leave the way you came in, once it is yours.
+    this.level.extraction = { ...this.level.playerSpawn };
+  }
+
+  /** Take the gate out of the world, and let everybody know. */
+  blowGate() {
+    if (this.breached) return;
+    this.breached = true;
+    const g = this.gateObstacle;
+    if (g) {
+      // The wall stops being a wall exactly where the gate was.
+      this.level.obstacles = this.level.obstacles.filter((o) => o !== g);
+      // And the navigation grid has to learn that, or the squad keeps routing
+      // the long way round a hole they can walk through.
+      this.nav = new NavGrid(this.level.obstacles, this.level.bounds, 0.65);
+      const doors = this.level.group.children.filter((o) =>
+        Math.abs(o.position.x - g.x) < 4.2 && Math.abs(o.position.z - g.z) < 3);
+      for (const d of doors) d.visible = false;
+    }
+    this.objective.progress = 1;
+    this.objective.text = 'Take the compound';
+    Audio.explosion(this.relPos(this.player));
+    this.shake = 1.3;
+    this.onToast('GATE DOWN', 'Go, before they close the gap', 'good');
+    // Everyone inside now knows precisely where you are coming from.
+    for (const e of this.entities) {
+      if (e.side === 'enemy' && !e.dead) {
+        e.alert = 1;
+        e.state = 'hunt';
+        e.lastSeen = { x: g ? g.x : 0, z: g ? g.z : -14 };
+        e.huntUntil = this.time + 20;
+      }
+    }
+    this.spawnReinforcements(3);
+  }
+
+  updateSiege(dt) {
+    if (!this.breached) return;
+    // Phase two: the compound is yours when nobody is left holding it.
+    const left = this.entities.filter((e) => e.side === 'enemy' && !e.dead).length;
+    this.objective.progress = left === 0 ? 2 : 1;
+    if (left === 0 && !this.objective.done) {
+      this.completeObjective();
+      this.onToast('COMPOUND TAKEN', 'It is yours', 'good');
+    } else if (left > 0) {
+      this.guardAgainstStall(dt);
+    }
+  }
+
+  buildPit() {
+    this.pitRound = 0;
+    this.pitBest = 0;
+    this.objective = {
+      text: 'Last as long as you can', progress: 0, need: 8, done: false, type: 'pit',
+    };
+    // No squad in the pit. Anyone who came is in the crowd.
+    for (const s of this.squad) {
+      s.dead = true;
+      s.char.group.visible = false;
+    }
+    this.squad = [];
+    this.level.extraction = { ...this.level.playerSpawn };
+    this.nextPitWave(true);
+  }
+
+  /** Put the next fighter, or fighters, in with you. */
+  nextPitWave(first = false) {
+    this.pitRound = (this.pitRound || 0) + 1;
+    this.objective.progress = this.pitRound - 1;
+    // One opponent, then two, then three — and they get better as they come.
+    const n = Math.min(3, 1 + Math.floor((this.pitRound - 1) / 3));
+    const o = this.level.objectivePoint;
+    const roles = ['rifleman', 'breacher', 'marksman', 'gunner'];
+    for (let i = 0; i < n; i++) {
+      const a = (i / n) * Math.PI * 2 + this.r();
+      // The pit is a ring, so there is nowhere out of sight to come from — but
+      // the next fighter still walks in from the far side rather than appearing
+      // at your shoulder.
+      const e = this.reinforce(
+        o.x + Math.cos(a) * 16, o.z + Math.sin(a) * 16, pick(this.r, roles), 17);
+      // The crowd wants a fight, so the ones later on are genuinely better.
+      e.acc = Math.min(0.93, e.acc * (1 + (this.pitRound - 1) * 0.13));
+      e.hp = Math.round(e.hp * (1 + (this.pitRound - 1) * 0.10));
+      e.maxHp = e.hp;
+      e.pitFighter = true;
+    }
+    if (!first) {
+      this.onToast(`ROUND ${this.pitRound}`, n > 1 ? `${n} of them` : 'One more', 'deploy');
+    }
+  }
+
+  updatePit(dt) {
+    if (this.objective.done) return;
+    const left = this.entities.filter((e) => e.side === 'enemy' && !e.dead).length;
+    if (left === 0) {
+      this.pitBest = this.pitRound;
+      if (this.pitRound >= this.objective.need) {
+        this.objective.progress = this.pitRound;
+        this.completeObjective();
+        this.onToast('THE PIT IS YOURS', 'Nobody left to put in with you', 'good');
+        return;
+      }
+      // A breath between rounds, and the crowd gets louder.
+      this.pitRest = (this.pitRest || 0) - dt;
+      if (this.pitRest <= 0) {
+        this.pitRest = 4;
+        this.nextPitWave();
+      }
+    }
+  }
+
+  buildLair() {
+    const party = this.spec.party || {};
+    const total = party.strength || 18;
+    this.objective = {
+      text: `Clear the hideout — ${total} of them`,
+      progress: 0, need: total, done: false, type: 'lair',
+    };
+    this.skirmishTotal = total;
+    this.skirmishRemaining = total;
+    this.enemyQuality = party.quality || 0.8;
+    const roles = ['rifleman', 'breacher', 'marksman', 'gunner'];
+    const first = Math.min(total, FIELD_CAP);
+    this.deployEnemyWave(first, roles, true);
+    this.skirmishCommitted = first;
+    // You leave the way you came in; there is no other way out of a gully.
+    this.level.extraction = { ...this.level.playerSpawn };
+  }
+
+  buildRaid() {
+    this.objective = {
+      text: 'Break open their stores and get clear', progress: 0, need: 3,
+      done: false, type: 'raid',
+    };
+    const o = this.level.objectivePoint;
+    this.raidTaken = 0;
+    // Three stores, spread around the objective so the raid is a circuit
+    // rather than one stop.
+    for (let i = 0; i < 3; i++) {
+      const a = (i / 3) * Math.PI * 2 + this.r() * 0.7;
+      const d = 12 + this.r() * 10;
+      const cx = clamp(o.x + Math.cos(a) * d, -this.level.bounds + 8, this.level.bounds - 8);
+      const cz = clamp(o.z + Math.sin(a) * d, -this.level.bounds + 8, this.level.bounds - 8);
+      const it = {
+        kind: 'loot', x: cx, z: cz, taken: false, progress: 0, need: 2.6,
+        label: 'Break it open',
+      };
+      const crate = Models.get('crate');
+      crate.position.set(cx, Level.heightAt(cx, cz), cz);
+      crate.scale.setScalar(1.5);
+      this.scene.add(crate);
+      it.mesh = crate;
+      this.interactables.push(it);
+    }
+    // Everybody who lives here turns out, and keeps turning out.
+    this.spawnGarrison(['rifleman', 'rifleman', 'breacher', 'marksman'], 3);
+    this.level.extraction = { ...this.level.playerSpawn };
+  }
+
+  updateRaid() {
+    this.objective.progress = this.raidTaken || 0;
+    if (!this.objective.done && (this.raidTaken || 0) >= this.objective.need) {
+      this.completeObjective();
+      this.onToast('STORES EMPTIED', 'Get back to the truck', 'good');
+    }
+  }
+
+  buildSeize() {
+    this.objective = {
+      text: 'Take and hold the position', progress: 0, need: 100, done: false,
+      type: 'seize',
+    };
+    // Holding is meant to be the tense part, not the boring part. Thirty
+    // seconds of standing on an empty position after the last defender is
+    // already dead is dead air, so the clock RUNS FASTER the less there is
+    // left to contest it — see updateSeize.
+    this.holdSeconds = 30;
+    this.holdProgress = 0;
+    this.counterSent = false;
+    this.spawnGarrison(['rifleman', 'rifleman', 'breacher', 'gunner', 'marksman'], 2);
+    // Extraction is the objective itself — you leave by having held it.
+    this.level.extraction = { ...this.level.objectivePoint };
+  }
+
+  updateSeize(dt) {
+    const p = this.player;
+    const o = this.level.objectivePoint;
+    const inZone = Math.hypot(p.x - o.x, p.z - o.z) < 12;
+    const contested = this.entities.some((e) => e.side === 'enemy' && !e.dead
+      && Math.hypot(e.x - o.x, e.z - o.z) < 20);
+
+    if (inZone && !contested) {
+      // Once the garrison is broken there is nothing to hold against, so the
+      // position consolidates quickly. While hostiles are still alive somewhere
+      // on the site it stays slow, because then the wait is the mission.
+      const left = this.entities.filter((e) => e.side === 'enemy' && !e.dead).length;
+      const rate = left === 0 ? 6 : (left <= 2 ? 2.5 : 1);
+      this.holdProgress = Math.min(this.holdSeconds, this.holdProgress + dt * rate);
+    } else if (contested && inZone) {
+      // Being contested does not lose ground already held, it just stops it.
+      this.holdProgress = Math.max(0, this.holdProgress - dt * 0.2);
+    } else {
+      this.holdProgress = Math.max(0, this.holdProgress - dt * 0.5);
+    }
+    this.objective.progress = Math.round((this.holdProgress / this.holdSeconds) * 100);
+
+    // One counter-attack partway through, so holding is not just waiting.
+    // The counter-attack has to arrive while there is still hold left to run,
+    // otherwise a fast consolidation finishes the mission before they show up.
+    if (!this.counterSent && this.holdProgress > this.holdSeconds * 0.25) {
+      this.counterSent = true;
+      this.spawnReinforcements(4);
+      Audio.uiAlert();
+      this.onToast('COUNTER-ATTACK', 'They are coming back for it', 'bad');
+    }
+
+    if (this.holdProgress >= this.holdSeconds && !this.objective.done) {
+      this.completeObjective();
+      this.onToast('POSITION TAKEN', `${this.level.name} is yours`, 'good');
+      this.endMission(true, 'seized');
+    }
+  }
+
+  buildDefense() {
+    this.objective = {
+      text: 'Hold the reclaimer until the attack breaks', progress: 0, need: 3, done: false,
+      type: 'defense',
+    };
+    this.wave = 0;
+    // Long enough to walk the position, place the squad and pick firing points
+    // before anything appears on the road.
+    this.waveTimer = 20;
+    this.waveActive = false;
+    this.holdPoint = { ...this.level.objectivePoint, radius: 22 };
+
+    // Two friendly locals, armed, who fight alongside the player. They are not
+    // roster personnel — losing them costs nothing but is still felt.
+    const hp = this.level.objectivePoint;
+    // Defence Works at a holding you own put more locals on the line.
+    const works = this.S.holdings?.[this.spec.site]?.upgrades?.works || 0;
+    const militiaCount = 2 + works * 2;
+    for (let i = 0; i < militiaCount; i++) {
+      const x = hp.x - 6 + (i % 4) * 4, z = hp.z - 6 - Math.floor(i / 4) * 3;
+      const ent = this.spawnEntity({
+        id: `m_${i}`, side: 'player', faction: 'syndic',
+        x, z, yaw: 0, hp: 70, weapon: 'smg', model: 'soldier_syndic',
+        acc: 0.42, speed: 3.9, aggression: 0.4, coverPref: 0.6,
+        name: 'Plant militia',
+      });
+      ent.militia = true;
+      this.squad.push(ent);
+    }
+  }
+
+  // ======================================================================
+  // Command wheel
+  // ======================================================================
+  //
+  // Six keys the player has to memorise is not a command system, it is a
+  // quiz — and in a firefight nobody passes it. The wheel puts every order in
+  // one place, under one thumb, with the world running slow enough to think.
+  //
+  // Two things make it usable rather than decorative. It captures the aim point
+  // at the MOMENT IT OPENS, so the order lands where you were looking when you
+  // decided to give it, not wherever the mouse drifted while choosing. And it
+  // dilates time instead of pausing, so the fight stays live and choosing still
+  // costs you something.
+
+  get ORDERS() {
+    return [
+      { id: 'move', name: 'MOVE / ATTACK', key: '',
+        desc: 'Aimed at a body: focus fire. Aimed at ground: move up and spread.' },
+      { id: 'suppress', name: 'SUPPRESS', key: 'X',
+        desc: 'Pour fire into that position. Pins whoever is behind it.' },
+      { id: 'flank', name: 'FLANK', key: 'Z',
+        desc: 'Swing wide and come at it from a different angle than you are.' },
+      { id: 'fallback', name: 'FALL BACK', key: 'V',
+        desc: 'Break contact and pull in behind you.' },
+      { id: 'hold', name: 'HOLD', key: 'H',
+        desc: 'Stop here and hold this ground.' },
+      { id: 'follow', name: 'FORM UP', key: 'F',
+        desc: 'Back on me, in whatever shape you last called.' },
+      { id: 'line', name: 'LINE', key: '',
+        desc: 'Abreast of you. Every gun forward, wide frontage.' },
+      { id: 'spread', name: 'SPREAD', key: '',
+        desc: 'Wide intervals. One burst cannot take three of you.' },
+      { id: 'wedge', name: 'WEDGE', key: '',
+        desc: 'Compact behind you. The shape that moves best.' },
+    ];
+  }
+
+  openWheel() {
+    if (this.wheel?.open || this.over || this.paused || this.intro?.active) return;
+    // Freeze the aim now. Choosing an order takes a second or two and the
+    // reticle will wander in that time; the order must mean what the player
+    // meant when they reached for it.
+    const aim = this.aimPoint(140);
+    this.wheel = {
+      open: true,
+      aim,
+      dx: 0, dz: 0,
+      index: -1,
+    };
+    // Pressing the wheel open while looking at somebody IS the order.
+    if (aim.entity && aim.entity.side === 'enemy' && !aim.entity.dead) {
+      this.markTarget(aim.entity);
+      this.wheel.marked = true;
+    } else {
+      Audio.uiMove();
+    }
+    this.onWheel?.(this.wheelState());
+  }
+
+  /** Mouse motion while the wheel is up steers the selection, not the camera. */
+  steerWheel(mx, my) {
+    const w = this.wheel;
+    if (!w?.open) return;
+    w.dx = clamp(w.dx + mx * 0.55, -150, 150);
+    w.dz = clamp(w.dz + my * 0.55, -150, 150);
+    const len = Math.hypot(w.dx, w.dz);
+    // A dead zone in the middle means "no order" — releasing without choosing
+    // has to be free, or the wheel becomes a trap.
+    if (len < 26) { if (w.index !== -1) { w.index = -1; this.onWheel?.(this.wheelState()); } return; }
+    const n = this.ORDERS.length;
+    // Straight up is index 0, going clockwise.
+    const a = Math.atan2(w.dx, -w.dz);
+    const idx = ((Math.round((a / (Math.PI * 2)) * n) % n) + n) % n;
+    if (idx !== w.index) { w.index = idx; Audio.uiMove(); }
+    this.onWheel?.(this.wheelState());
+  }
+
+  closeWheel(issue = true) {
+    const w = this.wheel;
+    if (!w?.open) return;
+    this.wheel = null;
+    this.onWheel?.(null);
+    // If opening the wheel already issued a focus-fire order, releasing without
+    // picking anything is a confirmation, not a cancellation.
+    if (!issue || w.index < 0) { if (!w.marked) Audio.uiDeny(); return; }
+    this.issueOrder(this.ORDERS[w.index].id, w.aim);
+  }
+
+  wheelState() {
+    const w = this.wheel;
+    if (!w?.open) return null;
+    return {
+      orders: this.ORDERS,
+      index: w.index,
+      who: this.selectionLabel(),
+      count: this.commanded().length,
+    };
+  }
+
+  /**
+   * Change the shape the squad holds. Formation is separate from the order:
+   * you can be spread out and suppressing, or in line and falling back.
+   */
+  setFormation(id) {
+    const f = FORMATIONS[id];
+    if (!f) return;
+    this.formation = id;
+    // Formation only means anything if they are actually forming on you.
+    for (const s of this.squad) {
+      if (s.order !== 'follow') { s.order = 'follow'; s.orderPoint = null; }
+    }
+    this.squadOrder = 'follow';
+    Audio.order();
+    this.onToast('FORMATION', `${f.name} — ${f.desc}`, 'order');
+  }
+
+  /** One entry point for every order, whatever issued it. */
+  issueOrder(id, aim = null) {
+    if (FORMATIONS[id]) { this.setFormation(id); return; }
+    if (id === 'move') this.issueContextOrder(aim);
+    else if (id === 'suppress') this.orderSuppress(aim);
+    else if (id === 'flank') this.orderFlank(aim);
+    else if (id === 'fallback') this.orderFallBack();
+    else this.setSquadOrder(id);
+  }
+
+  // ======================================================================
+  // Input
+  // ======================================================================
+
+  bindInput() {
+    const el = this.renderer.domElement;
+    const add = (t, ev, fn, opts) => {
+      t.addEventListener(ev, fn, opts);
+      this._boundHandlers.push([t, ev, fn]);
+    };
+
+    add(window, 'keydown', (e) => {
+      if (e.repeat) return;
+      const k = e.key.toLowerCase();
+      this.keys.add(k);
+      if (k === 'r') this.tryReload(this.player);
+      if (k === 'e') this.interactStart = true;
+      // Q swaps shoulders; the order wheel lives on the middle mouse button.
+      if (k === 'q') this.swapShoulder();
+      // One context button, the way a cover shooter does it: it takes cover if
+      // there is cover, leaves it if you are in it, and vaults otherwise. A
+      // separate key for each would be three things to remember in a firefight.
+      if (k === ' ') {
+        if (this.cover) this.leaveCover();
+        else if (!this.takeCover()) this.tryJump();
+      }
+      if (k === 'c') this.crouchHeld = !this.crouchHeld;
+      if (k === 'control') this.crouchHeld = true;
+      if (k === 'f') this.setSquadOrder('follow');
+      if (k === 'h') this.setSquadOrder('hold');
+      if (k === 'x') this.orderSuppress();
+      if (k === 'z') this.orderFlank();
+      if (k === 'v') this.orderFallBack();
+      // Individual selection. This is what turns four orders into real
+      // tactics: pin with one soldier, move with another.
+      if (k >= '1' && k <= '5') this.toggleSelect(Number(k) - 1);
+      if (k === '`' || k === '0') this.selectAll();
+      if (k === 'escape') this.togglePause();
+      if (k === 'tab') { e.preventDefault(); this.showRoster = true; }
+      if ([' ', 'w', 'a', 's', 'd'].includes(k)) e.preventDefault();
+    });
+    add(window, 'keyup', (e) => {
+      const k = e.key.toLowerCase();
+      this.keys.delete(k);
+      if (k === 'e') this.interactStart = false;
+      // Ctrl is hold-to-crouch; C toggles. Releasing Ctrl only stands you up if
+      // you were not also toggled down.
+      if (k === 'control') this.crouchHeld = false;
+      if (k === 'tab') this.showRoster = false;
+    });
+
+    add(el, 'mousedown', (e) => {
+      if (document.pointerLockElement !== el) { el.requestPointerLock(); return; }
+      if (e.button === 0) this.mouse.down = true;
+      if (e.button === 1) { e.preventDefault(); this.openWheel(); }
+      if (e.button === 2) this.mouse.right = true;
+    });
+    add(window, 'mouseup', (e) => {
+      if (e.button === 0) this.mouse.down = false;
+      if (e.button === 1) this.closeWheel(true);
+      if (e.button === 2) this.mouse.right = false;
+    });
+    // Chrome scrolls on middle-click without this, and a scrolling page under a
+    // pointer-locked game is not something the player can undo.
+    add(el, 'auxclick', (e) => { if (e.button === 1) e.preventDefault(); });
+    add(el, 'contextmenu', (e) => e.preventDefault());
+    add(document, 'mousemove', (e) => {
+      if (document.pointerLockElement !== el) return;
+      if (this.wheel?.open) { this.steerWheel(e.movementX, e.movementY); return; }
+      const s = 0.0022 * (this.mouse.right ? 0.55 : 1);
+      this.camYaw -= e.movementX * s;
+      // A positive pitch raises the camera above the look target, i.e. looks
+      // DOWN — so moving the mouse down has to increase it, not decrease it.
+      this.camPitch = clamp(this.camPitch + e.movementY * s, -0.62, 0.72);
+    });
+    add(document, 'pointerlockchange', () => {
+      if (document.pointerLockElement === el) { this.hadLock = true; return; }
+      // Only auto-pause when a lock we actually held is lost. Pausing on any
+      // "not locked" state meant a browser that never granted the lock froze
+      // the deployment on the first frame with no explanation.
+      if (this.hadLock && !this.over) this.paused = true;
+    });
+    this.canvasEl = el;
+  }
+
+  requestLock() {
+    if (this.canvasEl && document.pointerLockElement !== this.canvasEl) {
+      this.canvasEl.requestPointerLock?.();
+    }
+  }
+
+  togglePause() {
+    if (this.over) return;
+    this.paused = !this.paused;
+    if (this.paused && document.pointerLockElement) document.exitPointerLock();
+    else this.requestLock();
+  }
+
+  // ======================================================================
+  // Squad command
+  // ======================================================================
+
+  /**
+   * The soldiers an order applies to. With nothing selected an order is a
+   * squad order; with 1-4 held down it addresses individuals, which is what
+   * makes bounding and flanking possible at all.
+   */
+  commanded() {
+    const live = this.squad.filter((s) => !s.dead && !s.down && !s.militia);
+    if (!this.selection.size) return live;
+    return live.filter((s) => this.selection.has(this.squad.indexOf(s)));
+  }
+
+  selectionLabel() {
+    if (!this.selection.size) return 'SQUAD';
+    const names = this.commanded().map((s) => s.name.split(' ')[0].toUpperCase());
+    return names.join(', ') || 'SQUAD';
+  }
+
+  toggleSelect(idx) {
+    if (idx < 0 || idx >= this.squad.length) return;
+    const s = this.squad[idx];
+    if (!s || s.dead || s.militia) return;
+    if (this.selection.has(idx)) this.selection.delete(idx);
+    else this.selection.add(idx);
+    Audio.uiMove();
+    this.onToast('', this.selection.size
+      ? `SELECTED: ${this.selectionLabel()}` : 'WHOLE SQUAD', 'order');
+  }
+
+  selectAll() {
+    this.selection.clear();
+    Audio.uiMove();
+    this.onToast('', 'WHOLE SQUAD', 'order');
+  }
+
+  setSquadOrder(order) {
+    const targets = this.commanded();
+    if (!targets.length) { Audio.uiDeny(); return; }
+    this.clearMark();
+    if (!this.selection.size) this.squadOrder = order;
+    for (const s of targets) {
+      s.order = order;
+      s.suppressPoint = null;
+      s.suppressOrder = false;
+      s.flankPoint = null;
+      if (order === 'follow') s.orderPoint = null;
+      if (order === 'hold') s.orderPoint = { x: s.x, z: s.z };
+    }
+    Audio.order();
+    const text = { follow: 'FORM ON ME', hold: 'HOLD POSITION' }[order] || order.toUpperCase();
+    this.onToast(this.selectionLabel(), text, 'order');
+    this.orderMarker.visible = false;
+  }
+
+  /** Suppress a point: pour fire into it whether or not anyone is visible. */
+  orderSuppress(pre = null) {
+    const aim = pre || this.aimPoint(120);
+    const targets = this.commanded();
+    if (!targets.length) { Audio.uiDeny(); return; }
+    const p = aim.entity ? { x: aim.entity.x, z: aim.entity.z } : { x: aim.x, z: aim.z };
+    for (const s of targets) {
+      s.order = 'suppress';
+      s.suppressPoint = p;
+      s.suppressOrder = true;
+      s.orderPoint = null;
+      s.flankPoint = null;
+    }
+    Audio.order();
+    this.onToast(this.selectionLabel(), 'SUPPRESS THAT POSITION', 'order');
+    this.showMarker(p.x, p.z, 6);
+  }
+
+  /**
+   * Flank: swing wide around the target and come at it from the side. The
+   * offset is taken perpendicular to the commander's line to the target, so
+   * "flank" always means "from a different angle than I am shooting from".
+   */
+  orderFlank(pre = null) {
+    const aim = pre || this.aimPoint(140);
+    const targets = this.commanded();
+    if (!targets.length) { Audio.uiDeny(); return; }
+    const tx = aim.entity ? aim.entity.x : aim.x;
+    const tz = aim.entity ? aim.entity.z : aim.z;
+    const dx = tx - this.player.x, dz = tz - this.player.z;
+    const d = Math.hypot(dx, dz) || 1;
+    const nx = -dz / d, nz = dx / d;         // perpendicular to the approach
+    targets.forEach((s, i) => {
+      // Alternate sides when more than one soldier is sent.
+      const side = this.selection.size ? (i % 2 === 0 ? 1 : -1) : (this.squad.indexOf(s) % 2 ? 1 : -1);
+      const wide = 14 + i * 3;
+      s.order = 'flank';
+      s.flankPoint = {
+        x: tx + nx * wide * side - (dx / d) * 8,
+        z: tz + nz * wide * side - (dz / d) * 8,
+      };
+      s.flankTarget = aim.entity && aim.entity.side === 'enemy' ? aim.entity : null;
+      s.orderPoint = null;
+      s.suppressPoint = null;
+      s.suppressOrder = false;
+    });
+    Audio.order();
+    this.onToast(this.selectionLabel(), 'FLANK — GO WIDE', 'order');
+    this.showMarker(targets[0].flankPoint.x, targets[0].flankPoint.z, 5);
+  }
+
+  /** Break contact and pull back behind the commander. */
+  orderFallBack() {
+    const targets = this.commanded();
+    if (!targets.length) { Audio.uiDeny(); return; }
+    const back = this.player.yaw + Math.PI;
+    targets.forEach((s, i) => {
+      s.order = 'fallback';
+      s.orderPoint = {
+        x: this.player.x + Math.sin(back) * (5 + i * 1.8) + (i % 2 ? 1.6 : -1.6),
+        z: this.player.z + Math.cos(back) * (5 + i * 1.8),
+      };
+      s.suppressPoint = null;
+      s.suppressOrder = false;
+      s.flankPoint = null;
+    });
+    Audio.order();
+    this.onToast(this.selectionLabel(), 'FALL BACK', 'order');
+    this.showMarker(targets[0].orderPoint.x, targets[0].orderPoint.z, 4);
+  }
+
+  /**
+   * Jump. Deliberately short and heavy: this is a soldier stepping over a
+   * sandbag line, not a platformer. You cannot jump from a crouch, and you
+   * cannot jump while already in the air.
+   */
+  tryJump() {
+    if (!this.grounded || this.over || this.paused || this.intro?.active) return;
+    if (this.player?.down) return;
+    if (this.crouch > 0.4) { this.crouchHeld = false; return; }  // stand up first
+    this.vy = 6.1;
+    this.grounded = false;
+    Audio.uiMove();
+  }
+
+  swapShoulder() {
+    if (this.over || this.intro?.active) return;
+    this.shoulder = -this.shoulder;
+    Audio.uiMove();
+  }
+
+  /** Advance crouch blend and the vertical hop. */
+  updateStance(dt) {
+    const want = this.crouchHeld && this.grounded ? 1 : 0;
+    // Standing up is quicker than going down, which is both true and better to
+    // play: getting up to move should not feel like wading.
+    const rate = want > this.crouch ? 9 : 12;
+    this.crouch += (want - this.crouch) * Math.min(1, dt * rate);
+    if (this.crouch < 0.001) this.crouch = 0;
+
+    // Vertical position, now that there is somewhere to be other than the
+    // ground. `airY` is height above the terrain directly below; the surface
+    // under the player may be the terrain itself or the top of a catwalk.
+    const p = this.player;
+    if (!p) return;
+    const terrain = Level.heightAt(p.x, p.z);
+    const feet = terrain + this.airY;
+    // Only surfaces you could step onto count while walking. In the air,
+    // anything below you is a place to land.
+    const surf = Level.surfaceAt(this.level.obstacles, p.x, p.z,
+      this.grounded ? feet : feet + 0.4, this.grounded ? 0.62 : 0.4) - terrain;
+
+    if (!this.grounded) {
+      this.vy -= 22 * dt;
+      this.airY += this.vy * dt;
+      if (this.airY <= surf) { this.airY = surf; this.vy = 0; this.grounded = true; }
+    } else if (surf > this.airY + 0.02) {
+      // Stepping up onto a low ledge — a stair tread, the lip of a deck.
+      this.airY = surf;
+    } else if (surf < this.airY - 0.08) {
+      // Walked off the edge. Falling, not floating.
+      this.grounded = false;
+      this.vy = 0;
+    }
+    // Carried on the entity, so everything that reasons about bodies — the ray
+    // test, the muzzle, the character rig — reads elevation the same way for
+    // the player as for anyone standing on the same catwalk.
+    p.elev = this.airY;
+  }
+
+  showMarker(x, z, seconds) {
+    this.orderMarker.position.set(x, Level.heightAt(x, z) + 0.05, z);
+    this.orderMarker.visible = true;
+    this.orderMarkerUntil = this.time + seconds;
+  }
+
+  /**
+   * Q is contextual: aiming at a body issues focus fire, aiming at ground
+   * issues a move. One key covers Move and Attack, which keeps the command
+   * set to four keys and stops this turning into an RTS.
+   */
+  issueContextOrder(pre = null) {
+    const aim = pre || this.aimPoint(120);
+    const targets = this.commanded();
+    if (!targets.length) { Audio.uiDeny(); return; }
+
+    if (aim.entity && aim.entity.side === 'enemy') {
+      for (const s of targets) {
+        s.order = 'attack';
+        s.forceTarget = aim.entity;
+        s.orderPoint = null;
+        s.suppressPoint = null;
+        s.suppressOrder = false;
+        s.flankPoint = null;
+      }
+      if (!this.selection.size) this.squadOrder = 'attack';
+      Audio.order();
+      this.onToast(this.selectionLabel(), 'FOCUS FIRE', 'order');
+      this.showMarker(aim.entity.x, aim.entity.z, 3);
+    } else {
+      const p = { x: aim.x, z: aim.z };
+      targets.forEach((s, i) => {
+        s.order = 'move';
+        s.forceTarget = null;
+        s.suppressPoint = null;
+        s.suppressOrder = false;
+        s.flankPoint = null;
+        // Spread out around the point instead of stacking on it.
+        const a = (i / Math.max(1, targets.length)) * Math.PI * 2;
+        s.orderPoint = { x: p.x + Math.cos(a) * 1.9, z: p.z + Math.sin(a) * 1.9 };
+      });
+      if (!this.selection.size) this.squadOrder = 'move';
+      Audio.order();
+      this.onToast(this.selectionLabel(), 'MOVE UP', 'order');
+      this.showMarker(p.x, p.z, 5);
+    }
+  }
+
+  // ======================================================================
+  // Aiming & shooting
+  // ======================================================================
+
+  /** World point under the crosshair, plus whatever entity is there. */
+  aimPoint(maxDist = 200) {
+    const o = new THREE.Vector3();
+    this.camera.getWorldPosition(o);
+    const d = new THREE.Vector3(0, 0, -1).applyQuaternion(this.camera.quaternion).normalize();
+    return this.rayHit(o, d, maxDist, this.player);
+  }
+
+  /**
+   * 3D ray against obstacle boxes, entity capsules and the ground. Used for
+   * both the player's shots and the AI's, so a miss looks the same either way.
+   */
+  rayHit(origin, dir, maxDist, ignore) {
+    let best = { t: maxDist, entity: null, kind: 'sky' };
+
+    for (const o of this.level.obstacles) {
+      const t = rayBox(origin, dir,
+        o.x - o.hw, o.y, o.z - o.hd,
+        o.x + o.hw, o.y + o.h, o.z + o.hd);
+      if (t !== null && t > 0.05 && t < best.t) best = { t, entity: null, kind: 'solid' };
+    }
+
+    for (const e of this.entities) {
+      if (e === ignore || e.dead) continue;
+      if (e.isTitan) {
+        // The walker is not a capsule. Every plate and every exposed core is
+        // its own target, and which one you hit is the entire fight — so it is
+        // resolved here rather than being flattened into one body hit.
+        for (const pl of e.plates) {
+          const wp = this.platePos(pl);
+          if (!wp) continue;
+          const t = rayCapsule(origin, dir, wp.x, wp.y - 0.5, wp.z, wp.x, wp.y + 0.5, wp.z,
+            pl.broken ? pl.radius * 0.52 : pl.radius);
+          if (t !== null && t > 0.05 && t < best.t) {
+            best = { t, entity: e, kind: pl.broken ? 'core' : 'plate', plate: pl };
+          }
+        }
+        // The hull itself, so shots that miss every plate still hit something.
+        const hb = Level.heightAt(e.x, e.z);
+        const th = rayCapsule(origin, dir, e.x, hb + 1.2, e.z, e.x, hb + 7.0, e.z, 1.5);
+        if (th !== null && th > 0.05 && th < best.t) {
+          best = { t: th, entity: e, kind: 'hull' };
+        }
+        continue;
+      }
+      const { lo, hi } = bodyCapsule(e);
+      const t = rayCapsule(origin, dir, e.x, lo, e.z, e.x, hi, e.z, 0.42);
+      if (t !== null && t > 0.05 && t < best.t) best = { t, entity: e, kind: 'body' };
+    }
+
+    // Ground: iterate a few steps rather than solving the displaced surface.
+    for (let t = 2; t < Math.min(maxDist, best.t); t += 1.6) {
+      const px = origin.x + dir.x * t, py = origin.y + dir.y * t, pz = origin.z + dir.z * t;
+      if (py <= Level.heightAt(px, pz)) { best = { t, entity: null, kind: 'ground' }; break; }
+    }
+
+    return {
+      t: best.t,
+      entity: best.entity,
+      kind: best.kind,
+      plate: best.plate || null,
+      x: origin.x + dir.x * best.t,
+      y: origin.y + dir.y * best.t,
+      z: origin.z + dir.z * best.t,
+    };
+  }
+
+  tryReload(e) {
+    if (!e.weapon || e.reloading > 0 || e.ammo >= e.weapon.mag) return;
+    e.reloading = e.weapon.reload;
+    Audio.reload('out', this.relPos(e));
+    setTimeout(() => { if (!this.over) Audio.reload('in', this.relPos(e)); }, e.weapon.reload * 600);
+  }
+
+  relPos(e) {
+    if (!this.player) return null;
+    return { x: e.x - this.player.x, z: e.z - this.player.z };
+  }
+
+  /** Fire one round from `e` toward a world point. */
+  fire(e, tx, ty, tz, spreadScale = 1) {
+    const w = e.weapon;
+    if (!w || e.reloading > 0 || e.cooldown > 0) return;
+    // Gated here rather than at each AI branch so nothing that arrives can
+    // shoot on its first frame, whichever behaviour is driving it.
+    if (e.arriving > 0) return;
+    if (e.ammo <= 0) {
+      if (e.isPlayer) Audio.dryFire();
+      this.tryReload(e);
+      return;
+    }
+    e.ammo--;
+    e.cooldown = 60 / w.rpm;
+    e.char.kick();
+    if (e.isPlayer) this.stats.shotsFired++;
+
+    const muzzle = new THREE.Vector3(e.x,
+      Level.heightAt(e.x, e.z) + (e.elev || 0) + CHEST + 0.22, e.z);
+    if (e.isPlayer) {
+      // Fire from the camera so what the crosshair covers is what gets hit;
+      // the tracer still starts at the muzzle so it reads correctly.
+      this.camera.getWorldPosition(muzzle);
+    }
+    const base = new THREE.Vector3(tx - muzzle.x, ty - muzzle.y, tz - muzzle.z).normalize();
+
+    const pellets = w.pellets || 1;
+    // Being shot at spoils the player's aim too — suppression is not a penalty
+    // that only applies to the AI.
+    const spread = (this.aiming && e.isPlayer ? w.adsSpread : w.spread)
+      * spreadScale / (e.isPlayer ? this.suppressionPenalty(e) : 1)
+      // A braced, crouched shot is a genuinely steadier one; a shot taken in
+      // mid-air is not a shot, it is a hope.
+      * (e.isPlayer ? (1 - this.crouch * 0.34) * (this.grounded ? 1 : 1.9) : 1);
+    for (let i = 0; i < pellets; i++) {
+      const dir = base.clone();
+      dir.x += (this.r() - 0.5) * spread * 2;
+      dir.y += (this.r() - 0.5) * spread * 2;
+      dir.z += (this.r() - 0.5) * spread * 2;
+      dir.normalize();
+      const hit = this.rayHit(muzzle, dir, w.range * 1.6, e);
+      this.spawnTracer(e, hit);
+      if (hit.entity) this.applyDamage(hit.entity, w.damage, e, hit);
+      else if (hit.kind === 'solid' || hit.kind === 'ground') {
+        this.spawnImpact(hit, hit.kind === 'solid' ? 'metal' : 'dirt');
+      }
+      // Every round suppresses whatever it passes close to, hit or miss. This
+      // is what turns a firefight into something you can manoeuvre inside:
+      // pin one element with fire, move on it with another.
+      this.applySuppression(e, muzzle.x, muzzle.z, hit.x, hit.z);
+    }
+    this.spawnMuzzleFlash(e);
+    Audio.shot(w.id, e.isPlayer ? null : this.relPos(e));
+    // Everyone nearby on the shooter's side hears it and comes looking. The
+    // place they head for is where the shot was aimed, not where the target is
+    // now — sound tells you a direction, not a position.
+    this.raiseAlarm(e, e.target || { x: tx, z: tz });
+
+    if (e.isPlayer) {
+      // Recoil is applied to the camera, then recovers. Enough to disturb aim,
+      // never enough to lose the target.
+      this.camPitch = clamp(this.camPitch + w.recoil * 0.0075 * (this.aiming ? 0.6 : 1), -0.72, 0.62);
+      this.camYaw += (this.r() - 0.5) * w.recoil * 0.004;
+      this.shake = Math.min(0.5, (this.shake || 0) + w.recoil * 0.05);
+    }
+    if (e.ammo === 0) this.tryReload(e);
+  }
+
+  /**
+   * Add suppression to anyone the shot passed near. Distance is measured to
+   * the shot's line, so a burst walked across a position pins everyone behind
+   * it rather than only the person who was aimed at.
+   */
+  applySuppression(shooter, ax, az, bx, bz) {
+    // Enemies only break — stop advancing, abandon their doctrine, dive for
+    // cover — above 0.45 suppression, and ordinary aimed fire tops out right
+    // around there. So the ORDER has to be the thing that carries them over the
+    // line, otherwise it is a 10% damage tweak nobody can feel. Measured over
+    // 16 paired trials with tools/tactics.mjs.
+    const power = (shooter.eff?.suppressPower || 1) * (shooter.suppressOrder ? 2.1 : 1);
+    const dx = bx - ax, dz = bz - az;
+    const len2 = dx * dx + dz * dz;
+    if (len2 < 0.01) return;
+    for (const o of this.entities) {
+      if (o === shooter || o.dead || o.down || o.follower) continue;
+      // You cannot make a walker flinch.
+      if (o.isTitan) continue;
+      if (o.side === shooter.side) continue;
+      // Closest approach of the segment to this entity.
+      let t = ((o.x - ax) * dx + (o.z - az) * dz) / len2;
+      t = clamp(t, 0, 1);
+      const cx = ax + dx * t, cz = az + dz * t;
+      const d = Math.hypot(o.x - cx, o.z - cz);
+      if (d > 3.2) continue;
+      const resist = o.eff?.suppressResist || 0;
+      const add = (1 - d / 3.2) * 0.16 * power * (1 - resist);
+      o.suppression = clamp((o.suppression || 0) + add, 0, 1);
+      if (o.isPlayer) this.shake = Math.min(0.5, (this.shake || 0) + add * 0.5);
+    }
+  }
+
+  /** How badly this entity's aim is degraded right now. */
+  suppressionPenalty(e) {
+    return 1 - (e.suppression || 0) * 0.75;
+  }
+
+  /** World position of a plate's mount, or null if the rig is not ready. */
+  platePos(pl) {
+    if (!pl?.mount) return null;
+    const v = pl._v || (pl._v = new THREE.Vector3());
+    pl.mount.getWorldPosition(v);
+    return v;
+  }
+
+  /**
+   * Damage against the walker. Armour is not a damage multiplier, it is a gate:
+   * hits on a plate barely scratch the machine but wear the plate itself down,
+   * and only once the plate is gone does anything reach the core.
+   */
+  damageTitan(e, dmg, source, hit) {
+    const pl = hit?.plate || null;
+
+    if (pl && !pl.broken) {
+      pl.hp -= dmg;
+      this.spawnImpact(hit, 'metal');
+      // Almost nothing gets through intact armour. It has to be almost nothing
+      // rather than nothing, or a player with no idea what to do never learns
+      // that they are hitting the wrong thing.
+      e.hp -= dmg * 0.04;
+      if (pl.hp <= 0) this.breakPlate(e, pl, source);
+      return;
+    }
+
+    if (pl && pl.broken) {
+      // The whole point. A core hit is worth roughly eight plate hits.
+      const crit = dmg * 3.4;
+      e.hp -= crit;
+      this.spawnImpact(hit, 'flesh');
+      this.shake = Math.min(0.7, (this.shake || 0) + 0.16);
+      if (source?.isPlayer) this.onToast('', 'CRITICAL — CORE HIT', 'kill');
+      if (e.hp <= 0) this.killTitan(e, source);
+      return;
+    }
+
+    // The hull between the plates: thick, and not where the fight is won.
+    e.hp -= dmg * 0.10;
+    this.spawnImpact(hit, 'metal');
+    if (e.hp <= 0) this.killTitan(e, source);
+  }
+
+  breakPlate(e, pl, source) {
+    pl.broken = true;
+    pl.hp = 0;
+    pl.slab.visible = false;
+    pl.core.visible = true;
+    e.platesLeft = Math.max(0, e.platesLeft - 1);
+    Audio.explosion(this.relPos(e));
+    this.shake = Math.min(0.9, (this.shake || 0) + 0.45);
+    if (source?.isPlayer || source?.side === 'player') {
+      this.onToast('ARMOUR BREACHED', `${pl.id.replace('_', ' ').toUpperCase()} — put rounds through it`, 'good');
+    }
+    // A visible slab of armour falling off is the clearest possible feedback
+    // that the player has found the right thing to do.
+    const wp = this.platePos(pl);
+    if (wp) {
+      const slab = Models.get('titan_plate');
+      slab.position.copy(wp);
+      slab.rotation.set(this.r() * 0.5, this.r() * 6.28, this.r() * 0.5);
+      this.scene.add(slab);
+      this.effects.push({
+        mesh: slab, life: 6, max: 6, kind: 'debris',
+        vx: (this.r() - 0.5) * 5, vy: 3 + this.r() * 2, vz: (this.r() - 0.5) * 5,
+        spin: (this.r() - 0.5) * 4,
+      });
+    }
+  }
+
+  killTitan(e, source) {
+    if (e.dead) return;
+    e.dead = true;
+    e.down = true;
+    e.hp = 0;
+    this.stats.kills++;
+    if (source?.isPlayer) this.stats.titanKills = (this.stats.titanKills || 0) + 1;
+    for (let i = 0; i < 5; i++) {
+      const wp = this.platePos(e.plates[i % e.plates.length]);
+      if (wp) this.spawnImpact({ x: wp.x, y: wp.y, z: wp.z }, 'metal');
+    }
+    Audio.explosion(this.relPos(e));
+    this.shake = 1.4;
+    this.onToast('TITAN DOWN', 'It is not getting up', 'kill');
+  }
+
+  applyDamage(target, dmg, source, hit) {
+    if (target.dead) return;
+    // The walker resolves damage by where it was hit, not by how much health it
+    // has left — see damageTitan.
+    if (target.isTitan) { this.damageTitan(target, dmg, source, hit); return; }
+    // Friendly fire is real but heavily reduced — full-strength friendly fire
+    // in a squad game with AI this simple is just frustrating.
+    if (target.side === source.side && !source.isPlayer) return;
+    if (target.side === source.side && source.isPlayer) dmg *= 0.35;
+
+    // A headshot-ish band, rewarded but not a one-shot rule.
+    const headY = Level.heightAt(target.x, target.z) + 1.62;
+    if (hit && Math.abs(hit.y - headY) < 0.18) dmg *= 1.85;
+    // Close Quarters perk.
+    const cq = source.eff?.closeDmg || 0;
+    if (cq && Math.hypot(target.x - source.x, target.z - source.z) < 12) dmg *= 1 + cq;
+
+    target.hp -= dmg;
+    target.char.flinch();
+    this.spawnImpact(hit, 'flesh');
+    if (target.side === 'enemy') target.alert = 1;
+
+    // Being shot at makes the AI react even if it was looking elsewhere.
+    if (!target.target && source !== target) target.target = source;
+
+    if (target.hp <= 0) this.downEntity(target, source);
+    else if (target.isPlayer) {
+      this.hurtFlash = 1;
+      this.shake = Math.min(0.8, (this.shake || 0) + 0.25);
+    }
+  }
+
+  downEntity(e, source) {
+    if (e.down || e.dead) return;
+    e.hp = 0;
+
+    if (e.side === 'enemy') {
+      // Enemies are simply killed. Persistence is a player-side concept.
+      e.dead = true;
+      e.down = true;
+      if (source === this.player) this.stats.kills++;
+      if (source?.soldier) source.killCount = (source.killCount || 0) + 1;
+      if (source?.isPlayer) this.onToast('', 'HOSTILE DOWN', 'kill');
+      Audio.impact('flesh', this.relPos(e));
+      return;
+    }
+
+    // Player-side: incapacitated, with a timer. This is the tension engine.
+    e.down = true;
+    e.bleed = BLEED_OUT * (e.eff?.bleedMul || 1);
+    e.bleedMax = e.bleed;
+    e.order = 'hold';
+    Audio.casualtyTone();
+    if (e.isPlayer) {
+      if (this.spec.type === 'pit') {
+        // Nobody dies in the pit. You are dragged out and the crowd moves on.
+        this.onToast('PUT DOWN', `You lasted ${this.pitRound} round(s)`, 'bad');
+        this.endMission(false, 'pit');
+        return;
+      }
+      this.onToast('COMMANDER DOWN', 'Bracket is breaking contact', 'bad');
+      this.endMission(false, 'commander');
+    } else {
+      this.onToast('CASUALTY', `${e.name} is down — reach them`, 'bad');
+    }
+  }
+
+  // ======================================================================
+  // Effects
+  // ======================================================================
+
+  spawnTracer(e, hit) {
+    const from = new THREE.Vector3(e.x, Level.heightAt(e.x, e.z) + CHEST + 0.25, e.z);
+    if (e.char.weapon) e.char.weapon.getWorldPosition(from);
+    const to = new THREE.Vector3(hit.x, hit.y, hit.z);
+    const len = from.distanceTo(to);
+    if (len < 0.4) return;
+    const m = new THREE.Mesh(Models.GEO.tracer, Models.MAT.tracer.clone());
+    m.scale.set(1, 1, Math.min(len, 14));
+    m.position.copy(from).lerp(to, Math.min(1, 7 / len) * 0.5);
+    m.lookAt(to);
+    this.scene.add(m);
+    this.effects.push({ mesh: m, life: 0.06, max: 0.06, kind: 'tracer', from, to, speed: 220, len });
+  }
+
+  spawnMuzzleFlash(e) {
+    const m = new THREE.Mesh(Models.GEO.flash, Models.MAT.muzzle.clone());
+    const p = new THREE.Vector3();
+    if (e.char.weapon) e.char.weapon.getWorldPosition(p);
+    else p.set(e.x, Level.heightAt(e.x, e.z) + CHEST, e.z);
+    m.position.copy(p);
+    m.rotation.set(Math.PI / 2, 0, this.r() * 6.28);
+    m.scale.setScalar(0.8 + this.r() * 0.5);
+    this.scene.add(m);
+    this.effects.push({ mesh: m, life: 0.045, max: 0.045, kind: 'flash' });
+
+    const l = new THREE.PointLight(0xffb45a, 3.2, 11);
+    l.position.copy(p);
+    this.scene.add(l);
+    this.effects.push({ mesh: l, life: 0.05, max: 0.05, kind: 'light' });
+  }
+
+  spawnImpact(hit, kind) {
+    if (!hit) return;
+    const mat = kind === 'flesh' ? Models.MAT.blood : Models.MAT.spark;
+    for (let i = 0; i < (kind === 'flesh' ? 4 : 5); i++) {
+      const m = new THREE.Mesh(Models.GEO.bit, mat.clone());
+      m.position.set(hit.x, hit.y, hit.z);
+      this.scene.add(m);
+      this.effects.push({
+        mesh: m, life: 0.42, max: 0.42, kind: 'bit',
+        vx: (this.r() - 0.5) * 5, vy: this.r() * 4 + 1, vz: (this.r() - 0.5) * 5,
+      });
+    }
+    Audio.impact(kind, this.player ? { x: hit.x - this.player.x, z: hit.z - this.player.z } : null);
+  }
+
+  updateEffects(dt) {
+    for (let i = this.effects.length - 1; i >= 0; i--) {
+      const f = this.effects[i];
+      f.life -= dt;
+      if (f.kind === 'bit') {
+        f.vy -= 15 * dt;
+        f.mesh.position.x += f.vx * dt;
+        f.mesh.position.y += f.vy * dt;
+        f.mesh.position.z += f.vz * dt;
+        f.mesh.material.opacity = Math.max(0, f.life / f.max);
+      } else if (f.kind === 'tracer') {
+        f.mesh.material.opacity = Math.max(0, f.life / f.max) * 0.9;
+      } else if (f.kind === 'flash') {
+        f.mesh.scale.multiplyScalar(1 + dt * 9);
+        f.mesh.material.opacity = Math.max(0, f.life / f.max);
+      } else if (f.kind === 'light') {
+        f.mesh.intensity = Math.max(0, f.life / f.max) * 3.2;
+      } else if (f.kind === 'debris') {
+        // Shed armour tumbles, lands, and stays for the rest of the fight. It
+        // is the scoreboard: a Titan surrounded by its own plating is a Titan
+        // that is nearly finished.
+        f.vy -= 16 * dt;
+        f.mesh.position.x += f.vx * dt;
+        f.mesh.position.y += f.vy * dt;
+        f.mesh.position.z += f.vz * dt;
+        f.mesh.rotation.z += f.spin * dt;
+        const floor = Level.heightAt(f.mesh.position.x, f.mesh.position.z) + 0.25;
+        if (f.mesh.position.y <= floor) {
+          f.mesh.position.y = floor;
+          f.vx = 0; f.vy = 0; f.vz = 0; f.spin = 0;
+          f.mesh.rotation.x = Math.PI / 2;
+        }
+      }
+      if (f.life <= 0) {
+        this.scene.remove(f.mesh);
+        f.mesh.material?.dispose?.();
+        this.effects.splice(i, 1);
+      }
+    }
+  }
+
+  // ======================================================================
+  // Player update
+  // ======================================================================
+
+  updatePlayer(dt) {
+    const p = this.player;
+    if (p.down || this.over) return;
+    // No control during the insertion cinematic.
+    if (this.intro?.active) { p.moveSpeed = 0; this.aiming = false; return; }
+
+    this.updateStance(dt);
+    this.aiming = this.mouse.right;
+    this.updateCover(dt);
+    // You cannot sprint from a crouch or in mid-air.
+    const sprint = this.keys.has('shift') && !this.aiming
+      && this.crouch < 0.3 && this.grounded;
+
+    let mx = 0, mz = 0;
+    if (this.keys.has('w')) mz += 1;
+    if (this.keys.has('s')) mz -= 1;
+    if (this.keys.has('a')) mx -= 1;
+    if (this.keys.has('d')) mx += 1;
+    const mag = Math.hypot(mx, mz);
+
+    const eff = effective(p.soldier);
+    let speed = eff.speed;
+    if (this.aiming) speed *= 0.48;
+    else if (sprint) speed *= 1.5;
+    // Crouching costs most of your speed — that is the trade for the steadier
+    // aim and the smaller silhouette.
+    speed *= 1 - this.crouch * 0.58;
+    // Limited air control: enough to clear what you jumped at, not enough to
+    // steer in flight.
+    if (!this.grounded) speed *= 0.72;
+    if (mag > 0) {
+      mx /= mag; mz /= mag;
+      // Movement is camera-relative, which is what every player expects.
+      const sin = Math.sin(this.camYaw), cos = Math.cos(this.camYaw);
+      let wx = mx * cos - mz * sin;
+      let wz = -mx * sin - mz * cos;
+      if (this.cover) {
+        // In cover you move along the wall, not through it. Pushing away from
+        // the face is how you get out, and that is handled in updateCover — so
+        // here the outward component is simply dropped and the along-the-face
+        // component kept, which is what makes sliding down a barricade feel
+        // like sliding rather than like fighting the controls.
+        const { nx, nz } = this.cover;
+        if (nx) wx = 0; else wz = 0;
+        speed *= 0.72;
+      }
+      const nx = p.x + wx * speed * dt;
+      const nz = p.z + wz * speed * dt;
+      // Feet are passed in so anything you are standing on stops being a wall.
+      const res = Level.resolveMove(this.level.obstacles, p.x, p.z, nx, nz,
+        Level.heightAt(p.x, p.z) + this.airY);
+      const b = this.level.bounds;
+      p.x = clamp(res.x, -b, b);
+      p.z = clamp(res.z, -b, b);
+      p.moveSpeed = speed;
+    } else {
+      p.moveSpeed = 0;
+    }
+
+    // Body turns to face where the camera looks. When not aiming, it lags,
+    // which stops the character snapping around under the camera.
+    const targetYaw = this.camYaw + Math.PI;
+    p.yaw = this.aiming ? targetYaw : approachAngle(p.yaw, targetYaw, dt * 7);
+
+    if (p.reloading > 0) {
+      p.reloading -= dt;
+      if (p.reloading <= 0) {
+        p.ammo = p.weapon.mag;
+        p.reloading = 0;
+      }
+    }
+    p.cooldown = Math.max(0, p.cooldown - dt);
+
+    if (this.mouse.down && !this.paused) {
+      const w = p.weapon;
+      if (w.auto || !this.firedThisClick) {
+        if (p.cooldown <= 0) {
+          const aim = this.aimPoint(w.range * 1.6);
+          this.fire(p, aim.x, aim.y, aim.z);
+          this.firedThisClick = true;
+        }
+      }
+    } else {
+      this.firedThisClick = false;
+    }
+
+    this.updateInteraction(dt);
+  }
+
+  updateInteraction(dt) {
+    const p = this.player;
+    let nearest = null, nd = 2.6;
+
+    for (const it of this.interactables) {
+      if (it.done || it.taken) continue;
+      const ix = it.entity ? it.entity.x : it.x;
+      const iz = it.entity ? it.entity.z : it.z;
+      const d = Math.hypot(p.x - ix, p.z - iz);
+      if (d < nd) { nd = d; nearest = it; }
+    }
+    // Downed friends are always interactable, and take priority — the player
+    // should never be fighting the UI while someone is bleeding out.
+    for (const e of this.entities) {
+      // Held personnel can be stabilised too — losing one you came to rescue
+      // because you could not reach them is a far better beat than losing one
+      // to a rule that says civilians cannot be helped.
+      if (e.side !== 'player' && e.side !== 'civil') continue;
+      if (!e.down || e.dead || e.stabilised || e.isPlayer) continue;
+      const d = Math.hypot(p.x - e.x, p.z - e.z);
+      if (d < 2.8) { nd = 0; nearest = { kind: 'revive', entity: e, need: 2.2, progress: e.reviveProg || 0 }; }
+    }
+
+    this.nearInteract = nearest;
+    if (!nearest) { this.interactProgress = 0; return; }
+
+    if (this.keys.has('e')) {
+      const rate = nearest.kind === 'revive' ? this.bestSquadStat('reviveSpeed')
+        : this.bestSquadStat('interactSpeed')
+          * (this.squadHasRole('signals') ? 2 : 1);
+      nearest.progress = (nearest.progress || 0) + dt * rate;
+      if (nearest.kind === 'revive') nearest.entity.reviveProg = nearest.progress;
+      this.interactProgress = clamp(nearest.progress / nearest.need, 0, 1);
+      if (nearest.progress >= nearest.need) this.completeInteraction(nearest);
+    } else {
+      // Progress decays rather than resetting, so being interrupted by fire
+      // is a setback, not a punishment.
+      nearest.progress = Math.max(0, (nearest.progress || 0) - dt * 0.6);
+      if (nearest.kind === 'revive') nearest.entity.reviveProg = nearest.progress;
+      this.interactProgress = clamp(nearest.progress / nearest.need, 0, 1);
+    }
+  }
+
+  squadHasRole(role) {
+    return this.squad.some((s) => !s.dead && !s.down && s.soldier && s.soldier.role === role);
+  }
+
+  /** Best value of an `effective()` stat across everyone still on their feet. */
+  bestSquadStat(key) {
+    let best = 1;
+    for (const e of [this.player, ...this.squad]) {
+      if (e.dead || e.down || !e.eff) continue;
+      best = Math.max(best, e.eff[key] || 1);
+    }
+    return best;
+  }
+
+  completeInteraction(it) {
+    it.progress = 0;
+    if (it.kind === 'revive') {
+      const e = it.entity;
+      // A Combat Medic in the squad sometimes patches someone up out of their
+      // own pockets — which is what makes that perk worth a promotion.
+      const medic = [this.player, ...this.squad].find(
+        (m) => !m.dead && !m.down && m.eff && m.soldier
+          && (m.soldier.perks || []).includes('combat_medic'));
+      const free = medic && this.r() < 0.4;
+      if (!free && this.S.medical <= 0) {
+        this.onToast('NO KITS', 'Out of medical supplies', 'bad');
+        return;
+      }
+      if (free) {
+        this.onToast('FIELD IMPROVISED', `${medic.name} made do without a kit`, 'good');
+      } else {
+        this.S.medical--;
+        this.stats.medkitsUsed++;
+      }
+      e.down = false;
+      e.stabilised = true;
+      e.hp = Math.round(e.maxHp * 0.3);
+      e.bleed = 0;
+      e.order = this.squadOrder;
+      // A stabilised prisoner is on their feet and counts as recovered.
+      if (e.side === 'civil') { e.released = true; this.updateRecovery(); }
+      Audio.uiSelect();
+      this.onToast('STABILISED', `${e.name} is back on their feet`, 'good');
+      return;
+    }
+    if (it.kind === 'prisoner') {
+      it.done = true;
+      const e = it.entity;
+      e.released = true;
+      e.follower = true;
+      e.name = e.isMedic ? 'Trained medic' : 'Freed worker';
+      Audio.uiSelect();
+      if (e.isMedic) {
+        this.onToast('PERSONNEL RELEASED',
+          'One of them is a trained field medic', 'good');
+      } else {
+        this.onToast('PERSONNEL RELEASED', 'One of them is on their feet', 'good');
+      }
+      // Progress is recomputed from who is actually alive rather than counted
+      // up — see updateRecovery.
+      this.updateRecovery();
+      return;
+    }
+    if (it.kind === 'charge') {
+      it.done = true;
+      this.chargesPlaced = true;
+      this.chargeTimer = 75;
+      Audio.uiAlert();
+      this.onToast('CHARGES SET', 'Seventy-five seconds. Get clear.', 'bad');
+      this.completeObjective();
+      // The whole garrison now knows exactly where you are.
+      for (const e of this.entities) {
+        if (e.side === 'enemy' && !e.dead) { e.alert = 1; e.state = 'hunt'; e.target = this.player; }
+      }
+      this.spawnReinforcements(4);
+      return;
+    }
+    if (it.kind === 'breach') {
+      it.done = true;
+      this.blowGate();
+      return;
+    }
+    if (it.kind === 'loot') {
+      it.taken = true;
+      it.done = true;
+      this.scene.remove(it.mesh);
+      this.raidTaken = (this.raidTaken || 0) + 1;
+      Audio.uiSelect();
+      this.onToast('STORE BROKEN OPEN',
+        `${this.raidTaken} of ${this.objective.need}`, 'good');
+      // Robbing people in their own street brings the street out.
+      this.spawnReinforcements(3);
+      for (const e of this.entities) {
+        if (e.side === 'enemy' && !e.dead) { e.alert = 1; e.state = 'hunt'; }
+      }
+      this.updateRaid();
+      return;
+    }
+    if (it.kind === 'cache') {
+      it.taken = true;
+      this.cacheTaken = true;
+      this.scene.remove(it.mesh);
+      Audio.uiSelect();
+      this.onToast('CACHE RECOVERED', 'Salvage secured', 'good');
+    }
+  }
+
+  completeObjective() {
+    if (this.objective.done) return;
+    this.objective.done = true;
+    // Bodies are cleared from the entity list a little after they fall, so a
+    // finished skirmish could read "51/54" on the HUD while the toast said the
+    // objective was complete. If it is done, it is done.
+    if (this.objective.progress < this.objective.need) {
+      this.objective.progress = this.objective.need;
+    }
+    this.extractArmed = true;
+    const ex = this.level.extraction;
+    this.extractMarker.position.set(ex.x, Level.heightAt(ex.x, ex.z) + 0.05, ex.z);
+    this.extractMarker.visible = true;
+    Audio.extractTone();
+    if (this.spec.type !== 'defense') {
+      this.onToast('OBJECTIVE COMPLETE', 'Move to extraction', 'good');
+    }
+  }
+
+  spawnReinforcements(n) {
+    // They arrive from the map edge, on the side the player is NOT extracting
+    // toward, so the pressure pushes you along the intended route.
+    const ex = this.level.extraction;
+    const a0 = Math.atan2(-ex.z, -ex.x);
+    for (let i = 0; i < n; i++) {
+      const a = a0 + range(this.r, -0.7, 0.7);
+      const d = 52;
+      this.reinforce(Math.cos(a) * d, Math.sin(a) * d,
+        pick(this.r, ['rifleman', 'rifleman', 'breacher', 'gunner']));
+    }
+    const list = this.entities.filter((e) => e.side === 'enemy' && !e.dead);
+    for (const e of list.slice(-n)) { e.state = 'hunt'; e.alert = 1; e.target = this.player; }
+  }
+
+  // ======================================================================
+  // AI
+  // ======================================================================
+
+  /**
+   * The Titan's behaviour. Kept entirely separate from updateAI because none of
+   * the small-unit logic applies: it does not seek cover, it cannot be
+   * suppressed, and it does not break contact. It walks at whoever is nearest,
+   * fires its cannon in long bursts, and periodically turns its damaged side
+   * away — which is what forces the squad to keep moving around it.
+   */
+  updateTitan(dt, e) {
+    if (e.dead) return;
+    const targets = this.entities.filter((x) => x.side === 'player' && !x.dead && !x.down);
+    if (!targets.length) { e.target = null; return; }
+    let best = null; let bd = Infinity;
+    for (const x of targets) {
+      const d = Math.hypot(x.x - e.x, x.z - e.z);
+      if (d < bd) { bd = d; best = x; }
+    }
+    e.target = best;
+
+    // Face the target, but bias the turn so the most damaged side ends up away
+    // from them. A player who has opened the left flank has to work to keep
+    // looking at it.
+    const want = Math.atan2(best.x - e.x, best.z - e.z);
+    const openLeft = e.plates.some((pl) => pl.broken && pl.id.endsWith('_l'));
+    const openRight = e.plates.some((pl) => pl.broken && pl.id.endsWith('_r'));
+    const shy = (openLeft ? -0.5 : 0) + (openRight ? 0.5 : 0);
+    e.yaw = approachAngle(e.yaw, want + shy, dt * 0.9);
+
+    // Close to a working range and hold there. It does not need to reach you.
+    const ideal = 16;
+    if (bd > ideal + 3) {
+      const s = Math.sin(e.yaw), c = Math.cos(e.yaw);
+      const nx = e.x + s * e.speed * dt;
+      const nz = e.z + c * e.speed * dt;
+      const res = Level.resolveMove(this.level.obstacles, e.x, e.z, nx, nz);
+      const b = this.level.bounds - 4;
+      e.x = clamp(res.x, -b, b);
+      e.z = clamp(res.z, -b, b);
+      e.moveSpeed = e.speed;
+    } else {
+      e.moveSpeed = 0;
+    }
+
+    // Cannon: long bursts with a heavy reset, so there are real windows to move
+    // in. Losing plates makes it angrier, not more accurate.
+    e.cooldown -= dt;
+    const rage = 1 + (e.plates.length - e.platesLeft) * 0.12;
+    const los = Level.hasLOS(this.level.obstacles, e.x, e.z, best.x, best.z, 4.3);
+    if (bd < 46 && e.cooldown <= 0 && los) {
+      e.burst = (e.burst || 0) - 1;
+      if (e.burst <= 0) { e.burst = 9; e.cooldown = 2.4 / rage; }
+      else e.cooldown = 0.09;
+      const spread = 0.028 / rage;
+      const from = new THREE.Vector3(e.x, Level.heightAt(e.x, e.z) + 4.3, e.z);
+      const to = new THREE.Vector3(best.x + (this.r() - 0.5) * 2.2,
+        Level.heightAt(best.x, best.z) + 1.0, best.z + (this.r() - 0.5) * 2.2);
+      const dir = to.sub(from).normalize();
+      dir.x += (this.r() - 0.5) * spread;
+      dir.z += (this.r() - 0.5) * spread;
+      dir.normalize();
+      const hit = this.rayHit(from, dir, 90, e);
+      this.spawnTracer(e, hit);
+      Audio.shot('lmg', this.relPos(e));
+      if (hit.entity && hit.entity.side === 'player') {
+        this.applyDamage(hit.entity, 16, e, hit);
+      } else this.spawnImpact(hit, hit.kind === 'solid' ? 'metal' : 'dirt');
+      this.applySuppression(e, from.x, from.z, hit.x, hit.z);
+    }
+
+    // Stomp: anyone who stands underneath it gets hurt, which stops the squad
+    // solving the fight by hugging its legs where the cannon cannot depress.
+    e.stomp -= dt;
+    if (e.stomp <= 0) {
+      e.stomp = 3.2;
+      for (const x of targets) {
+        const d = Math.hypot(x.x - e.x, x.z - e.z);
+        if (d < 6.5) {
+          this.applyDamage(x, 26, e, { x: x.x, y: Level.heightAt(x.x, x.z) + 1, z: x.z });
+          this.shake = Math.min(1, (this.shake || 0) + 0.5);
+          Audio.explosion(this.relPos(e));
+        }
+      }
+    }
+  }
+
+  updateAI(dt, e) {
+    if (e.dead) return;
+
+    if (e.down) {
+      if (e.side === 'player' && !e.stabilised) {
+        e.bleed -= dt;
+        if (e.bleed <= 0) {
+          e.dead = true;
+          if (!e.isPlayer) this.onToast('CASUALTY', `${e.name} has bled out`, 'bad');
+        }
+      }
+      return;
+    }
+
+    e.cooldown = Math.max(0, e.cooldown - dt);
+    // A reinforcement is on the field but not yet in the fight.
+    if (e.arriving > 0) e.arriving = Math.max(0, e.arriving - dt);
+
+    // Everyone else gets the same body as the player: standing in your cover
+    // position with nothing to shoot at means getting your head down, and the
+    // ray test rewards it. Firing brings you up again — which is exactly the
+    // window a flanking soldier is being sent to exploit.
+    if (!e.isPlayer) {
+      const atCover = e.coverPos
+        && Math.hypot(e.coverPos.x - e.x, e.coverPos.z - e.z) < 1.4;
+      const shooting = e.cooldown > 0.02 || (e.burst || 0) > 0;
+      const wantTuck = atCover && !shooting ? 1 : 0;
+      const pin = clamp((e.suppression || 0) * 1.4, 0, 1);
+      const target = Math.max(wantTuck, atCover ? pin : 0);
+      e.tuck = (e.tuck || 0) + (target - (e.tuck || 0)) * Math.min(1, dt * 6);
+    }
+    // Slow decay: being shot at should keep its grip for a few seconds after
+    // the rounds stop, otherwise the effect only exists during the burst itself
+    // and giving the order is worth almost nothing. Measured with tools/tactics.mjs.
+    e.suppression = Math.max(0, (e.suppression || 0) - dt * 0.20);
+    if (e.reloading > 0) {
+      e.reloading -= dt;
+      if (e.reloading <= 0) {
+        e.ammo = Math.round(e.weapon.mag * (e.eff?.magMul || 1));
+        e.reloading = 0;
+      }
+    }
+
+    if (e.follower) return this.updateFollower(dt, e);
+    if (e.side === 'player') return this.updateFriendly(dt, e);
+    return this.updateEnemy(dt, e);
+  }
+
+  /** Cheap target selection: nearest visible hostile, re-evaluated on a timer. */
+  acquire(e) {
+    // Nobody sees anybody while the company is still arriving.
+    if (this.inserting) return null;
+    const hostileSide = e.side === 'enemy' ? 'player' : 'enemy';
+    let best = null, bd = e.sight;
+    for (const o of this.entities) {
+      if (o.dead || o.side !== hostileSide || o.follower) continue;
+      if (o.down && !o.isPlayer) continue;      // don't keep shooting the downed
+      const d = Math.hypot(o.x - e.x, o.z - e.z);
+      if (d > bd) continue;
+      if (!Level.hasLOS(this.level.obstacles, e.x, e.z, o.x, o.z, EYE)) continue;
+      best = o; bd = d;
+    }
+    return best;
+  }
+
+  updateEnemy(dt, e) {
+    if (this.time > e.thinkAt) {
+      // Re-planning is the expensive part (target acquisition walks every
+      // entity and traces line of sight). Distant units think far less often,
+      // which is invisible in play and is what makes forty of them affordable.
+      const far = Math.hypot(e.x - this.player.x, e.z - this.player.z) > 60;
+      e.thinkAt = this.time + (far ? 1.1 : 0.25) + this.r() * 0.25;
+      const t = this.acquire(e);
+      if (t) {
+        // A new target is a new engagement: reaction time applies again.
+        if (e.target !== t) { e.seenFor = 0; e.reaction = undefined; e.burstLeft = 0; }
+        e.target = t;
+        e.alert = 1;
+        e.state = 'engage';
+        e.lastSeen = { x: t.x, z: t.z };
+        e.lostFor = 0;
+        // Waking one man wakes the ones near him. Sound carries.
+        for (const o of this.entities) {
+          if (o.side === 'enemy' && !o.dead && o !== e && o.alert < 0.5) {
+            if (Math.hypot(o.x - e.x, o.z - e.z) < 26) { o.alert = 0.9; o.state = 'hunt'; o.lastSeen = { x: t.x, z: t.z }; }
+          }
+        }
+      } else if (e.state === 'engage') {
+        // Do NOT drop the engagement the instant line of sight breaks. Cover,
+        // a passing squadmate or a step behind a container all interrupt LOS
+        // for a fraction of a second, and a shooter that forgets its target
+        // that easily never actually fires at anything.
+        e.lostFor = (e.lostFor || 0) + 0.3;
+        if (e.lostFor > 1.6) {
+          e.state = 'hunt';
+          e.huntUntil = this.time + 8;
+          e.target = null;
+        }
+      }
+    }
+
+    if (e.state === 'patrol' && e.patrol) {
+      const wp = e.patrol[e.patrolIdx % e.patrol.length];
+      if (this.moveToward(dt, e, wp.x, wp.z, e.speed * 0.55) < 2.5) e.patrolIdx++;
+      this.faceMotion(e, dt);
+    } else if (e.state === 'guard') {
+      e.moveSpeed = 0;
+      // Slow scan so a static guard is not a statue.
+      e.yaw += Math.sin(this.time * 0.5 + e.x) * dt * 0.35;
+    } else if (e.state === 'hunt') {
+      const ls = e.lastSeen;
+      if (ls && this.moveToward(dt, e, ls.x, ls.z, e.speed * 0.8) < 3) {
+        e.lastSeen = null;
+      }
+      if (!ls) {
+        // Do not shrug and go back to sleep the moment you reach the spot.
+        // While the hunt clock is running there is still shooting somewhere,
+        // and a unit that stands down mid-firefight is why half a garrison
+        // used to sit out the whole engagement.
+        if (this.time < (e.huntUntil || 0)) {
+          this.wanderNear(dt, e);
+        } else {
+          e.state = e.patrol ? 'patrol' : 'guard';
+          e.alert = 0.3;
+        }
+      }
+      this.faceMotion(e, dt);
+    } else if (e.state === 'engage' && e.target) {
+      const t = e.target;
+      const d = Math.hypot(t.x - e.x, t.z - e.z);
+      const w = e.weapon;
+      e.yaw = approachAngle(e.yaw, Math.atan2(t.x - e.x, t.z - e.z), dt * 5.5);
+
+      // Take cover if this unit's doctrine says so and it is exposed. Heavy
+      // suppression overrides doctrine — everyone goes to ground.
+      const pinned = (e.suppression || 0) > 0.45;
+      if (!e.coverPos || this.time > (e.coverAt || 0) + 4 || pinned) {
+        if (pinned || this.r() < e.coverPref) {
+          const c = Level.findCover(this.level.obstacles, this.level.covers, e.x, e.z, t.x, t.z, 14);
+          e.coverPos = c ? { x: c.x, z: c.z } : null;
+          e.coverAt = this.time;
+        }
+      }
+
+      const idealMin = w.range * 0.35, idealMax = w.range * 0.8;
+      if (e.coverPos && Math.hypot(e.coverPos.x - e.x, e.coverPos.z - e.z) > 1.2) {
+        this.moveToward(dt, e, e.coverPos.x, e.coverPos.z, e.speed);
+      } else if (pinned) {
+        // Pinned units do not advance. This is what buys the player the room
+        // to flank, and it is the whole reason suppressing fire is an order.
+        e.moveSpeed = 0;
+      } else if (d > idealMax) {
+        this.moveToward(dt, e, t.x, t.z, e.speed * (0.55 + e.aggression * 0.5));
+      } else if (d < idealMin && e.aggression < 0.7) {
+        this.moveToward(dt, e, e.x - (t.x - e.x), e.z - (t.z - e.z), e.speed * 0.6);
+      } else {
+        e.moveSpeed = 0;
+      }
+
+      this.aiShoot(dt, e, t, d);
+    }
+  }
+
+  updateFriendly(dt, e) {
+    // Tactician makes the squad react to orders almost immediately.
+    const reflex = 0.28 / (1 + (this.company.orderSpeed || 0));
+    if (this.time > e.thinkAt) {
+      e.thinkAt = this.time + reflex + this.r() * 0.2;
+      if (e.forceTarget && !e.forceTarget.dead) e.target = e.forceTarget;
+      else { e.target = this.acquire(e); e.forceTarget = null; }
+      // A Spotter hands its contact to everyone else who has nothing.
+      if (e.target && e.eff?.shareTargets) {
+        for (const o of this.squad) {
+          if (o !== e && !o.dead && !o.down && !o.target) o.target = e.target;
+        }
+      }
+    }
+    const t = e.target;
+    const p = this.player;
+
+    // --- suppressing fire: hold position and pour rounds into a point -------
+    if (e.order === 'suppress' && e.suppressPoint) {
+      e.moveSpeed = 0;
+      const sp = e.suppressPoint;
+      e.yaw = approachAngle(e.yaw, Math.atan2(sp.x - e.x, sp.z - e.z), dt * 6);
+      this.suppressFire(dt, e, sp);
+      return;
+    }
+
+    // --- flanking: run wide, then revert to attacking ----------------------
+    if (e.order === 'flank' && e.flankPoint) {
+      const fd = Math.hypot(e.flankPoint.x - e.x, e.flankPoint.z - e.z);
+      if (fd < 2.2) {
+        e.order = 'attack';
+        e.forceTarget = e.flankTarget && !e.flankTarget.dead ? e.flankTarget : null;
+        e.flankPoint = null;
+      } else {
+        // Move hard and do not stop to trade shots on the way round.
+        this.moveToward(dt, e, e.flankPoint.x, e.flankPoint.z, e.speed * 1.35);
+        this.faceMotion(e, dt);
+        if (t && Math.hypot(t.x - e.x, t.z - e.z) < 14) {
+          this.aiShoot(dt, e, t, Math.hypot(t.x - e.x, t.z - e.z));
+        }
+        return;
+      }
+    }
+
+    // Position: driven by the standing order, with engagement layered on top.
+    let dest = null;
+    if (e.order === 'hold' && e.orderPoint) dest = e.orderPoint;
+    else if (e.order === 'move' && e.orderPoint) dest = e.orderPoint;
+    else if (e.order === 'fallback' && e.orderPoint) {
+      const fd = Math.hypot(e.orderPoint.x - e.x, e.orderPoint.z - e.z);
+      if (fd < 1.6) { e.order = 'follow'; e.orderPoint = null; }
+      else dest = e.orderPoint;
+    } else if (e.order === 'attack' && t) {
+      const d = Math.hypot(t.x - e.x, t.z - e.z);
+      dest = d > e.weapon.range * 0.75
+        ? { x: t.x, z: t.z }
+        : null;
+    } else {
+      // Follow: stand in whatever shape the commander has called for. The
+      // camera sits directly behind them, so every formation pushes people out
+      // to the sides rather than into a conga line down the middle of the view.
+      const i = this.squad.indexOf(e);
+      const f = FORMATIONS[this.formation] || FORMATIONS.wedge;
+      const { lateral, off } = f.slot(i);
+      const bearing = p.yaw + Math.PI + lateral;
+      dest = { x: p.x + Math.sin(bearing) * off, z: p.z + Math.cos(bearing) * off };
+    }
+
+    // Under fire, prefer nearby cover over the ordered position. Cover Hound
+    // searches further; being suppressed makes anyone look for it.
+    const pinned = (e.suppression || 0) > 0.4;
+    if (t && (e.coverPref > 0.3 || pinned)) {
+      if (!e.coverPos || this.time > (e.coverAt || 0) + 5 || pinned) {
+        const reach = e.eff?.coverRange || 9;
+        const c = Level.findCover(
+          this.level.obstacles, this.level.covers, e.x, e.z, t.x, t.z, reach);
+        e.coverPos = c ? { x: c.x, z: c.z } : null;
+        e.coverAt = this.time;
+      }
+      // An explicit move order still overrides cover — except when pinned,
+      // where walking into fire would just be suicide.
+      if (e.coverPos && (e.order !== 'move' || pinned)) dest = e.coverPos;
+    }
+
+    if (dest) {
+      const dd = Math.hypot(dest.x - e.x, dest.z - e.z);
+      // Deadband stops the squad shuffling on the spot forever.
+      if (dd > (e.order === 'follow' ? 2.2 : 1.1)) {
+        this.moveToward(dt, e, dest.x, dest.z, e.speed * (dd > 9 ? 1.25 : 1));
+      } else e.moveSpeed = 0;
+    } else e.moveSpeed = 0;
+
+    if (t) {
+      e.yaw = approachAngle(e.yaw, Math.atan2(t.x - e.x, t.z - e.z), dt * 5);
+      this.aiShoot(dt, e, t, Math.hypot(t.x - e.x, t.z - e.z));
+    } else if (e.moveSpeed > 0.1) {
+      this.faceMotion(e, dt);
+    } else {
+      e.yaw = approachAngle(e.yaw, p.yaw, dt * 2);
+    }
+  }
+
+  /** Released prisoners: stay near the player, and try not to die. */
+  updateFollower(dt, e) {
+    if (!e.released) { e.moveSpeed = 0; return; }
+    const p = this.player;
+    const d = Math.hypot(p.x - e.x, p.z - e.z);
+    if (d > 4.5) this.moveToward(dt, e, p.x, p.z, e.speed);
+    else e.moveSpeed = 0;
+    this.faceMotion(e, dt);
+  }
+
+  /**
+   * AI fire discipline.
+   *
+   * This is the single most important tuning surface in the game. Left to fire
+   * continuously, three riflemen delete the player in under two seconds and the
+   * whole design collapses. Three rules fix it, and they are the same three
+   * rules that make a firefight legible:
+   *
+   *  1. REACTION — a shooter must hold the target for a beat before opening up,
+   *     so the player always gets a moment to react to being spotted.
+   *  2. BURSTS — everyone fires 2-5 rounds then pauses. The pauses are the
+   *     windows the player moves and flanks in.
+   *  3. ERROR — aim scatter grows with range, so distance is real cover and
+   *     closing the gap is a genuine decision.
+   */
+  /**
+   * Deliberate suppressing fire at a map point rather than at a body.
+   *
+   * The soldier keeps shooting whether or not anything is visible, spreading
+   * rounds around the point. It is expensive in ammunition and it rarely kills
+   * anybody — its value is that everyone near the impact stops advancing and
+   * stops shooting straight, which is what lets the player move.
+   */
+  suppressFire(dt, e, sp) {
+    const w = e.weapon;
+    if (!w) return;
+    if (e.reloading > 0) return;
+    if (e.ammo <= 0) { this.tryReload(e); return; }
+    if (e.cooldown > 0) return;
+
+    // Longer bursts than aimed fire, with shorter pauses — the point is volume.
+    if (e.burstRest > 0) { e.burstRest -= dt; return; }
+    if (!e.burstLeft || e.burstLeft <= 0) e.burstLeft = irange(this.r, 4, 8);
+
+    const d = Math.hypot(sp.x - e.x, sp.z - e.z);
+    if (d > w.range * 1.1) return;
+    // Walk the fire around the point rather than drilling one spot.
+    const spread = 1.6 + d * 0.03;
+    this.fire(e,
+      sp.x + (this.r() - 0.5) * spread * 2,
+      Level.heightAt(sp.x, sp.z) + CHEST + (this.r() - 0.5) * 0.7,
+      sp.z + (this.r() - 0.5) * spread * 2,
+      1);
+    e.burstLeft--;
+    if (e.burstLeft <= 0) e.burstRest = range(this.r, 0.5, 1.1);
+  }
+
+  /**
+   * How much harder a shot is because the target is behind something low.
+   *
+   * Line of sight is traced at chest height, so sandbags, crates and barriers —
+   * everything the level calls 'cover' — never blocked a single round. Getting
+   * behind cover did nothing at all, which is the whole reason a firefight
+   * played as a shooting gallery rather than a tactical problem. Low cover now
+   * does what low cover does: it does not stop the bullet, it makes you very
+   * hard to hit.
+   */
+  coverPenalty(shooter, target) {
+    const dx = target.x - shooter.x, dz = target.z - shooter.z;
+    const len = Math.hypot(dx, dz) || 1;
+    const nx = dx / len, nz = dz / len;
+    for (const o of this.level.covers) {
+      // Only cover the target is actually tucked against counts.
+      const dd = Math.hypot(o.x - target.x, o.z - target.z);
+      if (dd > 2.2) continue;
+      // And only if it sits between the two of them rather than behind.
+      const along = (o.x - shooter.x) * nx + (o.z - shooter.z) * nz;
+      if (along < 0 || along > len) continue;
+      const off = Math.abs((o.x - shooter.x) * nz - (o.z - shooter.z) * nx);
+      if (off > o.hw + o.hd + 0.6) continue;
+      return target.down ? 3.4 : 2.4;
+    }
+    return 1;
+  }
+
+  aiShoot(dt, e, t, d) {
+    const w = e.weapon;
+    if (!w || e.reloading > 0) return;
+    if (this.inserting) return;
+    // Losing the shot decays readiness rather than erasing it, so a target
+    // bobbing in and out of cover still eventually draws fire.
+    if (d > w.range) { e.seenFor = Math.max(0, (e.seenFor || 0) - dt); return; }
+    if (!Level.hasLOS(this.level.obstacles, e.x, e.z, t.x, t.z, CHEST + 0.2)) {
+      e.seenFor = Math.max(0, (e.seenFor || 0) - dt * 0.5);
+      return;
+    }
+    // Facing gate: no shooting through the back of the head.
+    if (Math.abs(angleDelta(e.yaw, Math.atan2(t.x - e.x, t.z - e.z))) > 0.32) return;
+
+    // 1. Reaction time before the first shot of an engagement.
+    e.seenFor = (e.seenFor || 0) + dt;
+    if (e.reaction === undefined) e.reaction = range(this.r, 0.35, 0.85);
+    if (e.seenFor < e.reaction) return;
+
+    // 2. Burst discipline.
+    if (e.burstRest > 0) { e.burstRest -= dt; return; }
+    if (!e.burstLeft || e.burstLeft <= 0) {
+      const bonus = e.eff?.burstBonus || 0;
+      e.burstLeft = w.auto ? irange(this.r, 2, 5) + bonus : irange(this.r, 1, 2) + (bonus ? 1 : 0);
+    }
+    if (e.cooldown > 0) return;
+    if (e.ammo <= 0) { this.tryReload(e); return; }
+
+    // 3. Aim scatter, in metres at the target, growing steeply with range.
+    // The coefficient is tuned by measurement, not by feel: it is what puts a
+    // stationary player in the open at roughly twelve seconds of life against a
+    // six-man garrison, which is long enough to read the situation and break
+    // contact, and short enough that standing still is never the answer.
+    //
+    // Deadeye flattens the range term; being suppressed inflates the whole
+    // thing, which is why pinning a position before crossing it works.
+    const rangeK = 0.17 * (1 - (e.eff?.rangeAcc || 0));
+    const spread = (1 - e.acc) * (0.9 + d * rangeK)
+      * this.coverPenalty(e, t) / this.suppressionPenalty(e);
+    // Aim at the middle of whatever is actually showing, not at a fixed chest
+    // height. Firing at 1.15m regardless of posture would make a tucked body
+    // unhittable anywhere on the map — cover would stop being cover and start
+    // being a crouch button that switches off incoming fire.
+    const cap = bodyCapsule(t);
+    const ty = (cap.lo + cap.hi) / 2;
+    this.fire(e,
+      t.x + (this.r() - 0.5) * spread * 2,
+      ty + (this.r() - 0.5) * spread,
+      t.z + (this.r() - 0.5) * spread * 2,
+      1);
+
+    e.burstLeft--;
+    if (e.burstLeft <= 0) {
+      // Aggressive units press harder; cautious ones give the player more room.
+      // Suppressed shooters take much longer to put their head back up.
+      e.burstRest = range(this.r, 1.0, 2.6) * (1.35 - e.aggression * 0.5)
+        * (e.eff?.burstRest || 1) * (1 + (e.suppression || 0) * 1.4);
+    }
+  }
+
+  /** Cast about near the last known position rather than standing still. */
+  wanderNear(dt, e) {
+    if (!e.castTo || Math.hypot(e.castTo.x - e.x, e.castTo.z - e.z) < 3) {
+      const a = this.r() * Math.PI * 2;
+      const r = 6 + this.r() * 10;
+      e.castTo = { x: e.x + Math.cos(a) * r, z: e.z + Math.sin(a) * r };
+    }
+    this.moveToward(dt, e, e.castTo.x, e.castTo.z, e.speed * 0.6);
+  }
+
+  /**
+   * Gunfire draws people.
+   *
+   * Alert used to propagate only when a unit ACQUIRED a target, and only 26m.
+   * Measured over a minute of contact, that left three to five of twelve
+   * hostiles engaged and the rest standing around — the fight arrived, stalled,
+   * and never built. A firefight should pull the neighbourhood into itself.
+   *
+   * Anyone who has not seen anything yet turns toward where the shooting is and
+   * goes looking. They do not magically know where you are: they get the
+   * shooter's target position, which is a place, not a person.
+   */
+  raiseAlarm(shooter, at) {
+    if (!at) return;
+    for (const o of this.entities) {
+      if (o === shooter || o.dead || o.down) continue;
+      if (o.side !== shooter.side) continue;
+      if (o.state === 'engage') continue;
+      const d = Math.hypot(o.x - shooter.x, o.z - shooter.z);
+      if (d > 45) continue;
+      // Closer men react harder, and nobody un-alerts because of this.
+      const heat = 1 - (d / 45) * 0.5;
+      if ((o.alert || 0) >= heat) continue;
+      o.alert = heat;
+      const spread = 5 + this.r() * 9;
+      const a2 = this.r() * Math.PI * 2;
+      o.lastSeen = { x: at.x + Math.cos(a2) * spread, z: at.z + Math.sin(a2) * spread };
+      o.state = 'hunt';
+      // Keep looking for a while rather than shrugging on arrival.
+      o.huntUntil = this.time + 10;
+    }
+  }
+
+  /**
+   * Move toward a goal, routing around geometry when a straight line will not
+   * do. A path is computed only when the goal changes materially or the current
+   * one goes stale, then followed corner by corner; local avoidance still runs
+   * on top for the things a static grid cannot know about, namely other people.
+   */
+  moveToward(dt, e, tx, tz, speed) {
+    const far = Math.hypot(tx - e.x, tz - e.z);
+    if (far < 0.05) { e.moveSpeed = 0; return far; }
+
+    const needsRepath = !e.path
+      || !e.pathGoal
+      || Math.hypot(e.pathGoal.x - tx, e.pathGoal.z - tz) > 2.5
+      || this.time > (e.pathAt || 0) + 2.5;
+
+    if (needsRepath) {
+      e.pathAt = this.time;
+      e.pathGoal = { x: tx, z: tz };
+      // Straight lines are free; only pay for A* when something is in the way.
+      if (this.nav.lineClear(e.x, e.z, tx, tz)) {
+        e.path = null;
+        e.pathIdx = 0;
+      } else {
+        const p = this.nav.findPath(e.x, e.z, tx, tz);
+        e.path = p && p.length ? p : null;
+        e.pathIdx = 0;
+      }
+    }
+
+    // Aim at the next corner rather than at the goal.
+    let aimX = tx, aimZ = tz;
+    if (e.path && e.pathIdx < e.path.length) {
+      const wp = e.path[e.pathIdx];
+      if (Math.hypot(wp.x - e.x, wp.z - e.z) < 1.3) {
+        e.pathIdx++;
+        if (e.pathIdx >= e.path.length) { e.path = null; e.pathIdx = 0; }
+      }
+      if (e.path && e.path[e.pathIdx]) {
+        aimX = e.path[e.pathIdx].x;
+        aimZ = e.path[e.pathIdx].z;
+      }
+    }
+
+    const dx = aimX - e.x, dz = aimZ - e.z;
+    const d = Math.hypot(dx, dz);
+    if (d < 0.05) { e.moveSpeed = 0; return far; }
+    let ux = dx / d, uz = dz / d;
+
+    // Local avoidance. The wall-slide probe only runs when there is no path to
+    // follow — with a route in hand it fights the corners the path deliberately
+    // hugs, and the pair oscillate.
+    const probeX = e.x + ux * 1.6, probeZ = e.z + uz * 1.6;
+    for (const o of (e.path ? [] : this.level.obstacles)) {
+      if (o.h < 0.6) continue;
+      if (Math.abs(probeX - o.x) < o.hw + 0.7 && Math.abs(probeZ - o.z) < o.hd + 0.7) {
+        // Slide around rather than into.
+        const nx = -uz, nz = ux;
+        const side = ((e.x - o.x) * nx + (e.z - o.z) * nz) >= 0 ? 1 : -1;
+        ux = ux * 0.35 + nx * side * 0.9;
+        uz = uz * 0.35 + nz * side * 0.9;
+        const m = Math.hypot(ux, uz) || 1;
+        ux /= m; uz /= m;
+        break;
+      }
+    }
+    for (const o of this.entities) {
+      if (o === e || o.dead || o.down) continue;
+      const sx = e.x - o.x, sz = e.z - o.z;
+      const sd = Math.hypot(sx, sz);
+      if (sd < 1.55 && sd > 0.01) {
+        ux += (sx / sd) * 0.95;
+        uz += (sz / sd) * 0.95;
+        const m = Math.hypot(ux, uz) || 1;
+        ux /= m; uz /= m;
+      }
+    }
+
+    const step = Math.min(speed * dt, d);
+    const res = Level.resolveMove(this.level.obstacles, e.x, e.z, e.x + ux * step, e.z + uz * step);
+    const b = this.level.bounds;
+    e.x = clamp(res.x, -b, b);
+    e.z = clamp(res.z, -b, b);
+    e.moveSpeed = speed;
+    // Callers treat this as "how far am I from the goal" — not from the next
+    // corner, which would make them think they had arrived mid-route.
+    return far;
+  }
+
+  faceMotion(e, dt) {
+    if (e.moveSpeed > 0.1 && (e.lastX !== undefined)) {
+      const dx = e.x - e.lastX, dz = e.z - e.lastZ;
+      if (Math.hypot(dx, dz) > 0.001) {
+        e.yaw = approachAngle(e.yaw, Math.atan2(dx, dz), dt * 6);
+      }
+    }
+  }
+
+  // ======================================================================
+  // Mission flow
+  // ======================================================================
+
+  updateMissionLogic(dt) {
+    const t = this.spec.type;
+    const p = this.player;
+
+    if (t === 'sabotage' && this.chargesPlaced && !this.blown) {
+      this.chargeTimer -= dt;
+      if (this.chargeTimer <= 0) {
+        this.blown = true;
+        Audio.explosion({ x: -p.x, z: -p.z });
+        this.shake = 1.2;
+        this.onToast('MAST DOWN', 'Rampart 12 is off the air', 'good');
+      }
+    }
+
+    if (t === 'recovery') this.updateRecovery();
+    if (t === 'seize') this.updateSeize(dt);
+    if (t === 'titan') this.updateTitanObjective();
+    if (t === 'raid') this.updateRaid();
+
+    if (t === 'defense') {
+      this.updateDefense(dt);
+    }
+
+    if (t === 'pit') this.updatePit(dt);
+    if (t === 'siege') this.updateSiege(dt);
+
+    if (t === 'lair' && !this.objective.done) {
+      const onField = this.entities.filter((e) => e.side === 'enemy' && !e.dead).length;
+      this.objective.progress = this.entities.filter((e) => e.side === 'enemy' && e.dead).length;
+      this.updateSkirmishWaves();
+      if (onField === 0 && this.skirmishCommitted >= this.skirmishTotal) this.completeObjective();
+      else this.guardAgainstStall(dt);
+    }
+
+    if (t === 'skirmish' && !this.objective.done) {
+      const onField = this.entities.filter((e) => e.side === 'enemy' && !e.dead).length;
+      const killed = this.entities.filter((e) => e.side === 'enemy' && e.dead).length;
+      this.objective.progress = killed;
+      this.updateSkirmishWaves();
+      // Only over once the whole party is accounted for, not just this wave.
+      if (onField === 0 && this.skirmishCommitted >= this.skirmishTotal) this.completeObjective();
+      else this.guardAgainstStall(dt);
+    }
+
+    // Extraction: reach the marker. For a recovery, the people you came for
+    // have to be standing there too, which is the whole point of the mission.
+    if (this.extractArmed && !this.over) {
+      const ex = this.level.extraction;
+      const d = Math.hypot(p.x - ex.x, p.z - ex.z);
+      if (t === 'defense') {
+        // Nothing to walk to — holding IS the objective.
+      } else if (d < 4.5) {
+        const stragglers = this.prisoners.filter(
+          (q) => q.released && !q.dead && Math.hypot(q.x - ex.x, q.z - ex.z) > 8);
+        if (stragglers.length) {
+          this.extractBlocked = 'Freed personnel are not at the extraction point';
+        } else {
+          this.extractBlocked = null;
+          // Walking out having lost everyone you came for is an extraction,
+          // not a success.
+          this.endMission(!this.objective.failed, 'extracted');
+        }
+      } else {
+        this.extractBlocked = null;
+      }
+    }
+
+    // Total squad loss.
+    const alive = this.entities.filter(
+      (e) => e.side === 'player' && !e.dead && !e.down && !e.militia);
+    if (!alive.length && !this.over) this.endMission(false, 'wiped');
+  }
+
+  /**
+   * Recovery progress, recomputed from who is actually still alive.
+   *
+   * The objective used to need a fixed three releases. A held prisoner caught
+   * by a stray round could therefore never be freed, the count could never
+   * reach three, extraction never armed, and the deployment was unwinnable with
+   * no indication why. The target is now whoever is still breathing, and if
+   * they all die the objective fails honestly and lets the player leave.
+   */
+  updateRecovery() {
+    if (!this.prisoners || !this.prisoners.length) return;
+    const alive = this.prisoners.filter((p) => !p.dead);
+    const freed = alive.filter((p) => p.released);
+
+    // Announce losses once each, so the player understands why the count moved.
+    for (const p of this.prisoners) {
+      if (p.dead && !p.deathReported) {
+        p.deathReported = true;
+        this.lostPrisoners = (this.lostPrisoners || 0) + 1;
+        this.onToast('PERSONNEL LOST',
+          p.released ? 'One of the freed did not make it' : 'One of the held was killed', 'bad');
+      }
+    }
+
+    this.objective.need = alive.length;
+    this.objective.progress = freed.length;
+
+    if (!alive.length) {
+      // Nobody left to recover. Arm extraction so the player is not stranded,
+      // but the contract is not satisfied.
+      if (!this.objective.failed) {
+        this.objective.failed = true;
+        this.objective.text = 'No surviving personnel — withdraw';
+        this.onToast('OBJECTIVE LOST', 'There is nobody left to bring out', 'bad');
+        this.extractArmed = true;
+        const ex = this.level.extraction;
+        this.extractMarker.position.set(ex.x, Level.heightAt(ex.x, ex.z) + 0.05, ex.z);
+        this.extractMarker.visible = true;
+        Audio.extractTone();
+      }
+      return;
+    }
+
+    if (!this.objective.done && freed.length >= alive.length) this.completeObjective();
+  }
+
+  updateDefense(dt) {
+    this.waveTimer -= dt;
+    const enemiesLeft = this.entities.filter((e) => e.side === 'enemy' && !e.dead).length;
+
+    if (!this.waveActive && this.waveTimer <= 0) {
+      this.wave++;
+      if (this.wave > 3) {
+        this.objective.progress = 3;
+        this.completeObjective();
+        this.endMission(true, 'held');
+        return;
+      }
+      this.waveActive = true;
+      const n = 3 + this.wave;
+      const side = this.wave % 2 === 0 ? 1 : -1;
+      for (let i = 0; i < n; i++) {
+        const a = (side > 0 ? -0.4 : 2.6) + range(this.r, -0.8, 0.8);
+        const d = 48;
+        const e = this.reinforce(Math.cos(a) * d, Math.sin(a) * d,
+          pick(this.r, ['rifleman', 'rifleman', 'breacher', 'gunner', 'marksman']));
+        e.state = 'hunt';
+        e.lastSeen = { x: 0, z: 0 };
+        e.alert = 1;
+      }
+      Audio.uiAlert();
+      this.onToast(`WAVE ${this.wave} OF 3`, 'Trust element inbound', 'bad');
+    }
+
+    if (this.waveActive && enemiesLeft === 0) {
+      this.waveActive = false;
+      this.waveTimer = 16;
+      this.objective.progress = this.wave;
+      if (this.wave < 3) this.onToast('WAVE REPELLED', 'They will come again', 'good');
+    }
+  }
+
+  /**
+   * Last line of defence for elimination objectives.
+   *
+   * If nothing has died for a long time and no hostile is anywhere near the
+   * player, something has gone wrong — a straggler wedged somewhere, or an AI
+   * that never acquired. Rather than leave the player stuck in a mission they
+   * cannot finish, push the remainder toward them; if it is still stuck after
+   * that, arm extraction so they can at least walk out.
+   */
+  guardAgainstStall(dt) {
+    const foes = this.entities.filter((e) => e.side === 'enemy' && !e.dead);
+    if (!foes.length) return;
+    const nearest = Math.min(...foes.map((e) =>
+      Math.hypot(e.x - this.player.x, e.z - this.player.z)));
+    const progressing = this.objective.progress !== this._lastKillCount;
+    this._lastKillCount = this.objective.progress;
+    if (progressing || nearest < 45) { this.stallFor = 0; return; }
+
+    this.stallFor = (this.stallFor || 0) + dt;
+    if (this.stallFor > 12 && !this.stallNudged) {
+      this.stallNudged = true;
+      // Everyone left comes to find the player.
+      for (const e of foes) {
+        e.state = 'hunt';
+        e.alert = 1;
+        e.lastSeen = { x: this.player.x, z: this.player.z };
+        e.path = null; e.pathGoal = null;
+        const safe = this.safeSpawn(e.x, e.z);
+        e.x = safe.x; e.z = safe.z;
+      }
+      this.onToast('THEY ARE CLOSING', 'The rest of them are coming to you', 'bad');
+    }
+    if (this.stallFor > 40 && !this.extractArmed) {
+      // Still nothing. Do not strand the player in an unwinnable deployment.
+      this.objective.text = 'Unable to close — withdraw';
+      this.completeObjective();
+      this.onToast('BREAK OFF', 'They cannot be brought to battle. Extract.', 'bad');
+    }
+  }
+
+  endMission(success, reason) {
+    if (this.over) return;
+    this.over = true;
+    if (document.pointerLockElement) document.exitPointerLock();
+    Audio.stopAmbience();
+    if (success) Audio.extractTone(); else Audio.casualtyTone();
+
+    // Resolve every roster soldier who deployed. This is the moment the
+    // campaign learns what happened, and it is deliberately unforgiving about
+    // people who were left on the ground.
+    const soldierResults = [];
+    const r = this.r;
+    let recruits = [];
+
+    for (const ent of [this.player, ...this.squad]) {
+      if (!ent.soldier) continue;
+      const s = ent.soldier;
+      const rec = { id: s.id, kills: ent.killCount || 0 };
+      if (ent.dead) {
+        // Already bled out in the field. The HUD counted that timer down to
+        // zero and announced it, so there is no second chance here — giving
+        // one made the bleed-out timer meaningless.
+        s.status = STATUS.DEAD;
+        s.hp = 0;
+        rec.status = STATUS.DEAD;
+        rec.hp = 0;
+      } else if (ent.down) {
+        // Down at mission end and never stabilised: left behind.
+        const st = resolveCasualty(r, s, {
+          stabilised: success && this.extractArmed ? true : false,
+          hasMedic: this.squadHasRole('medic'),
+          survivalBonus: this.company.casualtySurvival,
+        });
+        rec.status = st;
+        rec.wound = s.wound;
+        rec.hp = s.hp;
+      } else if (ent.stabilised || ent.hp < ent.maxHp * 0.4) {
+        const st = resolveCasualty(r, s, { stabilised: true, hasMedic: this.squadHasRole('medic') });
+        rec.status = st;
+        rec.wound = s.wound;
+        rec.hp = s.hp;
+      } else {
+        rec.status = STATUS.HEALTHY;
+        rec.hp = Math.max(1, Math.round(ent.hp));
+      }
+      soldierResults.push(rec);
+    }
+
+    // Rescued personnel who actually reached the extraction join the company.
+    if (this.spec.type === 'recovery' && success) {
+      const ex = this.level.extraction;
+      for (const q of this.prisoners) {
+        if (!q.released || q.dead) continue;
+        if (Math.hypot(q.x - ex.x, q.z - ex.z) > 12) continue;
+        const s = makeSoldier(r, {
+          role: q.isMedic ? 'medic' : 'rifleman',
+          rank: q.isMedic ? 1 : 0,
+          how: `Rescued at ${this.spec.siteName || this.level.name}`,
+          day: this.S.day,
+          avoid: [...this.S.roster.map((x) => x.name), ...recruits.map((x) => x.name)],
+        });
+        recruits.push(s);
+      }
+    }
+
+    const loot = { credits: 0, weapons: [] };
+    if (this.cacheTaken) {
+      loot.credits = irange(r, 180, 320);
+      // The prototype is the one memorable pull in the slice, and it only
+      // exists behind an optional objective.
+      loot.weapons.push(this.spec.type === 'sabotage' ? 'relic' : 'dmr');
+    }
+
+    this.result = {
+      success,
+      reason,
+      type: this.spec.type,
+      site: this.spec.site,
+      // How many stores were actually broken open, so the campaign can pay out
+      // on what was carried rather than on the objective being ticked.
+      raidTaken: this.raidTaken || 0,
+      kills: this.entities.filter((e) => e.side === 'enemy' && e.dead).length,
+      soldierResults,
+      recruits,
+      loot,
+      lostPrisoners: this.lostPrisoners || 0,
+      retake: this.spec.contract?.retake || null,
+      suppliesUsed: 2 + Math.floor(this.stats.shotsFired / 90),
+      medicalUsed: this.stats.medkitsUsed,
+      stats: this.stats,
+      levelName: this.level.name,
+      partyId: this.spec.party?.id || null,
+      // Who beat you, for the campaign to work out whose cell you are in.
+      enemyFaction: this.level?.enemyFaction || this.spec.enemyFaction || null,
+      // How many rounds were actually survived, which is what the pit pays on.
+      pitRounds: this.pitBest || 0,
+    };
+
+    setTimeout(() => this.onEnd(this.result), 1400);
+  }
+
+  // ======================================================================
+  // Camera & render
+  // ======================================================================
+
+  /**
+   * Deployment sweep. Opens looking down at the objective from high and wide —
+   * so the first thing the player sees is the place they have to take — then
+   * falls back and settles into the over-the-shoulder gameplay pose.
+   */
+  introCamera(gameplayPos, gameplayLook) {
+    const it = this.intro;
+    const k = clamp(it.t / it.dur, 0, 1);
+    // Ease out hard so the motion decelerates into the handover rather than
+    // stopping dead.
+    const e = 1 - Math.pow(1 - k, 3);
+
+    const obj = this.level.objectivePoint;
+    const oy = Level.heightAt(obj.x, obj.z);
+    // A slow orbit while descending gives the shot some life.
+    const ang = -0.5 + k * 0.55;
+    const high = new THREE.Vector3(
+      obj.x + Math.sin(ang) * 46,
+      oy + 40 - k * 8,
+      obj.z + Math.cos(ang) * 46,
+    );
+    const lookHigh = new THREE.Vector3(obj.x, oy + 2, obj.z);
+
+    this.camera.position.copy(high).lerp(gameplayPos, e);
+    const look = lookHigh.clone().lerp(gameplayLook, e);
+    this.camera.lookAt(look);
+  }
+
+  /**
+   * Advance the deployment cinematic and hand control back when it is done.
+   * Deliberately separate from introCamera(): the handover is a rule of the
+   * game, not a property of where the camera happens to be.
+   */
+  tickIntro(dt) {
+    const it = this.intro;
+    if (!it?.active) return;
+    it.t += dt;
+    if (it.t < it.dur) return;
+    it.active = false;
+    this.requestLock();
+    this.onToast(`CONTACT IMMINENT — ${this.level.name}`, this.objective.text, 'deploy');
+  }
+
+  updateCamera(dt) {
+    const p = this.player;
+    const aim = this.aiming;
+    // Over-the-shoulder, tighter and closer when aiming.
+    // The shoulder offset has to be wide enough that the character sits beside
+    // the reticle rather than under it — otherwise the player is aiming through
+    // their own back and cannot see what they are shooting at.
+    const want = aim
+      ? { side: 0.95, up: 1.70, back: 2.60, fov: 44 }
+      : { side: 1.05, up: 2.02, back: 4.60, fov: 60 };
+    // Crouching drops the eye line; a jump carries the camera with the body.
+    want.up += -this.crouch * 0.62 + this.airY;
+    // The shoulder offset is signed, so swapping mirrors the whole rig — the
+    // camera, the aim origin beside the head, and the body's occlusion.
+    want.side *= this.shoulder;
+    this.camLerp = this.camLerp || { ...want };
+    const k = 1 - Math.exp(-dt * 11);
+    for (const key of ['side', 'up', 'back', 'fov']) {
+      this.camLerp[key] = lerp(this.camLerp[key], want[key], k);
+    }
+    if (Math.abs(this.camera.fov - this.camLerp.fov) > 0.01) {
+      this.camera.fov = this.camLerp.fov;
+      this.camera.updateProjectionMatrix();
+    }
+
+    // The aim origin sits beside the head, not on the spine, so the shoulder
+    // offset does not skew where shots land relative to the reticle.
+    const base = new THREE.Vector3(p.x, Level.heightAt(p.x, p.z) + this.camLerp.up, p.z);
+    const shoulder = new THREE.Vector3(Math.cos(this.camYaw), 0, -Math.sin(this.camYaw))
+      .multiplyScalar(this.camLerp.side * 0.45);
+    base.add(shoulder);
+    const dir = new THREE.Vector3(
+      Math.sin(this.camYaw) * Math.cos(this.camPitch),
+      Math.sin(this.camPitch),
+      Math.cos(this.camYaw) * Math.cos(this.camPitch),
+    );
+    const right = new THREE.Vector3(Math.cos(this.camYaw), 0, -Math.sin(this.camYaw));
+    const want3 = base.clone()
+      .add(dir.clone().multiplyScalar(this.camLerp.back))
+      .add(right.multiplyScalar(this.camLerp.side));
+
+    // Pull the camera in if geometry is between it and the player, so the view
+    // never ends up inside a container.
+    const toCam = want3.clone().sub(base);
+    const len = toCam.length();
+    const hit = this.rayHit(base, toCam.clone().normalize(), len, p);
+    let finalPos = want3;
+    let camDist = len;
+    const dirToCam = toCam.clone().normalize();
+    // Pull in for terrain as well as props. Only testing 'solid' let the camera
+    // sink through rising ground, which put the view inside the hillside.
+    if ((hit.kind === 'solid' || hit.kind === 'ground') && hit.t < len) {
+      // Never pull closer than this: at half a metre the commander's back fills
+      // the screen and the player cannot see what they are aiming at.
+      camDist = Math.max(1.45, hit.t - 0.28);
+      finalPos = base.clone().add(dirToCam.clone().multiplyScalar(camDist));
+    }
+
+    // Belt and braces: if the resulting point is still inside a prop, walk it
+    // back toward the player until it is not. A single ray misses the case
+    // where the camera starts the frame already embedded in geometry.
+    for (let i = 0; i < 6; i++) {
+      const inside = this.level.obstacles.some((o) =>
+        Math.abs(finalPos.x - o.x) < o.hw + 0.2
+        && Math.abs(finalPos.z - o.z) < o.hd + 0.2
+        && finalPos.y > o.y - 0.2 && finalPos.y < o.y + o.h + 0.2);
+      if (!inside || camDist <= 0.75) break;
+      camDist = Math.max(0.75, camDist - 0.55);
+      finalPos = base.clone().add(dirToCam.clone().multiplyScalar(camDist));
+    }
+
+    // And never let the eye drop below the ground it is standing over.
+    const floor = Level.heightAt(finalPos.x, finalPos.z) + 0.4;
+    if (finalPos.y < floor) finalPos.y = floor;
+    // Even at the floor distance the body can crowd the frame, so drop it out
+    // of the render when the camera is right on top of it.
+    this.hidePlayerModel = camDist < 1.95;
+
+    // Screen shake decays fast; it punctuates, it does not linger.
+    this.shake = Math.max(0, (this.shake || 0) - dt * 2.6);
+    if (this.shake > 0) {
+      finalPos.x += (Math.random() - 0.5) * this.shake * 0.16;
+      finalPos.y += (Math.random() - 0.5) * this.shake * 0.16;
+      finalPos.z += (Math.random() - 0.5) * this.shake * 0.16;
+    }
+
+    // Bias the look target down so the commander sits in the lower third of
+    // the frame instead of being cropped by the bottom edge.
+    const look = base.clone().sub(dir.clone().multiplyScalar(9));
+    look.y -= aim ? 0.35 : 0.85;
+
+    if (this.intro?.active) {
+      this.introCamera(finalPos, look);
+    } else {
+      this.camera.position.copy(finalPos);
+      this.camera.lookAt(look);
+    }
+
+    // Keep the sun's shadow box following the player or shadows pop out.
+    this.sun.position.set(p.x - 46, 38, p.z + 30);
+    this.sun.target.position.set(p.x, 0, p.z);
+    this.sun.target.updateMatrixWorld();
+  }
+
+  syncVisuals(dt) {
+    for (const e of this.entities) {
+      const y = Level.heightAt(e.x, e.z);
+      e.y = y;
+      // The player's stance is carried on the group: crouch sinks the whole
+      // body, a jump lifts it. Everything else about the pose is animation.
+      // Elevation applies to everyone — an AI holding a catwalk stands on it,
+      // not inside it. Crouch and the jump arc are the player's alone.
+      const stance = (e.elev || 0)
+        + (e.isPlayer ? -this.crouch * 0.42 : 0);
+      e.char.group.position.set(e.x, y + stance, e.z);
+      e.char.group.rotation.y = e.yaw;
+      const aiming = !!(e.target && !e.down && !e.dead) || (e.isPlayer && this.aiming);
+
+      // Animation level of detail. A soldier eighty metres away in fog does not
+      // need a sixty-hertz gait, and at forty combatants that work adds up.
+      const dxc = e.x - this.player.x, dzc = e.z - this.player.z;
+      const distSq = dxc * dxc + dzc * dzc;
+      if (distSq > 55 * 55 && !e.isPlayer) {
+        e.animSkip = (e.animSkip || 0) + 1;
+        if (e.animSkip % 3 !== 0) continue;
+      } else if (distSq > 30 * 30 && !e.isPlayer) {
+        e.animSkip = (e.animSkip || 0) + 1;
+        if (e.animSkip % 2 !== 0) continue;
+      }
+      // Distant characters stop casting shadows — a hard shadow map at that
+      // range contributes nothing and costs a full extra pass per mesh.
+      const wantShadow = distSq < 45 * 45;
+      if (e.castsShadow !== wantShadow) {
+        e.castsShadow = wantShadow;
+        e.char.group.traverse((o) => { if (o.isMesh) o.castShadow = wantShadow; });
+      }
+
+      // Actual displacement this frame, rotated into the character's own frame,
+      // so the animation knows whether it is walking, backpedalling or
+      // side-stepping. Derived from real movement rather than from input, so it
+      // works identically for the player and every AI.
+      let mx = 0, mz = 0, measured = 0;
+      if (dt > 0 && e.lastX !== undefined) {
+        const vx = (e.x - e.lastX) / dt;
+        const vz = (e.z - e.lastZ) / dt;
+        measured = Math.hypot(vx, vz);
+        if (measured > 0.05) {
+          const sy = Math.sin(e.yaw), cy = Math.cos(e.yaw);
+          mz = (vx * sy + vz * cy) / measured;   // along facing
+          mx = (vx * cy - vz * sy) / measured;   // to the right
+        }
+      }
+      // Trust the measured speed: an entity ordered to move but jammed against
+      // a container should not keep playing a walk cycle on the spot.
+      const speed = Math.min(e.moveSpeed || 0, measured || (e.moveSpeed || 0));
+
+      const w = e.weapon;
+      const reload = (w && e.reloading > 0) ? 1 - (e.reloading / w.reload) : 0;
+
+      e.char.update(dt, {
+        speed,
+        moveX: mx,
+        moveZ: mz,
+        aiming,
+        down: e.down && !e.dead,
+        dead: e.dead,
+        pitch: e.isPlayer ? this.camPitch : 0,
+        reload,
+        sprint: e.isPlayer ? (this.keys.has('shift') && !this.aiming && speed > 4) : false,
+        turn: e.turnRate || 0,
+      });
+      // Anything standing on top of the camera is removed from the render.
+      // A squadmate holding formation directly behind the commander sits almost
+      // exactly where the third-person camera lives, and fills the screen.
+      if (e.isPlayer) {
+        e.char.group.visible = !this.hidePlayerModel;
+      } else {
+        const cp = this.camera.position;
+        e.char.group.visible = Math.hypot(cp.x - e.x, cp.z - e.z) > 1.35;
+      }
+    }
+    if (this.orderMarker.visible && this.time > (this.orderMarkerUntil || 0)) {
+      this.orderMarker.visible = false;
+    }
+    if (this.extractMarker.visible) {
+      this.extractMarker.rotation.y += dt * 0.8;
+      this.extractMarker.children[0].material.opacity = 0.5 + Math.sin(this.time * 3) * 0.25;
+    }
+  }
+
+  /** One short verb describing what a soldier is doing, for the squad panel. */
+  actionOf(e) {
+    if (e.dead) return 'KIA';
+    if (e.down) return e.stabilised ? 'STABLE' : 'DOWN';
+    if (e.reloading > 0) return 'RELOAD';
+    if (e.order === 'suppress') return 'SUPPRESS';
+    if (e.order === 'flank') return 'FLANKING';
+    if (e.order === 'fallback') return 'FALLBACK';
+    if ((e.suppression || 0) > 0.45) return 'PINNED';
+    if (e.target && e.cooldown < 0.4) return 'ENGAGING';
+    if (e.coverPos && (e.moveSpeed || 0) < 0.2 && e.target) return 'IN COVER';
+    if ((e.moveSpeed || 0) > 0.2) return 'MOVING';
+    if (e.order === 'hold') return 'HOLDING';
+    return 'READY';
+  }
+
+  buildHud() {
+    const p = this.player;
+    const squadInfo = [this.player, ...this.squad].filter((e) => e.soldier || e.militia).map((e) => ({
+      name: e.soldier ? e.soldier.name : e.name,
+      rank: e.soldier ? e.soldier.rank : -1,
+      role: e.soldier ? e.soldier.role : 'militia',
+      isCommander: !!e.soldier?.isCommander,
+      hp: Math.max(0, e.hp), maxHp: e.maxHp,
+      down: e.down, dead: e.dead, stabilised: e.stabilised,
+      bleed: e.down && !e.stabilised ? Math.max(0, e.bleed / (e.bleedMax || BLEED_OUT)) : 0,
+      isPlayer: e.isPlayer,
+      militia: !!e.militia,
+      action: this.actionOf(e),
+      suppression: e.suppression || 0,
+      // Slot number the player presses to select this soldier.
+      slot: e.isPlayer || e.militia ? 0 : this.squad.indexOf(e) + 1,
+      selected: !e.isPlayer && !e.militia && this.selection.has(this.squad.indexOf(e)),
+    }));
+    return {
+      hp: Math.max(0, p.hp), maxHp: p.maxHp,
+      ammo: p.ammo, mag: p.weapon.mag, reloading: p.reloading > 0,
+      weapon: p.weapon.abbr, weaponName: p.weapon.name,
+      aiming: this.aiming,
+      // Being in cover has to be legible at a glance, or the player never
+      // trusts it enough to use it under fire.
+      cover: this.cover ? (this.coverLean > 0.5 ? 'leaning' : 'tucked') : null,
+      objective: this.objective.text,
+      objProgress: this.objective.progress,
+      objNeed: this.objective.need,
+      objDone: this.objective.done,
+
+      // Who the squad has been told to kill. Held until they are down or out of
+      // range, because the mark is the answer to "which one, in all this".
+      marked: this.marked && !this.marked.dead ? {
+        name: this.marked.name || 'TARGET',
+        hp: Math.max(0, this.marked.hp) / (this.marked.maxHp || 1),
+        dist: Math.round(Math.hypot(this.marked.x - this.player.x, this.marked.z - this.player.z)),
+      } : null,
+
+      // The Titan needs its own readout. A single health bar on a machine that
+      // shrugs off rifle fire tells the player nothing except that they are
+      // losing; what they need is which sections are still armoured.
+      titan: this.titan && !this.titan.dead ? {
+        structure: Math.max(0, this.titan.hp) / (this.titan.maxHp || 1),
+        plates: this.titan.plates.map((pl) => ({
+          id: pl.id,
+          frac: pl.broken ? 0 : Math.max(0, pl.hp) / pl.maxHp,
+          broken: pl.broken,
+        })),
+      } : null,
+
+      extract: this.extractArmed,
+      extractBlocked: this.extractBlocked,
+      extractDist: this.extractArmed
+        ? Math.hypot(p.x - this.level.extraction.x, p.z - this.level.extraction.z) : 0,
+      squad: squadInfo,
+      squadOrder: this.squadOrder,
+      formation: (FORMATIONS[this.formation] || FORMATIONS.wedge).name,
+      selectionCount: this.selection.size,
+      selectionLabel: this.selectionLabel(),
+      suppression: p.suppression || 0,
+      interact: this.nearInteract ? {
+        label: this.nearInteract.kind === 'revive'
+          ? `Stabilise ${this.nearInteract.entity.name}`
+          : this.nearInteract.label,
+        progress: this.interactProgress || 0,
+        needsKit: this.nearInteract.kind === 'revive',
+        kits: this.S.medical,
+      } : null,
+      timer: this.spec.type === 'sabotage' && this.chargesPlaced && !this.blown
+        ? Math.max(0, this.chargeTimer) : null,
+      wave: this.spec.type === 'defense' ? { n: this.wave, of: 3, next: Math.max(0, this.waveTimer), active: this.waveActive } : null,
+      seize: this.spec.type === 'seize' ? {
+        pct: Math.round(((this.holdProgress || 0) / (this.holdSeconds || 1)) * 100),
+        contested: this.entities.some((e) => e.side === 'enemy' && !e.dead
+          && Math.hypot(e.x - this.level.objectivePoint.x,
+            e.z - this.level.objectivePoint.z) < 20),
+      } : null,
+      enemiesVisible: this.entities.filter((e) => e.side === 'enemy' && !e.dead
+        && Math.hypot(e.x - p.x, e.z - p.z) < 60).length,
+      compass: this.camYaw,
+      hurt: this.hurtFlash || 0,
+      paused: this.paused,
+      over: this.over,
+      levelName: this.level.name,
+      // Radar contacts, in player-local space.
+      contacts: this.entities.filter((e) => !e.dead && Math.hypot(e.x - p.x, e.z - p.z) < 55)
+        .map((e) => ({
+          dx: e.x - p.x, dz: e.z - p.z,
+          side: e.side, down: e.down, isPlayer: e.isPlayer,
+        })),
+      cache: this.optional ? { taken: !!this.optional.taken } : null,
+    };
+  }
+
+  /**
+   * One tick of simulation, with no rendering and no clock of its own.
+   *
+   * Split out of loop() so the mission can be driven headlessly — tools/soak.mjs
+   * runs thousands of these to prove a deployment always reaches a terminal
+   * state. Anything that must happen whether or not a frame is drawn belongs
+   * here; anything to do with pixels stays in loop().
+   */
+  step(dt) {
+    if (this.paused || this.over) return;
+    // The wheel slows the world rather than stopping it. Stopping would make
+    // orders free; slowing means deciding still costs you ground.
+    if (this.wheel?.open) dt *= 0.28;
+    this.time += dt;
+    this.tickIntro(dt);
+    // Snapshot every position BEFORE anything moves. Capturing the player's
+    // after updatePlayer made their measured velocity permanently zero, so
+    // the commander never played a walk cycle.
+    for (const e of this.entities) {
+      e.lastX = e.x; e.lastZ = e.z; e.lastYaw = e.yaw;
+    }
+    this.updatePlayer(dt);
+    for (const e of this.entities) {
+      if (e.isTitan) this.updateTitan(dt, e);
+      else if (!e.isPlayer || e.down) this.updateAI(dt, e);
+      // Turn rate drives the lean, so a character banks into a hard turn.
+      e.turnRate = dt > 0 ? angleDelta(e.lastYaw, e.yaw) / dt : 0;
+    }
+    this.updateMark();
+    this.updateMissionLogic(dt);
+    this.hurtFlash = Math.max(0, (this.hurtFlash || 0) - dt * 1.6);
+  }
+
+  loop() {
+    if (this.disposed) return;
+    this.raf = requestAnimationFrame(this.loop);
+    const now = performance.now();
+    let dt = (now - this.last) / 1000;
+    this.last = now;
+    dt = Math.min(dt, 0.05); // never let a stall teleport anyone through a wall
+
+    this.step(dt);
+    this.updateEffects(dt);
+    this.syncVisuals(this.paused ? 0 : dt);
+    this.updateCamera(dt);
+    this.renderer.render(this.scene, this.camera);
+    this.onHud(this.buildHud());
+  }
+
+  dispose() {
+    this.disposed = true;
+    cancelAnimationFrame(this.raf);
+    window.removeEventListener('resize', this.onResize);
+    for (const [t, ev, fn] of this._boundHandlers) t.removeEventListener(ev, fn);
+    this._boundHandlers = [];
+    if (document.pointerLockElement) document.exitPointerLock();
+    Audio.stopAmbience();
+    this.scene?.traverse((o) => {
+      if (o.isMesh) {
+        o.geometry?.dispose?.();
+        if (Array.isArray(o.material)) o.material.forEach((m) => m.dispose?.());
+        else o.material?.dispose?.();
+      }
+    });
+    this.renderer?.dispose();
+    if (this.renderer?.domElement?.parentNode) {
+      this.renderer.domElement.parentNode.removeChild(this.renderer.domElement);
+    }
+  }
+}
+
+// --------------------------------------------------------------------------
+// Ray primitives
+// --------------------------------------------------------------------------
+
+function rayBox(o, d, minx, miny, minz, maxx, maxy, maxz) {
+  let tmin = 0, tmax = Infinity;
+  const oa = [o.x, o.y, o.z], da = [d.x, d.y, d.z];
+  const lo = [minx, miny, minz], hi = [maxx, maxy, maxz];
+  for (let i = 0; i < 3; i++) {
+    if (Math.abs(da[i]) < 1e-9) {
+      if (oa[i] < lo[i] || oa[i] > hi[i]) return null;
+    } else {
+      let t1 = (lo[i] - oa[i]) / da[i], t2 = (hi[i] - oa[i]) / da[i];
+      if (t1 > t2) [t1, t2] = [t2, t1];
+      tmin = Math.max(tmin, t1);
+      tmax = Math.min(tmax, t2);
+      if (tmin > tmax) return null;
+    }
+  }
+  return tmin;
+}
+
+/** Ray versus vertical capsule, approximated as a cylinder with flat caps. */
+function rayCapsule(o, d, ax, ay, az, bx, by, bz, radius) {
+  // Solve in XZ for the infinite cylinder, then clamp to the segment's Y span.
+  const ox = o.x - ax, oz = o.z - az;
+  const a = d.x * d.x + d.z * d.z;
+  if (a < 1e-9) return null;
+  const b = 2 * (ox * d.x + oz * d.z);
+  const c = ox * ox + oz * oz - radius * radius;
+  const disc = b * b - 4 * a * c;
+  if (disc < 0) return null;
+  const sq = Math.sqrt(disc);
+  for (const t of [(-b - sq) / (2 * a), (-b + sq) / (2 * a)]) {
+    if (t < 0) continue;
+    const y = o.y + d.y * t;
+    if (y >= ay && y <= by) return t;
+  }
+  return null;
+}

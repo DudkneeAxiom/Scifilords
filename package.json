@@ -1,0 +1,14 @@
+{
+  "name": "kettle-reach",
+  "version": "1.0.0",
+  "description": "KETTLE REACH — a retro low-poly sci-fi mercenary sandbox: strategic travel, persistent soldiers, third-person deployments",
+  "type": "module",
+  "scripts": {
+    "serve": "node tools/serve.mjs",
+    "test": "playwright test",
+    "assets": "node tools/build-assets.mjs"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.56.1"
+  }
+}

@@ -1,0 +1,203 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>KETTLE REACH</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div id="app">
+  <div id="viewport"></div>
+
+  <!-- Boot / loading -->
+  <div id="loading" class="screen">
+    <div class="boot">
+      <div class="boot-title">KETTLE REACH</div>
+      <div class="boot-sub">DOVAN BASIN &middot; FIELD TERMINAL</div>
+      <div class="boot-bar"><div id="boot-fill"></div></div>
+      <div id="boot-log" class="boot-log"></div>
+    </div>
+  </div>
+
+  <!-- Title -->
+  <div id="title" class="screen hidden">
+    <div class="title-plate">
+      <div class="title-mark">
+        <span class="title-main">KETTLE REACH</span>
+        <span class="title-rule"></span>
+        <span class="title-sub">A MERCENARY COMPANY IN THE DOVAN BASIN</span>
+      </div>
+      <div class="title-menu">
+        <button class="btn btn-major" data-act="continue" id="btn-continue">CONTINUE</button>
+        <button class="btn btn-major" data-act="new">NEW COMPANY</button>
+        <button class="btn" data-act="controls">CONTROLS</button>
+        <button class="btn" data-act="about">ABOUT</button>
+      </div>
+      <div class="title-foot">
+        <span>ORDNANCE TRUST &middot; BASIN SYNDICS &middot; UNAFFILIATED</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- Strategic HUD -->
+  <div id="worldhud" class="hud hidden">
+    <div id="map-labels"></div>
+    <div class="wh-top stamp">
+      <div class="wh-block">
+        <span class="lbl">DAY</span><span class="val" id="wh-day">1</span>
+        <span class="lbl">TIME</span><span class="val" id="wh-time">07:00</span>
+        <span class="spd" id="wh-spd">
+          <button data-spd="0" title="Halt (Space)">&#10073;&#10073;</button>
+          <button data-spd="1" title="Travel">&#9654;</button>
+          <button data-spd="4" title="Fast (F)">&#9654;&#9654;</button>
+        </span>
+      </div>
+      <div class="wh-block">
+        <span class="lbl">CREDITS</span><span class="val" id="wh-cred">0</span>
+        <span class="lbl">SUPPLY</span><span class="val" id="wh-sup">0</span>
+        <span class="lbl">KITS</span><span class="val" id="wh-med">0</span>
+      </div>
+      <div class="wh-block">
+        <span class="lbl">READY</span><span class="val" id="wh-ready">0</span>
+        <span class="lbl">WOUNDED</span><span class="val warn" id="wh-wound">0</span>
+      </div>
+      <div class="wh-block">
+        <span class="lbl">RENOWN</span><span class="val" id="wh-renown">0</span>
+      </div>
+      <div class="wh-block">
+        <span class="lbl">WAGES/DAY</span><span class="val" id="wh-payroll">0</span>
+        <span class="lbl">RATIONS</span><span class="val" id="wh-rations">0</span>
+        <span class="lbl">MORALE</span><span class="val" id="wh-morale">70</span>
+        <span class="lbl">PACE</span><span class="val" id="wh-pace">100%</span>
+      </div>
+      <div class="wh-block wh-rep">
+        <span class="lbl" id="wh-banner-l">BANNER</span><span class="val" id="wh-banner">Independent</span>
+        <span class="lbl">TRUST</span><span class="val" id="wh-rep-t">0</span>
+        <span class="lbl">SYNDIC</span><span class="val" id="wh-rep-s">0</span>
+      </div>
+    </div>
+
+    <div class="wh-left">
+      <div id="wh-contract" class="stamp panel-sm hidden"></div>
+      <div id="wh-grudge" class="stamp panel-sm hidden"></div>
+      <div id="wh-loc" class="stamp panel-sm hidden"></div>
+      <div id="wh-legend" class="stamp panel-sm"></div>
+    </div>
+
+    <div class="wh-right">
+      <div class="stamp panel-sm" id="wh-log"></div>
+    </div>
+
+    <div class="wh-bottom stamp">
+      <button class="btn" data-act="roster">ROSTER <kbd>C</kbd></button>
+      <button class="btn" data-act="loadout">LOADOUT <kbd>L</kbd></button>
+      <button class="btn" data-act="character">EQUIPMENT <kbd>V</kbd></button>
+      <button class="btn" data-act="inventory">STORES <kbd>I</kbd></button>
+      <button class="btn" data-act="holdings">HOLDINGS <kbd>K</kbd></button>
+      <button class="btn" data-act="diplomacy">DIPLOMACY <kbd>P</kbd></button>
+      <button class="btn" data-act="board">CONTRACTS <kbd>B</kbd></button>
+      <button class="btn" id="wh-enter" data-act="enter">ENTER <kbd>E</kbd></button>
+      <button class="btn" data-act="menu">MENU <kbd>ESC</kbd></button>
+      <span class="wh-hint">CLICK TO TRAVEL &middot; WASD TO STEER &middot; SPACE TO HALT</span>
+    </div>
+  </div>
+
+  <!-- Mission HUD -->
+  <div id="hud" class="hud hidden">
+    <div class="reticle" id="reticle"><i></i><i></i><i></i><i></i></div>
+    <div class="hurt" id="hurt"></div>
+    <div class="cover-state hidden" id="cover-state"><span id="cover-word">IN COVER</span></div>
+
+    <div class="hud-obj stamp">
+      <div class="obj-line"><span class="obj-tag" id="obj-tag">OBJECTIVE</span><span id="obj-text"></span></div>
+      <div class="obj-sub" id="obj-sub"></div>
+    </div>
+
+    <div class="hud-squad" id="hud-squad"></div>
+
+    <div class="hud-radar stamp">
+      <canvas id="radar" width="132" height="132"></canvas>
+      <div class="radar-lbl" id="radar-lbl">CONTACTS 0</div>
+    </div>
+
+    <div class="hud-weapon stamp">
+      <div class="w-name" id="w-name">SVC-R</div>
+      <div class="w-ammo"><span id="w-cur">30</span><span class="w-sep">/</span><span id="w-mag">30</span></div>
+      <div class="w-state" id="w-state"></div>
+    </div>
+
+    <div class="hud-vitals stamp">
+      <div class="v-lbl">CONDITION</div>
+      <div class="v-bar"><div id="v-fill"></div></div>
+    </div>
+
+    <div class="hud-orders stamp" id="hud-orders">
+      <span class="ord-sel" id="ord-sel">SQUAD</span>
+      <span class="ord ord-hint">HOLD <kbd>MMB</kbd> FOR ORDERS</span>
+      <span class="ord" data-o="move">MOVE/ATTACK</span>
+      <span class="ord" data-o="suppress">SUPPRESS</span>
+      <span class="ord" data-o="flank">FLANK</span>
+      <span class="ord" data-o="fallback">FALL BACK</span>
+      <span class="ord" data-o="follow">FORM UP</span>
+      <span class="ord" data-o="hold">HOLD</span>
+    </div>
+
+    <!-- Command wheel. Held open with Q; the world runs slow while it is up. -->
+    <div class="wheel hidden" id="wheel">
+      <svg id="wheel-svg" viewBox="-160 -160 320 320" aria-hidden="true"></svg>
+      <div class="wheel-centre">
+        <div class="wheel-who" id="wheel-who">SQUAD</div>
+        <div class="wheel-pick" id="wheel-pick">&mdash;</div>
+        <div class="wheel-desc" id="wheel-desc"></div>
+      </div>
+    </div>
+
+    <div class="mark-hud hidden" id="mark-hud">
+      <span class="mk-tag">FOCUS</span>
+      <span class="mk-name" id="mk-name"></span>
+      <span class="mk-bar"><i id="mk-fill"></i></span>
+      <span class="mk-dist" id="mk-dist"></span>
+    </div>
+
+    <div class="titan-hud hidden" id="titan-hud">
+      <div class="th-name">TITAN</div>
+      <div class="th-struct"><i id="th-struct-fill"></i></div>
+      <div class="th-plates" id="th-plates"></div>
+      <div class="th-hint">BEAT A SECTION OFF, THEN SHOOT THE CORE</div>
+    </div>
+
+    <div class="suppress-vig" id="suppress-vig"></div>
+
+    <div class="hud-interact hidden" id="hud-interact">
+      <div class="int-label" id="int-label"></div>
+      <div class="int-bar"><div id="int-fill"></div></div>
+      <div class="int-key">HOLD <kbd>E</kbd></div>
+    </div>
+
+    <div class="toast-wrap" id="toasts"></div>
+  </div>
+
+  <!-- Deployment cinematic: letterbox + briefing card over the fly-in -->
+  <div id="cine" class="cine hidden">
+    <div class="cine-bar top"></div>
+    <div class="cine-bar bottom"></div>
+    <div class="cine-fade" id="cine-fade"></div>
+    <div class="cine-card" id="cine-card">
+      <div class="cc-kicker">DEPLOYING</div>
+      <div class="cc-site" id="cc-site"></div>
+      <div class="cc-rule"></div>
+      <div class="cc-type" id="cc-type"></div>
+      <div class="cc-obj" id="cc-obj"></div>
+      <div class="cc-squad" id="cc-squad"></div>
+    </div>
+  </div>
+
+  <!-- Modal overlay -->
+  <div id="overlay" class="overlay hidden">
+    <div class="modal stamp" id="modal"></div>
+  </div>
+</div>
+<script type="module" src="src/main.js"></script>
+</body>
+</html>
