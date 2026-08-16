@@ -2150,8 +2150,13 @@ export function encounterPanel(S, party, cbs) {
 
   // The strength comparison is the decision. Attacking something four times
   // your size should look like the mistake it is before you commit to it.
+  // Judged against what the company can ACTUALLY put on the ground, not the
+  // rank ceiling. A four-person outfit facing eight was being told it was an
+  // even fight, because the ratio was taken against a deploy limit of five
+  // that it had nobody to fill.
   const limit = State.deployLimit(S);
-  const ratio = (party.strength || 0) / Math.max(1, limit);
+  const fieldable = Math.max(1, Math.min(limit, State.ready(S).length));
+  const ratio = (party.strength || 0) / fieldable;
   const band = ratio > 3 ? 'lethal' : ratio > 1.6 ? 'hard' : ratio > 0.8 ? 'even' : 'weak';
   const verdict = {
     weak: 'You outnumber them.',

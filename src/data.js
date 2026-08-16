@@ -539,7 +539,7 @@ export const LOCATIONS = [
 // --------------------------------------------------------------------------
 
 export const PARTY_TIERS = {
-  looters: {
+  strays: {
     id: 'strays', name: 'Stray Scavengers', tier: 1, faction: 'raider',
     model: 'wm_party_raider', strength: [2, 5], speed: 23, hostile: true,
     quality: 0.5, roles: ['rifleman', 'rifleman'],

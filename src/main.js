@@ -116,7 +116,7 @@ function toWorld(isNew) {
       // promotion dismissed with Escape did after a seizure. Rather than chase
       // each such path, the invariant is asserted here every frame — if no
       // panel is up, the Reach runs.
-      if (G.world?.paused && !UI.modalOpen()) G.world.setPaused(false);
+      if (G.world?.paused && !UI.modalOpen() && !G.visiting) G.world.setPaused(false);
       UI.renderWorldHud(h);
     },
   });
@@ -319,15 +319,25 @@ function enterLocation() {
 
   // Arriving somewhere opens a menu of things to do, not a wall of services.
   // Every verb returns here when it closes.
+  // Mark the whole visit, not each panel.
+  //
+  // Every verb closes its screen and reopens the menu, and for one frame in
+  // between nothing is up. The world-resume guard saw that gap and started the
+  // Reach again — which let a road encounter replace the settlement menu
+  // mid-visit, and made anything walking the menu fail whenever a frame took
+  // longer than usual.
+  G.visiting = true;
+  const leave = () => { G.visiting = false; G.world?.setPaused(false); };
+
   const openMenu = () => {
     UI.settlementMenu(S, loc, {
       canSeize: seizable,
-      onClose: () => G.world?.setPaused(false),
+      onClose: leave,
       onVerb: (verb) => {
-        if (verb === 'deploy') { UI.closeModal(); openDeploy(specFor(loc, c)); return; }
-        if (verb === 'seize') { Audio.uiSelect(); startSeizure(loc); return; }
-        if (verb === 'raid') { UI.closeModal(); startRaid(loc); return; }
-        if (verb === 'pit') { startPit(loc); return; }
+        if (verb === 'deploy') { G.visiting = false; UI.closeModal(); openDeploy(specFor(loc, c)); return; }
+        if (verb === 'seize') { G.visiting = false; Audio.uiSelect(); startSeizure(loc); return; }
+        if (verb === 'raid') { G.visiting = false; UI.closeModal(); startRaid(loc); return; }
+        if (verb === 'pit') { G.visiting = false; startPit(loc); return; }
         if (verb === 'broker') {
           UI.brokerPanel(S, loc, { onClose: () => openMenu(), onDone: () => openMenu() });
           return;
