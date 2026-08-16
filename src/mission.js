@@ -615,13 +615,29 @@ export class Mission {
 
   buildSquad() {
     const sp = this.level.playerSpawn;
-    this.camYaw = sp.ry;
+    // Face the job.
+    //
+    // Every layout declared `ry: 0` at its spawn while its objective sat at a
+    // bearing of about 177°, so the company arrived looking back down the road
+    // it had just come up. The player snapped round the instant control was
+    // handed over, which left the squad — who copy the player's facing when
+    // idle — turned the wrong way for the whole cinematic and reading as though
+    // they were staring at their commander.
+    //
+    // Derived from the objective rather than corrected in seven layouts, so a
+    // new site cannot get this wrong by forgetting to set an angle.
+    const obj = this.level.objectivePoint;
+    const face = obj ? Math.atan2(obj.x - sp.x, obj.z - sp.z) : sp.ry;
+    // The camera sits behind the body it follows — updatePlayer derives the
+    // body from it as camYaw + PI — so the camera takes the opposite angle to
+    // the way the company is looking.
+    this.camYaw = face - Math.PI;
 
     const cmd = this.squadSoldiers[0];
     const ef = effective(cmd, this.company);
     this.player = this.spawnEntity({
       id: cmd.id, side: 'player', soldier: cmd, faction: 'player',
-      x: sp.x, z: sp.z, yaw: sp.ry, hp: cmd.hp, weapon: cmd.weapon,
+      x: sp.x, z: sp.z, yaw: face, hp: cmd.hp, weapon: cmd.weapon,
       model: 'soldier_commander', acc: ef.accuracy, speed: ef.speed,
       sight: ef.sight, eff: ef,
       isPlayer: true, name: cmd.name, tint: FACTIONS.player.accent,
@@ -639,7 +655,7 @@ export class Mission {
       const a = (i - 1) * 1.6 - 1.6;
       const ent = this.spawnEntity({
         id: s.id, side: 'player', soldier: s, faction: 'player',
-        x: sp.x + a, z: sp.z + 2.4, yaw: sp.ry, hp: s.hp, weapon: s.weapon,
+        x: sp.x + a, z: sp.z + 2.4, yaw: face, hp: s.hp, weapon: s.weapon,
         // A soldier looks like the people who raised them.
         model: ORIGINS[s.origin]?.model || 'soldier_bracket',
         acc: e2.accuracy, speed: e2.speed,
@@ -1298,6 +1314,8 @@ export class Mission {
         desc: 'Break contact and pull in behind you.' },
       { id: 'hold', name: 'HOLD', key: 'H',
         desc: 'Stop here and hold this ground.' },
+      { id: 'cover', name: 'TAKE COVER', key: 'G',
+        desc: 'Get behind the nearest hard thing and stay down until told.' },
       { id: 'follow', name: 'FORM UP', key: 'F',
         desc: 'Back on me, in whatever shape you last called.' },
       { id: 'line', name: 'LINE', key: '',
@@ -1395,6 +1413,7 @@ export class Mission {
     else if (id === 'suppress') this.orderSuppress(aim);
     else if (id === 'flank') this.orderFlank(aim);
     else if (id === 'fallback') this.orderFallBack();
+    else if (id === 'cover') this.orderTakeCover(aim);
     else this.setSquadOrder(id);
   }
 
@@ -1431,6 +1450,7 @@ export class Mission {
       if (k === 'x') this.orderSuppress();
       if (k === 'z') this.orderFlank();
       if (k === 'v') this.orderFallBack();
+      if (k === 'g') this.orderTakeCover();
       // Individual selection. This is what turns four orders into real
       // tactics: pin with one soldier, move with another.
       if (k >= '1' && k <= '5') this.toggleSelect(Number(k) - 1);
@@ -1622,6 +1642,63 @@ export class Mission {
     Audio.order();
     this.onToast(this.selectionLabel(), 'FALL BACK', 'order');
     this.showMarker(targets[0].orderPoint.x, targets[0].orderPoint.z, 4);
+  }
+
+  /**
+   * Get the selected soldiers behind something and keep them there.
+   *
+   * The squad already took cover on its own initiative when it had a target to
+   * be afraid of, which meant cover was something that happened TO them rather
+   * than something the player could ask for. As an order it becomes a move in
+   * the fight: pin one element in cover, take the other one round.
+   *
+   * Cover is chosen against the threat the player is looking at, so ordering it
+   * while aimed down a street puts people behind the things that face the
+   * street — not behind whatever happens to be nearest.
+   */
+  orderTakeCover(aim = null) {
+    const targets = this.commanded();
+    if (!targets.length) { Audio.uiDeny(); return; }
+    const threat = aim
+      || (this.marked && !this.marked.dead ? { x: this.marked.x, z: this.marked.z } : null)
+      || this.nearestEnemyTo(this.player)
+      || { x: this.player.x + Math.sin(this.player.yaw) * 30,
+        z: this.player.z + Math.cos(this.player.yaw) * 30 };
+
+    let found = 0;
+    for (const s of targets) {
+      s.order = 'cover';
+      s.suppressPoint = null;
+      s.suppressOrder = false;
+      s.flankPoint = null;
+      const c = Level.findCover(this.level.obstacles, this.level.covers,
+        s.x, s.z, threat.x, threat.z, 18);
+      // Nowhere to hide is a real answer. They hold where they are rather than
+      // running somewhere arbitrary and calling it cover.
+      s.coverPos = c ? { x: c.x, z: c.z } : null;
+      s.coverAt = this.time;
+      s.orderPoint = s.coverPos || { x: s.x, z: s.z };
+      s.coverFacing = { x: threat.x, z: threat.z };
+      if (c) found++;
+    }
+    Audio.order();
+    this.onToast(this.selectionLabel(),
+      found ? `TAKE COVER — ${found} of ${targets.length} found something` : 'NO COVER HERE',
+      found ? 'order' : 'bad');
+    if (targets[0].orderPoint) {
+      this.showMarker(targets[0].orderPoint.x, targets[0].orderPoint.z, 4);
+    }
+  }
+
+  /** Closest live enemy to a point, or null. */
+  nearestEnemyTo(from) {
+    let best = null, bd = Infinity;
+    for (const e of this.entities) {
+      if (e.side !== 'enemy' || e.dead) continue;
+      const d = Math.hypot(e.x - from.x, e.z - from.z);
+      if (d < bd) { bd = d; best = e; }
+    }
+    return best ? { x: best.x, z: best.z } : null;
   }
 
   /**
@@ -2553,7 +2630,14 @@ export class Mission {
     // ray test rewards it. Firing brings you up again — which is exactly the
     // window a flanking soldier is being sent to exploit.
     if (!e.isPlayer) {
-      const atCover = e.coverPos
+      // Getting your head down needs a reason, not just a wall.
+      //
+      // Keyed only on "am I standing on a cover position", a soldier stayed
+      // crouched behind the last thing they hid behind long after being called
+      // back into formation — because coverPos outlives the order that chose
+      // it. Somebody with nothing to fear and no orders stands up.
+      const reason = e.order === 'cover' || !!e.target || (e.suppression || 0) > 0.15;
+      const atCover = reason && e.coverPos
         && Math.hypot(e.coverPos.x - e.x, e.coverPos.z - e.z) < 1.4;
       const shooting = e.cooldown > 0.02 || (e.burst || 0) > 0;
       const wantTuck = atCover && !shooting ? 1 : 0;
@@ -2739,7 +2823,22 @@ export class Mission {
 
     // Position: driven by the standing order, with engagement layered on top.
     let dest = null;
-    if (e.order === 'hold' && e.orderPoint) dest = e.orderPoint;
+    if (e.order === 'cover') {
+      // Stay put. Unlike every other standing order, this one is not allowed to
+      // be overridden by the urge to close on a target — the whole point of
+      // ordering it is that these people stop advancing.
+      dest = e.orderPoint;
+      const at = dest && Math.hypot(dest.x - e.x, dest.z - e.z) < 1.3;
+      if (at) {
+        e.moveSpeed = 0;
+        // Face the threat the order was given against, so they are looking the
+        // right way when something comes round the corner.
+        const f = e.coverFacing || t;
+        if (f) e.yaw = approachAngle(e.yaw, Math.atan2(f.x - e.x, f.z - e.z), dt * 4);
+        if (t) this.aiShoot(dt, e, t, Math.hypot(t.x - e.x, t.z - e.z));
+        return;
+      }
+    } else if (e.order === 'hold' && e.orderPoint) dest = e.orderPoint;
     else if (e.order === 'move' && e.orderPoint) dest = e.orderPoint;
     else if (e.order === 'fallback' && e.orderPoint) {
       const fd = Math.hypot(e.orderPoint.x - e.x, e.orderPoint.z - e.z);
@@ -3656,6 +3755,10 @@ export class Mission {
       ammo: p.ammo, mag: p.weapon.mag, reloading: p.reloading > 0,
       weapon: p.weapon.abbr, weaponName: p.weapon.name,
       aiming: this.aiming,
+      // The insertion cinematic is a camera move, not gameplay. The crosshair
+      // sat over it the whole way in, which reads as though the player has
+      // control while the camera is flying itself somewhere.
+      inserting: this.inserting,
       // Being in cover has to be legible at a glance, or the player never
       // trusts it enough to use it under fire.
       cover: this.cover ? (this.coverLean > 0.5 ? 'leaning' : 'tucked') : null,

@@ -46,7 +46,7 @@ work. Node 18+ is the only dependency for playing. There is no build step.
 | Right mouse | Aim down sights |
 | `Shift` | Sprint — not from a crouch, not in mid-air |
 | `Ctrl` / `C` | Crouch. Hold with Ctrl, toggle with C. |
-| `Space` | Jump |
+| `Space` | **Take cover** if there is cover in reach; leave it if you are in it; otherwise jump |
 | `Q` | Swap which shoulder the camera looks over |
 | `R` | Reload |
 | `E` (hold) | Interact — cut restraints, place charges, stabilise a casualty |
@@ -55,6 +55,30 @@ work. Node 18+ is the only dependency for playing. There is no build step.
 Crouching costs most of your speed and steadies your aim by a third; firing in
 mid-air nearly doubles your spread. Swapping shoulders matters at a corner —
 your own body hides whichever side you are leaning past.
+
+### Cover
+
+`Space` puts you against the nearest low wall. Cover is geometry, not a damage
+modifier: tucked behind it your body drops below the parapet and the shot hits
+the wall instead of you. Aiming leans you out, which is the only way to shoot
+back and the only time you can be hit.
+
+Measured against a 0.91 m barricade at 14 m, by proportion of rounds that reach
+the body:
+
+| | rounds on target |
+| --- | --- |
+| Standing behind it | 100% |
+| **Leaning out to shoot** | **69%** |
+| **Tucked down** | **0%** |
+| Tucked, but shot at from 90° | **100%** |
+| Crouched in the open (control) | 100% |
+
+The last two rows are the whole design. Cover is absolute from the side it
+faces and worth nothing from the flank, and crouching on its own buys you
+nothing at all — so the answer to a defended position is to go round it, which
+is exactly what the squad's flank order is for. The AI uses the same body, so
+soldiers who are hunkered down are genuinely hard to kill until you move.
 
 Click the viewport once to capture the mouse.
 
@@ -68,6 +92,7 @@ Click the viewport once to capture the mouse.
 | `X` | **Suppress** that position — pins whoever is there |
 | `Z` | **Flank** — swing wide and come at it from a different angle |
 | `V` | **Fall back** to the commander |
+| `G` | **Take cover** — get behind the nearest hard thing, facing the threat |
 | `F` | Form up on the commander |
 | `H` | Hold current position |
 
@@ -80,13 +105,20 @@ The point of individual selection is bounding: **pin a position with one
 soldier, flank it with another.** Suppressed soldiers stop advancing and shoot
 badly, so fire that never hits anybody still wins ground.
 
+**Take cover** is the third leg of that. Cover was something the squad did on
+its own initiative when frightened; as an order it becomes a move you can make.
+Soldiers pick a position that breaks line of sight to whatever you are aimed at
+— not merely the nearest object — and stay down there until told otherwise.
+Ordering *form up* releases them and stands them back up.
+
 ### In the Reach
 
 | Key | Action |
 | --- | --- |
 | Click | Travel to a point |
 | `W` `A` `S` `D` | Steer directly |
-| `Space` | Halt |
+| `Space` | Halt — stops the clock as well as the truck |
+| `F` | Fast forward (and back to normal) |
 | `E` | Enter the location you are standing on |
 | `C` | Company roster |
 | `L` | Loadout — weapons, kit, retraining |
@@ -518,6 +550,63 @@ can appear at any location that supports it:
 - Save/load to localStorage. A corrupt save is discarded rather than allowed to
   wedge the game.
 
+### The company has opinions
+
+Every soldier carries a **creed** — what they think the job is — and a regard
+for the company that moves with what you do. The creeds disagree on purpose:
+
+| | raid a town | press a prisoner | let one go | sell one on | break an oath | miss payroll |
+| --- | --- | --- | --- | --- | --- | --- |
+| **Straight** | −9 | −5 | +4 | **−14** | −6 | −2 |
+| **Hard** | +5 | +3 | −4 | +4 | 0 | −4 |
+| **Loyal** | −3 | −2 | +2 | −8 | **−12** | −3 |
+| **Professional** | +1 | 0 | −1 | +5 | 0 | **−9** |
+
+Winning is the only thing they all approve of. Every loaded decision splits the
+company, so robbing your way across the Reach does not merely cost morale — it
+changes who is willing to stay. Somebody who bottoms out warns you first and
+walks days later; in a company that raids every other day, a straight-arrow
+soldier warns on day 10 and leaves on day 17.
+
+### Losing
+
+Being wiped or losing the commander does not end the campaign. The company is
+taken: a fortnight gone, 40–65% of the credits, most of the cargo, two weapons
+off the truck, prisoners freed, and you are put out on the road in the captor's
+country. **Nobody dies who was not already dead** — the roster is the thing you
+are attached to, and killing it on a loss just sends you to the reload the
+mechanic exists to prevent. Wounds close while you are inside, so the time is
+both the cost and the mercy.
+
+Whoever broke you keeps what they took. A named commander appears on the map
+carrying exactly your credits, your crates and your rifles, and beating them
+returns all of it. They spend it after 40 days, so it is a hunt with a deadline
+rather than an errand on a list.
+
+### The world moves without you
+
+- **Borders shift.** Wars used to be a line in the log; now ground changes hands
+  along the frontier, and the town that falls is always the one nearest the
+  attacker's own country.
+- **Time is yours.** Halt, travel, or fast-forward from the map. Fast forward is
+  a viewing speed and not free travel — a journey costs the same hours either
+  way, measured at 132.0 units/hour at both settings.
+- **Notables ask for things.** The named contacts in each settlement request
+  goods or want a camp cleared. A favour pays less than a contract; what it buys
+  is +14 standing in that town. Turning one down is free — it is agreeing and
+  then not turning up that costs 10.
+- **Prisoners have a market.** Brokers in market towns pay 1.35–2.45× what a
+  ransom would, with the rate varying by place and drifting every few days, and
+  cost three times the standing. Selling people is also the single harshest
+  thing a straight-arrow soldier can watch you do.
+
+### Ground worth fighting over
+
+Levels are no longer flat arenas. The works has a maintenance catwalk over the
+tank farm and the fort has a wall walk reachable only from inside the compound,
+both with stairs, and both worth taking: from the works catwalk **8 of 40**
+sightlines are open against **1 of 40** from the same spot on the floor.
+
 ---
 
 ## Project layout
@@ -612,7 +701,7 @@ The `.glb` files are committed, so Blender is only needed to change the art.
 
 ## Testing results
 
-**Acceptance suite: 47/47 passing** (`npx playwright test`, 5.8 min)
+**Acceptance suite: 89/89 passing** (`npx playwright test`, ~8.5 min)
 
 Covered: boot with no page errors; new campaign composition; strategic travel
 advancing time; independent party movement; a recovery deployment launching,
@@ -683,6 +772,45 @@ advancing, abandon their doctrine, dive for cover — above 0.45, and ordinary
 aimed fire tops out right around 0.43. So the order is tuned to be the thing
 that carries them over the line (suppression power ×2.1 when ordered), rather
 than a marginal damage tweak nobody can feel.
+
+### Defects the numbers caught
+
+A separate class of bug from the ones screenshots find. Each of these looked
+correct in the source and was wrong in play; every one was found by a probe in
+`tools/` rather than by reading the code.
+
+- **273 of 522 collision boxes were larger than the thing they represented.**
+  The scattered rocks were **14.97× the drawn area and 3.58× the height**,
+  because a hand-written footprint was being multiplied by a random scale — so
+  shots stopped in open air and the ground was full of walls you could not see.
+  Footprints now come from the mesh. Two more fell out of the same audit: a
+  checkpoint booth you could shoot through the sides of (0.24×), and the fort's
+  gate carrying the *gate tower's* box, which left a **ten-metre hole either
+  side of the gate** that anyone could walk through. The siege test never caught
+  it because it samples along the rampart line and not the flanks.
+- **Reinforcements spawned 2.0 m from the player** in the pit, able to fire on
+  the frame they were created — the spawn ring was measured from the middle of
+  the map rather than from the player. Now 17 m minimum, nothing arriving within
+  8 m, and a grace before anything can shoot.
+- **Cover was decoration.** The target capsule was the same height whatever the
+  target was doing, so a crouched soldier behind sandbags was the same
+  silhouette as one standing in the open, and cover only widened the shooter's
+  spread. Fixing it exposed a second bug immediately: the AI aimed at a fixed
+  chest height regardless of posture, which would have made any lowered body
+  unhittable *anywhere on the map*.
+- **A ransom broker's price climbed in a straight line** — 1.51, 1.68, 1.85,
+  2.01 — because `h * 31 + c` does not avalanche when one digit of the key is
+  the day. The summary statistics (sd 0.27, spread 0.83) looked perfectly
+  healthy; only printing the day-by-day sequence showed it.
+- **Half the map asked for the same favour.** Seeding a settlement's request
+  from the *length* of its id meant every pair of towns with equal-length names
+  rolled a byte-identical request: 6.0 distinct asks per day across 12 towns,
+  and 400/400 same-length pairs identical.
+- **The company spawned facing 180° away from the objective.** Every layout
+  declared `ry: 0` while its objective sat at a bearing of ~177°, and the squad
+  copies the commander's facing when idle — so they read as standing around
+  looking at their officer. The facing is now derived from the objective rather
+  than declared per site.
 
 ### Defects found and fixed during QA
 

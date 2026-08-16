@@ -202,7 +202,13 @@ export function renderMissionHud(h) {
     }
   }
 
-  $('reticle').classList.toggle('ads', h.aiming);
+  // The crosshair belongs to the player, so it only exists once the player has
+  // the camera. During the insertion sweep it is a promise the game is not yet
+  // keeping — you cannot shoot where it is pointing, and it moves because the
+  // camera is flying itself rather than because you aimed.
+  const ret = $('reticle');
+  ret.classList.toggle('hidden', !!h.inserting);
+  ret.classList.toggle('ads', h.aiming);
   $('hurt').style.opacity = String(h.hurt * 0.85);
 
   // Objective line — the tag changes so extraction reads as a different state.

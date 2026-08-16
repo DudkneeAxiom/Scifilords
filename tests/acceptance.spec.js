@@ -824,6 +824,17 @@ test('a flanking soldier routes around a solid obstacle', async ({ page }) => {
   test.setTimeout(180000);
   await boot(page);
   await newCampaign(page);
+  // Pin the level seed.
+  //
+  // Sites are built from `S.seed + S.stats.missions`, and newCampaign picks its
+  // seed at random — so the scattered rocks moved on every run and sometimes
+  // landed in the corridor this test measures a detour through. It failed
+  // roughly one full run in five while passing in isolation, which is the worst
+  // kind of test: it trains you to re-run rather than to look.
+  await page.evaluate(() => {
+    window.KR.campaign.seed = 12345;
+    window.KR.campaign.stats.missions = 0;
+  });
   await takeContractAt(page, 'grellan', 'recovery');
   await deploy(page);
 
@@ -2877,9 +2888,14 @@ test('a settlement is a place you are in, not a panel you dismissed', async ({ p
 
   // Stand the company on a town that offers everything, so every verb the menu
   // can put up is actually put up.
+  //
+  // The seed is pinned because arriving somewhere now rolls whether one of the
+  // town's notables wants a word, which changes what is on the menu — and a
+  // test that walks a menu should not have the menu reshuffled under it.
   await page.evaluate(async () => {
     const DATA = await import('/src/data.js');
     const S = window.KR.campaign;
+    S.seed = 12345;
     const loc = DATA.LOCATIONS.find((l) => ['market', 'recruit', 'medical', 'contracts']
       .every((s) => l.services?.includes(s)));
     S.credits = 20000;
@@ -2890,27 +2906,32 @@ test('a settlement is a place you are in, not a panel you dismissed', async ({ p
 
   // Each service opens its own screen and comes back here. A menu you fall out
   // of every time you look at something is worse than one big panel.
+  // Waited on rather than slept through.
+  //
+  // Fixed 350ms pauses were enough on an idle machine and not enough during a
+  // full suite run, so this passed alone and failed about one run in ten in
+  // company — a timing assumption dressed up as a test of the menu.
   for (const verb of ['market', 'board', 'recruit', 'medical']) {
     await page.click(`#modal [data-verb="${verb}"]`);
-    await page.waitForTimeout(350);
-    expect(await page.evaluate(() => window.KR.dev.UI.modalOpen())).toBe(true);
+    // The verb's own screen has replaced the menu.
+    await page.waitForFunction(() => window.KR.dev.UI.modalOpen()
+      && !document.querySelector('#modal .sm-verbs'), null, { timeout: 10000 });
     await page.click('#modal [data-x="close"]');
-    await page.waitForTimeout(350);
-    expect(await page.evaluate(() => !!document.querySelector('#modal .sm-verbs'))).toBe(true);
+    // And closing it puts the menu back.
+    await page.waitForSelector('#modal .sm-verbs', { timeout: 10000 });
   }
 
   // Standing down spends a day and leaves you standing where you were.
   const before = await page.evaluate(() => window.KR.campaign.day);
   await page.click('#modal [data-verb="rest"]');
-  await page.waitForTimeout(350);
+  await page.waitForFunction((d) => window.KR.campaign.day > d, before, { timeout: 10000 });
   expect(await page.evaluate(() => window.KR.campaign.day)).toBeGreaterThan(before);
   expect(await page.evaluate(() => !!document.querySelector('#modal .sm-verbs'))).toBe(true);
 
   // And leaving puts the map back in motion.
   await page.click('#modal [data-x="close"]');
-  await page.waitForTimeout(400);
-  expect(await page.evaluate(() => window.KR.dev.UI.modalOpen())).toBe(false);
-  expect(await page.evaluate(() => window.KR.world.paused)).toBe(false);
+  await page.waitForFunction(() => !window.KR.dev.UI.modalOpen()
+    && window.KR.world.paused === false, null, { timeout: 10000 });
 });
 
 test('the map clock halts, runs and fast-forwards', async ({ page }) => {
@@ -3513,8 +3534,14 @@ test('reinforcements arrive at a distance, unseen, and do not shoot on arrival',
   const r = await page.evaluate(async () => {
     const { Mission } = await import('/src/mission.js');
     const Level = await import('/src/level.js');
+    const State = await import('/src/state.js');
     const G = window.KR;
-    const S = G.campaign;
+    // Deterministic scenario. A mission's layout comes from the campaign seed
+    // AND its people come from the same seed, so a test that pins neither is
+    // rolling dice on both the ground it fights over and how fast anyone walks
+    // across it. Pinning one and not the other is not pinning the scenario.
+    const S = State.newCampaign(12345);
+    G.campaign = S;
     S.renown = 4000;
     G.world?.dispose(); G.world = null;
     document.getElementById('viewport').innerHTML = '';
@@ -3598,8 +3625,14 @@ test('cover stops rounds, and leaning out spends that protection', async ({ page
   const r = await page.evaluate(async () => {
     const { Mission, bodyCapsule } = await import('/src/mission.js');
     const Level = await import('/src/level.js');
+    const State = await import('/src/state.js');
     const G = window.KR;
-    const S = G.campaign;
+    // Deterministic scenario. A mission's layout comes from the campaign seed
+    // AND its people come from the same seed, so a test that pins neither is
+    // rolling dice on both the ground it fights over and how fast anyone walks
+    // across it. Pinning one and not the other is not pinning the scenario.
+    const S = State.newCampaign(12345);
+    G.campaign = S;
     S.renown = 4000;
     G.world?.dispose(); G.world = null;
     document.getElementById('viewport').innerHTML = '';
@@ -3683,8 +3716,14 @@ test('there is somewhere to stand above the floor, and it is worth standing ther
   const r = await page.evaluate(async () => {
     const { Mission } = await import('/src/mission.js');
     const Level = await import('/src/level.js');
+    const State = await import('/src/state.js');
     const G = window.KR;
-    const S = G.campaign;
+    // Deterministic scenario. A mission's layout comes from the campaign seed
+    // AND its people come from the same seed, so a test that pins neither is
+    // rolling dice on both the ground it fights over and how fast anyone walks
+    // across it. Pinning one and not the other is not pinning the scenario.
+    const S = State.newCampaign(12345);
+    G.campaign = S;
     S.renown = 4000;
     G.world?.dispose(); G.world = null;
     document.getElementById('viewport').innerHTML = '';
@@ -3750,4 +3789,150 @@ test('there is somewhere to stand above the floor, and it is worth standing ther
   expect(r.climbed, 'could not climb the stairs').toBeGreaterThan(2);
   expect(r.hi, 'height grants no sightline it did not already have').toBeGreaterThan(r.lo);
   expect(r.strollable, 'the wall can be walked up from outside').toBe(false);
+});
+
+test('the company arrives facing the job, with no crosshair over the cinematic', async ({ page }) => {
+  test.setTimeout(120000);
+  await boot(page);
+  await newCampaign(page);
+
+  const r = await page.evaluate(async () => {
+    const { Mission } = await import('/src/mission.js');
+    const UI = await import('/src/ui.js');
+    const State = await import('/src/state.js');
+    const G = window.KR;
+    // Deterministic scenario. A mission's layout comes from the campaign seed
+    // AND its people come from the same seed, so a test that pins neither is
+    // rolling dice on both the ground it fights over and how fast anyone walks
+    // across it. Pinning one and not the other is not pinning the scenario.
+    const S = State.newCampaign(12345);
+    G.campaign = S;
+    S.renown = 4000;
+    G.world?.dispose(); G.world = null;
+    document.getElementById('viewport').innerHTML = '';
+    UI.show('hud');
+    const m = new Mission({
+      campaign: S,
+      spec: { type: 'skirmish', site: 'grellan', layout: 'grellan', siteName: 'T',
+        enemyFaction: 'trust' },
+      squad: S.roster.slice(0, 4),
+      container: document.getElementById('viewport'),
+      onHud: () => {}, onToast: () => {}, onIntro: () => {}, onWheel: () => {}, onEnd: () => {},
+    });
+    await m.start();
+    m.paused = false; m.hadLock = true;
+
+    const obj = m.level.objectivePoint;
+    // How far off the objective bearing is each body pointing? Wrapped to
+    // ±180°, because yaw accumulates past a full turn.
+    const off = (e) => {
+      const want = Math.atan2(obj.x - e.x, obj.z - e.z);
+      let d = (e.yaw - want) % (Math.PI * 2);
+      if (d > Math.PI) d -= Math.PI * 2;
+      if (d < -Math.PI) d += Math.PI * 2;
+      return Math.abs(d * 180 / Math.PI);
+    };
+    const atSpawn = { player: off(m.player), squad: m.squad.map(off) };
+
+    // The crosshair is the player's, so it must not be up while the camera is
+    // flying itself somewhere.
+    UI.renderMissionHud(m.buildHud());
+    const hiddenDuring = document.getElementById('reticle').classList.contains('hidden');
+
+    for (let i = 0; i < 60; i++) m.step(0.016);
+    const duringCine = { player: off(m.player) };
+
+    if (m.intro) { m.intro.active = false; m.time = m.intro.graceUntil + 0.1; }
+    for (let i = 0; i < 60; i++) m.step(0.016);
+    UI.renderMissionHud(m.buildHud());
+    const hiddenAfter = document.getElementById('reticle').classList.contains('hidden');
+    return { atSpawn, duringCine, hiddenDuring, hiddenAfter, afterHandover: off(m.player) };
+  });
+
+  // Everyone starts pointed at the job. Every layout used to declare ry:0 while
+  // its objective sat at ~177°, so the company arrived looking back down the
+  // road it had just driven up.
+  expect(r.atSpawn.player, 'the commander spawns facing away').toBeLessThan(20);
+  for (const d of r.atSpawn.squad) expect(d, 'a soldier spawns facing away').toBeLessThan(20);
+  // And the handover does not spin them round.
+  expect(r.duringCine.player).toBeLessThan(20);
+  expect(r.afterHandover, 'taking control turned the commander around').toBeLessThan(20);
+
+  expect(r.hiddenDuring, 'crosshair sits over the insertion cinematic').toBe(true);
+  expect(r.hiddenAfter, 'crosshair never comes back').toBe(false);
+});
+
+test('the squad can be ordered into cover, and out of it again', async ({ page }) => {
+  test.setTimeout(120000);
+  await boot(page);
+  await newCampaign(page);
+
+  const r = await page.evaluate(async () => {
+    const { Mission, bodyCapsule } = await import('/src/mission.js');
+    const Level = await import('/src/level.js');
+    const State = await import('/src/state.js');
+    const G = window.KR;
+    // Build the whole scenario from a fixed seed rather than pinning one input.
+    //
+    // Setting only S.seed still left the ROSTER generated from the random seed
+    // newCampaign had already chosen, so soldiers' speeds varied and reaching
+    // cover before the deadline became a race this test lost about one run in
+    // six. Regenerating the campaign fixes the layout and the people together.
+    const S = State.newCampaign(12345);
+    G.campaign = S;
+    S.renown = 4000;
+    G.world?.dispose(); G.world = null;
+    document.getElementById('viewport').innerHTML = '';
+    const m = new Mission({
+      campaign: S,
+      spec: { type: 'skirmish', site: 'grellan', layout: 'grellan', siteName: 'T',
+        enemyFaction: 'trust' },
+      squad: S.roster.slice(0, 4),
+      container: document.getElementById('viewport'),
+      onHud: () => {}, onToast: () => {}, onIntro: () => {}, onWheel: () => {}, onEnd: () => {},
+    });
+    await m.start();
+    m.paused = false; m.hadLock = true;
+    if (m.intro) { m.intro.active = false; m.time = m.intro.graceUntil + 0.1; }
+
+    const threat = m.entities.find((e) => e.side === 'enemy' && !e.dead);
+    const cov = m.level.covers.find((o) => o.h > 0.7 && o.h < 1.6);
+    m.player.x = cov.x + 4; m.player.z = cov.z + 9;
+    threat.x = cov.x; threat.z = cov.z - 22;
+    m.squad.forEach((s, i) => { s.x = m.player.x + (i - 1) * 2.4; s.z = m.player.z + 1.5; });
+
+    m.selectAll();
+    m.orderTakeCover({ x: threat.x, z: threat.z });
+    const ordered = m.squad.filter((s) => s.order === 'cover').length;
+    // Ten seconds of walking. Long enough that arriving is not a race.
+    for (let i = 0; i < 620; i++) m.step(0.016);
+
+    const shielded = m.squad.filter((s) =>
+      !Level.hasLOS(m.level.obstacles, s.x, s.z, threat.x, threat.z, 1.5)).length;
+    const down = m.squad.filter((s) => (s.tuck || 0) > 0.5).length;
+    const shorter = m.squad.filter((s) => {
+      const c = bodyCapsule(s);
+      return (c.hi - c.lo) < 1.2;
+    }).length;
+
+    m.setSquadOrder('follow');
+    for (let i = 0; i < 120; i++) m.step(0.016);
+    return {
+      n: m.squad.length, ordered, shielded, down, shorter,
+      onWheel: m.ORDERS.some((o) => o.id === 'cover'),
+      released: m.squad.filter((s) => s.order === 'follow').length,
+      stoodUp: m.squad.filter((s) => (s.tuck || 0) < 0.4).length,
+    };
+  });
+
+  expect(r.onWheel, 'no cover order on the command wheel').toBe(true);
+  expect(r.ordered).toBe(r.n);
+  // What separates a cover order from a move order: the position breaks the
+  // sightline, and they actually get down behind it.
+  expect(r.shielded).toBeGreaterThanOrEqual(Math.ceil(r.n / 2));
+  expect(r.down, 'they walked to a wall and stood next to it').toBeGreaterThanOrEqual(Math.ceil(r.n / 2));
+  expect(r.shorter).toBeGreaterThanOrEqual(Math.ceil(r.n / 2));
+  // And cover must not be a trap they cannot be called out of.
+  expect(r.released).toBe(r.n);
+  expect(r.stoodUp).toBe(r.n);
 });
