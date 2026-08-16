@@ -767,6 +767,32 @@ const REL_LABEL = { war: 'AT WAR', truce: 'TRUCE', peace: 'AT PEACE', self: '—
  * no way to tell whether any of it was working. Each step shows what it wants,
  * what you have, and what actually moves the number.
  */
+/**
+ * What your liege owes you, and how close it is.
+ *
+ * Service was counted silently and paid out in a single surprise grant, so a
+ * player taking work from the faction they had sworn to had no idea a career
+ * was accruing at all. Named ground and a countdown make it a ladder rather
+ * than a lottery.
+ */
+const serviceBox = (S) => {
+  const sv = State.serviceStanding(S);
+  if (!sv) return '';
+  const held = (S.fiefs || []).map((id) => State.locName(id));
+  return `<div class="service">
+    <div class="svc-top">
+      <span class="lbl">SWORN TO ${esc(FACTIONS[sv.faction].short)}</span>
+      <span class="svc-count">${sv.done} / ${sv.need}</span>
+    </div>
+    <div class="lad-bar"><i style="width:${Math.min(100, Math.round((sv.done / sv.need) * 100))}%"></i></div>
+    <div class="svc-how">${sv.left === 0
+    ? 'They owe you ground. The next contract you finish for them settles it.'
+    : `${sv.left} more ${sv.left === 1 ? 'contract' : 'contracts'} for them and they
+       will put a holding in your charge. Each grant costs more service than the last.`}</div>
+    ${held.length ? `<div class="svc-held">HELD BY CHARTER · ${held.map(esc).join(' · ')}</div>` : ''}
+  </div>`;
+};
+
 const ambitionLadder = (S) => {
   const a = Dip.ambition(S);
   if (a.declared) return '';
@@ -866,6 +892,7 @@ export function diplomacyPanel(S, cbs) {
         other people and start being a power in its own right. Both the Trust and the
         Syndics will take that very badly.
       </div>
+      ${serviceBox(S)}
       ${ambitionLadder(S)}
       <div class="prose ${declare.ok ? '' : 'dim'}">
         ${declare.ok ? 'You have the renown and the ground. You can declare.' : esc(declare.why)}

@@ -4131,3 +4131,60 @@ test('a required choice cannot be dismissed, and the Reach never stays paused', 
   expect(recovered, 'the world stayed paused with no panel over it').toBe(false);
   expect(errors).toEqual([]);
 });
+
+test('serving a liege earns ground, repeatedly and visibly', async ({ page }) => {
+  test.setTimeout(120000);
+  await boot(page);
+  await newCampaign(page);
+
+  const r = await page.evaluate(async () => {
+    const State = await import('/src/state.js');
+    const S = State.newCampaign(12345);
+    window.KR.campaign = S;
+    S.allegiance = 'trust';
+    const serve = () => {
+      S.contracts.forEach((c) => { c.accepted = false; });
+      S.contracts.push({
+        id: `x${S.day}${Math.random()}`, type: 'recovery', site: 'grellan',
+        employer: 'trust', title: 't', text: '', pay: 100,
+        expiresDay: S.day + 9, accepted: true,
+      });
+      State.applyMissionResult(S, {
+        success: true, reason: 'cleared', type: 'recovery', site: 'grellan',
+        enemyFaction: 'raider', kills: 1, soldierResults: [], recruits: [],
+        loot: { credits: 0, weapons: [] }, stats: { shotsFired: 5, medkitsUsed: 0 },
+        levelName: 'X', partyId: null, suppliesUsed: 1, medicalUsed: 0,
+      });
+    };
+    const grants = [];
+    for (let i = 1; i <= 26; i++) {
+      const before = (S.fiefs || []).length;
+      serve();
+      if ((S.fiefs || []).length > before) grants.push(i);
+    }
+    return {
+      grants,
+      fiefs: (S.fiefs || []).length,
+      ladder: [0, 1, 2, 3].map((n) => State.fiefServiceFor(n)),
+      standing: State.serviceStanding(S),
+      unsworn: State.serviceStanding(State.newCampaign(1)),
+      allHeld: (S.fiefs || []).every((id) => State.isHolding(S, id)),
+    };
+  });
+
+  // A liege that can reward you only once is not somebody you have a career
+  // with — this used to fire exactly once and then never again.
+  expect(r.fiefs).toBeGreaterThan(2);
+  // And each grant costs more service than the last, so the fourth is earned.
+  expect(r.ladder[1]).toBeGreaterThan(r.ladder[0]);
+  expect(r.ladder[3]).toBeGreaterThan(r.ladder[2]);
+  for (let i = 1; i < r.grants.length; i++) {
+    expect(r.grants[i] - r.grants[i - 1]).toBeGreaterThan(r.grants[1] - r.grants[0] - 1);
+  }
+  expect(r.allHeld, 'a granted fief is not actually held').toBe(true);
+  // Visible: the player can see the next one coming rather than being surprised.
+  expect(r.standing.need).toBeGreaterThan(0);
+  expect(r.standing.left).toBeGreaterThanOrEqual(0);
+  // And nothing is owed to a company that has sworn to nobody.
+  expect(r.unsworn).toBeNull();
+});

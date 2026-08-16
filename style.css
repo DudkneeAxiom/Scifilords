@@ -995,3 +995,12 @@ kbd {
     rgba(168,69,47,0.95) 0%, rgba(168,69,47,0.35) 55%, rgba(168,69,47,0) 100%);
   clip-path: polygon(50% 100%, 0 0, 100% 0);
 }
+
+/* What a liege owes you for service. Sits above the ambition ladder because
+   it is the nearer, more concrete of the two futures. */
+.service { border: 1px solid var(--edge); background: rgba(20,21,17,0.5);
+  padding: 12px 14px; margin-bottom: 14px; }
+.svc-top { display: flex; align-items: baseline; justify-content: space-between; }
+.svc-count { font-size: 15px; color: var(--bone); font-variant-numeric: tabular-nums; }
+.svc-how { font-size: 11px; color: var(--text-dim); margin-top: 7px; line-height: 1.5; }
+.svc-held { font-size: 9px; letter-spacing: 0.14em; color: var(--ochre); margin-top: 8px; }

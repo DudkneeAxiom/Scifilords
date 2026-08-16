@@ -1142,21 +1142,38 @@ export function applyMissionResult(S, res) {
     }
   }
 
-  // Service to a liege is remembered, and eventually rewarded with ground.
+  // Service to a liege is remembered, and rewarded with ground.
+  //
+  // This used to fire exactly once in a career and hand over whichever
+  // settlement happened to sit first in the location table — so serving a
+  // faction was a single event rather than a ladder, and the ground you were
+  // given had no relationship to where you had been fighting. A liege that can
+  // only ever reward you once is not somebody you have a career with.
   if (res.success && S.allegiance && c && c.employer === S.allegiance) {
     S.service = (S.service || 0) + 1;
-    if (S.service >= 4 && !S.fiefGranted) {
+    const granted = (S.fiefs || []).length;
+    // Each grant costs more service than the last: the first is a reward, the
+    // fourth is a marcher lordship and has to be earned.
+    const needed = fiefServiceFor(granted);
+    if (S.service >= needed) {
       const candidates = LOCATIONS.filter((l) => l.faction === S.allegiance
         && !isHolding(S, l.id) && l.missions);
-      const grant = candidates.length ? candidates[0] : null;
+      // The ground nearest where the company actually operates, because a fief
+      // on the far side of the continent is a chore rather than a reward.
+      candidates.sort((a, b) =>
+        Math.hypot(a.x - S.pos.x, a.z - S.pos.z) - Math.hypot(b.x - S.pos.x, b.z - S.pos.z));
+      const grant = candidates[0] || null;
       if (grant) {
-        S.fiefGranted = true;
+        S.fiefs = S.fiefs || [];
+        S.fiefs.push(grant.id);
+        S.service = 0;
         S.holdings[grant.id] = {
           upgrades: {}, takenDay: S.day, threat: 0, formerFaction: null, granted: true,
         };
         notes.push({
           tone: 'world',
-          text: `${FACTIONS[S.allegiance].name} has granted Bracket ${grant.name} for its service.`,
+          text: `${FACTIONS[S.allegiance].name} has granted Bracket ${grant.name} for its service`
+            + `${granted ? ` — the ${['second', 'third', 'fourth', 'fifth'][granted] || 'next'} holding they have put in your charge.` : '.'}`,
         });
         pushLog(S, `${grant.name} granted to Bracket by charter.`, 'good');
       }
@@ -1972,6 +1989,30 @@ export function refuseInspection(S, party) {
   pushLog(S, `Bracket refused a ${FACTIONS[f]?.short || 'patrol'} inspection.`, 'bad');
   refreshHostility(S);
   return { ok: true };
+}
+
+/**
+ * How many contracts a liege wants before they part with the next holding.
+ *
+ * Rising, because a first grant is a reward for turning up and a fourth is a
+ * marcher lordship. Kept as a function rather than a table so the ladder has
+ * no end — there is always another one, it just costs more.
+ */
+export const fiefServiceFor = (granted) => 4 + granted * 3;
+
+/** Where the company stands with its liege, in words a player can act on. */
+export function serviceStanding(S) {
+  if (!S.allegiance) return null;
+  const granted = (S.fiefs || []).length;
+  const need = fiefServiceFor(granted);
+  const done = S.service || 0;
+  return {
+    faction: S.allegiance,
+    granted,
+    done,
+    need,
+    left: Math.max(0, need - done),
+  };
 }
 
 export function hireCost(S, s) {
