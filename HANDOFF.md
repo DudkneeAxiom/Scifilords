@@ -1,6 +1,6 @@
 # Handoff
 
-Written at commit `740360b`, **95/95 acceptance tests passing**, working tree
+Written at commit `217c178`, **96/96 acceptance tests passing**, working tree
 clean and pushed to <https://github.com/DudkneeAxiom/Scifilords>.
 
 This is the note I would want if I were picking the project up cold. It is not a
@@ -13,7 +13,7 @@ here, and the reasons behind decisions that look arbitrary from the outside.
 
 ```bash
 npm run serve                 # static server on 8124; PLAY.cmd on Windows
-npx playwright test           # the 95 acceptance tests, ~8.5 min
+npx playwright test           # the 96 acceptance tests, ~8.5 min (12+ under load)
 node tools/soak.mjs 500 40    # 500 campaign days, 40 deployments, unattended
 node tools/shots.mjs          # photograph 20 screens into qa-shots/
 ```
@@ -108,12 +108,19 @@ Open, in rough priority order:
 2. **Enemies are fully accurate the instant they acquire a target.** No
    ranging-in delay. This is the most likely remaining cause of combat reading
    as unfair rather than hard — the player dies before they can react, not
-   because the numbers are wrong. A bounded change; measure it properly.
-3. **The near ground at a deployment is sparse** compared to the mid-field, and
+   because the numbers are wrong. It matters more now that a heavy fight spans
+   189m rather than 132m and crossing open ground takes longer. A bounded
+   change; measure it across many runs.
+3. **Mission stages are a scaffold, not a design system.** `buildStages()` in
+   `src/mission.js` generates two generic kinds (sweep, hold) from the site
+   geometry for open-field contracts above 26 strength. The natural next step is
+   stages that suit the contract — a sabotage wanting a second charge placed, a
+   recovery with another group held elsewhere.
+4. **The near ground at a deployment is sparse** compared to the mid-field, and
    the palette runs muddy at distance. `outskirts()` in `src/level.js` fills
    from 26m out; the immediate spawn surroundings are still bare.
-4. **Flat sites** — see the constraint above.
-5. No audio mixing, no key rebinding.
+5. **Flat sites** — see the constraint above.
+6. No audio mixing, no key rebinding.
 
 ---
 
