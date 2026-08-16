@@ -137,5 +137,14 @@ consistent enough to expect it: **most "the game feels wrong" reports traced to
 a specific mechanical bug, and several of those bugs were introduced by the
 previous round of work.** The invisible walls killing hit registration were
 staircases added for verticality. The site that still felt flat after being
-enlarged was a fog wall left at its old range. Check what changed recently
+enlarged was a fog wall left at its old range. A road encounter stealing the
+settlement menu was the never-stay-paused guard firing in the one-frame gap
+between one panel closing and the next opening. Check what changed recently
 before assuming a feel problem is a tuning problem.
+
+**And measure the thing, not a proxy for it.** "Stray Scavengers" shipped
+broken for several sessions because a duplicate object key made
+`PARTY_TIERS.strays` undefined, and the check that passed it counted *hostile
+parties near the start* rather than their strength. The count was true and
+meaningless. A screenshot caught it, because a party whose kind resolved to
+nothing had no description line under its name.
