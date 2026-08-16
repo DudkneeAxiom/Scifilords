@@ -16,6 +16,12 @@ ones who die stay dead.
 
 ---
 
+> Picking this up cold? Read **[HANDOFF.md](HANDOFF.md)** first — environment
+> quirks, how to write tests and probes here without producing confidently
+> wrong results, and the constraints that look arbitrary but are not.
+
+---
+
 ## Running it
 
 **Windows:** double-click `PLAY.cmd`. It starts the local server and opens the
@@ -701,7 +707,7 @@ The `.glb` files are committed, so Blender is only needed to change the art.
 
 ## Testing results
 
-**Acceptance suite: 89/89 passing** (`npx playwright test`, ~8.5 min)
+**Acceptance suite: 95/95 passing** (`npx playwright test`, ~8.5 min)
 
 Covered: boot with no page errors; new campaign composition; strategic travel
 advancing time; independent party movement; a recovery deployment launching,
