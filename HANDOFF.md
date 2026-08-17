@@ -426,13 +426,16 @@ Open, in rough priority order:
    head-on. `tools/stance.mjs` measures each foot's distance from the ground
    under it at four facings for exactly that reason. On the steepest ground on
    a site it takes the feet from 0.08m out of level to 0.001m.
-7. **Pursuit is new and lightly tuned.** `partyIntent()` in `src/state.js`
+7. **Pursuit is tuned, and now watched.** `partyIntent()` in `src/state.js`
    gives hostile bands per-tier boldness and a pursuit speed of 86, which sits
    inside the company's own 55-165 range so a lean company outruns them and a
    laden one does not. The thresholds were set against measured odds — a
-   four-person company rates 0.64 against five looters — but only
-   `tools/pursuit.mjs` has exercised them, not a long campaign. Watch for the
-   map becoming a permanent chase.
+   four-person company rates 0.64 against five looters — and a 240-day
+   campaign through the map loop has now exercised them: hostile pursuit was
+   live 26% of ticks, 313 withdrawals split 182 escapes to 131 run-downs, and
+   the map never became a permanent chase. `tools/mapsoak.mjs` fails outright
+   if pursuit runs above 60% of ticks, so the watch is standing rather than a
+   note in this file.
 
    Two things it must keep doing, both learned by breaking them:
 
