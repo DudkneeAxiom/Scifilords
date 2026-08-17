@@ -144,6 +144,10 @@ export class Mission {
     this.r = rng((campaign.seed + campaign.stats.missions * 7717 + spec.site.length) | 0);
     // Commander perks apply to the whole company; resolved once per deployment.
     this.company = companyMods(campaign.roster);
+    // How the company is feeling, as a multiplier on how well it shoots.
+    // 70 is the settled default, so an ordinary company fights at exactly the
+    // strength it always did and only real misery or real devotion moves it.
+    this.moraleEdge = clamp(0.82 + ((campaign.morale ?? 70) / 100) * 0.26, 0.82, 1.08);
     this.selection = new Set();   // squad indices under command; empty = all
     this.time = 0;
     this.over = false;
@@ -711,7 +715,18 @@ export class Mission {
         x: sp.x + a, z: sp.z + 2.4, yaw: face, hp: s.hp, weapon: s.weapon,
         // A soldier looks like the people who raised them.
         model: ORIGINS[s.origin]?.model || 'soldier_bracket',
-        acc: e2.accuracy, speed: e2.speed,
+        // Morale reaches the field.
+        //
+        // It decided desertion and nothing else, so a company on the edge of
+        // walking out fought exactly as well as one that had just been paid,
+        // fed and told it had won — which makes every wage day and every
+        // ration an accounting exercise rather than something you feel when it
+        // matters. Unhappy soldiers shoot worse and go to ground sooner;
+        // devoted ones hold their nerve. Bounded on both sides, because a
+        // company that cannot fight at all is a campaign you have already lost
+        // and cannot recover from.
+        acc: e2.accuracy * this.moraleEdge,
+        speed: e2.speed,
         sight: e2.sight, aggression: roleOf(s).aggression, coverPref: e2.cover,
         eff: e2, name: s.name, tint: FACTIONS.player.accent,
       });
