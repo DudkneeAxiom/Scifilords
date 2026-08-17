@@ -109,6 +109,16 @@ which produced confidently wrong readings:
   five deployments as `STALLED`. The tell was that the same mission types passed
   at strength 18 and stalled at 42 and 66, which is exactly where stages open.
   Not a softlock; a probe reading a pointer the game had stopped using.
+- **A campaign left running drifts underneath you.** `advanceTime()` is a whole
+  world: unfed companies desert, `maintainParties()` culls whatever is furthest
+  from the player and spawns replacements, wandering bands open encounters that
+  pause the map. Any probe that advances days and then measures something has to
+  hold the rest still — feed and pay the company, pin the party list, keep the
+  player somewhere sensible — or it measures the drift. This has produced at
+  least three wrong diagnoses: a well-guarded company "losing" prisoners because
+  desertion had shrunk the roster, stragglers "vanishing" because the player was
+  parked 900k units away so culling was arbitrary, and mustering "not working"
+  because two of three musterers had been culled.
 - **Probe a field that something actually writes.** `tools/aiaudit.mjs` judged
   "had a clear shot and did not take it" by watching `e.shotsFired`, and
   nothing in `src/` had ever written that field — only the mission-wide

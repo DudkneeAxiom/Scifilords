@@ -639,6 +639,31 @@ export function releaseLord(S, id) {
  * chance of walking out, which is the pressure that turns "I have a hostage"
  * into "I should do something about my hostage".
  */
+/**
+ * Captives you have nobody to guard walk away.
+ *
+ * Prisoners accumulated with no pressure at all: taking them cost nothing to
+ * keep, so the sensible play was to hoard a column of them until you happened
+ * to pass a broker. Guarding people takes people, and a company carrying more
+ * captives than it can watch loses them — which is what makes pressing,
+ * ransoming or releasing a decision with a clock on it rather than an errand.
+ *
+ * Scaled against the roster rather than a flat number: four prisoners is
+ * nothing to a company of twelve and impossible for a company of three.
+ */
+function tickPrisoners(S, r) {
+  const held = S.prisoners?.length || 0;
+  if (!held) return;
+  const guards = Math.max(1, living(S).length);
+  // Comfortably guarded up to a third of your strength; past that it slips.
+  const strain = Math.max(0, held / guards - 0.34);
+  if (strain <= 0) return;
+  if (r() > Math.min(0.4, strain * 0.5)) return;
+  // The last one taken is the one nobody has got round to searching properly.
+  const [gone] = S.prisoners.splice(S.prisoners.length - 1, 1);
+  pushLog(S, `${gone.name} slipped the guard in the night. Nobody saw which way.`, 'bad');
+}
+
 function tickHeldLords(S, r) {
   for (const l of heldLords(S)) {
     const held = S.day - (l.tookDay || S.day);
@@ -827,6 +852,7 @@ function onNewDay(S, r) {
     }
   }
   tickHeldLords(S, rng((S.seed ^ 0x3d71) + S.day * 7717));
+  tickPrisoners(S, rng((S.seed ^ 0x1f5b) + S.day * 8221));
   // A summons outlives its column if the column was broken on the road rather
   // than arriving. The call still went out and you still did not answer it, but
   // the contract has to go or it sits on the board forever pointing at an army
