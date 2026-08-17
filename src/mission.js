@@ -2617,6 +2617,10 @@ export class Mission {
       it.done = true;
       this.chargesPlaced = true;
       this.chargeTimer = 75;
+      // Each charge brings its own explosion. `blown` latches after the first
+      // blast, and a heavy sabotage now places a second charge — which would
+      // otherwise be a dud with a countdown.
+      this.blown = false;
       Audio.uiAlert();
       this.onToast('CHARGES SET', 'Seventy-five seconds. Get clear.', 'bad');
       this.completeObjective();
@@ -2689,8 +2693,42 @@ export class Mission {
       z: clamp(o.z + Math.sin(ang) * d, -b + 12, b - 12),
     });
     const a0 = this.r() * Math.PI * 2;
+
+    // A charge goes on a structure, not on dirt: snap the chosen point to the
+    // nearest solid obstacle, and stand the marker just off its face so the
+    // interaction is reachable — colocating marker and charge also keeps
+    // anything navigating by the marker (the soak does) inside interact range.
+    const structurePoint = (p) => {
+      let best = null, bd = 34;
+      for (const ob of this.level.obstacles) {
+        if ((ob.coverH ?? ob.h) < 0.9) continue;
+        const d = Math.hypot(ob.x - p.x, ob.z - p.z);
+        if (d < bd) { bd = d; best = ob; }
+      }
+      return best ? { x: best.x, z: best.z + (best.hd || 1) + 1.2 } : p;
+    };
+
+    // The stage suits the contract. A generic "clear the far end" after a
+    // sabotage read as two missions stapled together; a second charge to
+    // place, or another group of held people to cut loose, reads as the same
+    // job being bigger than one trip — which is what a heavy contract is.
+    const t = this.spec.type;
     const list = [];
-    if (weight >= 26) {
+    if (t === 'sabotage') {
+      const p = structurePoint(far(a0, b * 0.45));
+      list.push({
+        kind: 'plant', x: p.x, z: p.z, radius: 18,
+        text: 'Wire the secondary structure',
+        sub: 'One mast is a repair ticket. Two is a message.',
+      });
+    } else if (t === 'recovery') {
+      const p = far(a0, b * 0.45);
+      list.push({
+        kind: 'free', x: p.x, z: p.z, radius: 18,
+        text: 'Another group is held at the far end',
+        sub: 'Word from the first pen: they were split up',
+      });
+    } else {
       const p = far(a0, b * 0.45);
       list.push({
         kind: 'sweep', x: p.x, z: p.z, radius: 22,
@@ -2699,12 +2737,20 @@ export class Mission {
       });
     }
     if (weight >= 45) {
+      // The heaviest work gets a third act: sabotage sweeps the wreckage it
+      // just made; everything else holds ground while the truck comes up.
       const p = far(a0 + 2.2, b * 0.5);
-      list.push({
-        kind: 'hold', x: p.x, z: p.z, radius: 14, need: 12, progress: 0,
-        text: 'Hold the crossing while the truck comes up',
-        sub: 'Twelve seconds on the ground, nobody else standing on it',
-      });
+      list.push(t === 'sabotage'
+        ? {
+          kind: 'sweep', x: p.x, z: p.z, radius: 22,
+          text: 'Clear the far end of the site',
+          sub: 'Nobody left to repair what you just broke',
+        }
+        : {
+          kind: 'hold', x: p.x, z: p.z, radius: 14, need: 12, progress: 0,
+          text: 'Hold the crossing while the truck comes up',
+          sub: 'Twelve seconds on the ground, nobody else standing on it',
+        });
     }
     this.stages = list;
     this.stageIndex = -1;
@@ -2715,6 +2761,42 @@ export class Mission {
     if (!this.stages || this.stageIndex >= this.stages.length - 1) return false;
     this.stageIndex++;
     const s = this.stages[this.stageIndex];
+
+    // The staged work arrives when the stage opens, not at mission start —
+    // a second held group is something you learn about from the first pen,
+    // not something that was standing in view the whole time.
+    if (s.kind === 'free' && !s.entity) {
+      const ent = this.spawnEntity({
+        id: `ps_${this.stageIndex}`, side: 'civil', faction: null,
+        x: s.x, z: s.z, yaw: 0, hp: 60, weapon: null, model: 'soldier_prisoner',
+        speed: 3.4, name: 'Held personnel', follower: true,
+      });
+      ent.released = false;
+      s.entity = ent;
+      // Into the recovery ledger: they must reach extraction like everyone
+      // else, and losing them is reported by the same accounting.
+      this.prisoners.push(ent);
+      this.interactables.push({
+        kind: 'prisoner', entity: ent, x: ent.x, z: ent.z, progress: 0, need: 1.6,
+        label: 'Cut restraints',
+      });
+      // The marker follows wherever the spawn actually landed, and somebody
+      // is watching them — a pen with no guard is a walk, not a stage.
+      s.x = ent.x; s.z = ent.z;
+      for (let i = 0; i < 3; i++) {
+        const a = (i / 3) * Math.PI * 2 + 0.5;
+        this.spawnEnemy(s.x + Math.cos(a) * 6, s.z + Math.sin(a) * 6,
+          pick(this.r, ['rifleman', 'rifleman', 'breacher']));
+      }
+    }
+    if (s.kind === 'plant' && !s.interactable) {
+      s.interactable = {
+        kind: 'charge', x: s.x, z: s.z, progress: 0, need: 4.5,
+        label: 'Place the second charge',
+      };
+      this.interactables.push(s.interactable);
+    }
+
     this.objective = {
       text: s.text, sub: s.sub, progress: 0,
       need: s.kind === 'hold' ? s.need : 1,
@@ -2731,6 +2813,23 @@ export class Mission {
     if (!s || this.objective.done) return;
     const p = this.player;
     if (!p) return;
+    if (s.kind === 'plant') {
+      // Completion comes from the charge interactable itself — its handler
+      // calls completeObjective — so the stage only mirrors progress to the
+      // HUD.
+      this.objective.progress = s.interactable?.done ? 1
+        : clamp((s.interactable?.progress || 0) / s.interactable.need, 0, 0.99);
+      return;
+    }
+    if (s.kind === 'free') {
+      const e = s.entity;
+      this.objective.progress = e?.released ? 1 : 0;
+      // Released moves the chain on; killed does too — the work at this pen
+      // is over either way, the loss is already on the recovery ledger, and a
+      // stage that can never complete would strand the whole deployment.
+      if (e && (e.released || e.dead)) this.completeObjective();
+      return;
+    }
     const inside = Math.hypot(p.x - s.x, p.z - s.z) < s.radius;
     if (s.kind === 'sweep') {
       // Everything alive within reach of the marker.
@@ -3604,9 +3703,6 @@ export class Mission {
       }
     }
 
-    this.objective.need = alive.length;
-    this.objective.progress = freed.length;
-
     if (!alive.length) {
       // Nobody left to recover. Arm extraction so the player is not stranded,
       // but the contract is not satisfied.
@@ -3623,6 +3719,17 @@ export class Mission {
       return;
     }
 
+    // Only while the recovery IS the current objective. A stage borrows
+    // this.objective once the primary completes, and this method runs every
+    // frame — "everyone is freed" stayed true, so it re-completed the stage
+    // objective the frame it opened and the whole chain fell through in two
+    // frames, arming extraction from the pen. Heavy recoveries never actually
+    // ran their stages until this guard. (The death toasts and the
+    // nobody-left-to-recover path above stay live throughout — a loss is a
+    // loss whichever objective is on the HUD.)
+    if (this.objective.type !== 'recovery') return;
+    this.objective.need = alive.length;
+    this.objective.progress = freed.length;
     if (!this.objective.done && freed.length >= alive.length) this.completeObjective();
   }
 

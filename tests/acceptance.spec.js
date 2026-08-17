@@ -4426,3 +4426,110 @@ test('a cornered encounter cannot be escaped, cancelled, or clicked away', async
   expect(after.gone, 'paying the toll did not move them off the road').toBe(true);
   expect(after.paused, 'the Reach stayed paused after the toll').toBe(false);
 });
+
+test('the stage suits the contract: a second charge, another pen', async ({ page }) => {
+  test.setTimeout(180000);
+  await boot(page);
+  await newCampaign(page);
+
+  const r = await page.evaluate(async () => {
+    const { Mission } = await import('/src/mission.js');
+    const State = await import('/src/state.js');
+    const mk = async (type) => {
+      const G = window.KR;
+      const S = State.newCampaign(12345);
+      G.campaign = S;
+      S.renown = 6000;
+      G.world?.dispose(); G.world = null;
+      document.getElementById('viewport').innerHTML = '';
+      const m = new Mission({
+        campaign: S,
+        spec: { type, site: 'grellan', layout: 'grellan', siteName: 'T',
+          enemyFaction: 'trust', party: { strength: 54, quality: 0.8, kind: 'scrappers' } },
+        squad: S.roster.slice(0, 4),
+        container: document.getElementById('viewport'),
+        onHud: () => {}, onToast: () => {}, onIntro: () => {}, onWheel: () => {}, onEnd: () => {},
+      });
+      await m.start();
+      m.paused = false; m.hadLock = true;
+      if (m.intro) { m.intro.active = false; m.time = m.intro.graceUntil + 0.1; }
+      return m;
+    };
+    // Nothing in here is about gunfire; the dead stay dead so the chain is
+    // walked in peace, the way the skirmish stage test does it.
+    const calm = (m) => m.entities.forEach((e) => { if (e.side === 'enemy') { e.dead = true; e.down = true; } });
+    // Stand on an interactable and hold E until it completes or the cap says
+    // it never will.
+    const workAt = (m, x, z, cap = 900) => {
+      m.player.x = x; m.player.z = z;
+      m.keys.add('e');
+      for (let i = 0; i < cap; i++) {
+        calm(m);
+        m.player.x = x; m.player.z = z;
+        m.step(1 / 60);
+        const it = m.nearInteract;
+        if (!it || it.done) break;
+      }
+      m.keys.delete('e');
+    };
+
+    // ---- sabotage: the stage is a second charge, and it goes off ----
+    const sab = await mk('sabotage');
+    calm(sab);
+    const sabKinds = (sab.stages || []).map((s) => s.kind);
+    const mast = sab.interactables.find((i) => i.kind === 'charge');
+    workAt(sab, mast.x, mast.z);
+    const sabStage = sab.stages[sab.stageIndex];
+    const opened = { kind: sabStage?.kind, hasCharge: !!sabStage?.interactable };
+    workAt(sab, sabStage.x, sabStage.z);
+    const secondPlaced = !!sabStage.interactable?.done;
+    // The second countdown runs to its own blast.
+    sab.blown = false; sab.chargeTimer = 0.05;
+    for (let i = 0; i < 20; i++) { calm(sab); sab.step(1 / 60); }
+    const secondBang = !!sab.blown;
+
+    // ---- recovery: the stage is another pen, and the ledger follows ----
+    const rec = await mk('recovery');
+    calm(rec);
+    const recKinds = (rec.stages || []).map((s) => s.kind);
+    const before = rec.prisoners.length;
+    for (const it of rec.interactables.filter((i) => i.kind === 'prisoner')) {
+      workAt(rec, it.entity.x, it.entity.z, 400);
+    }
+    // The regression this exists to hold: with everyone freed, "freed >=
+    // alive" is true every frame — updateRecovery used to re-complete the
+    // stage objective the frame it opened and arm extraction from the pen.
+    let armedEarly = false;
+    for (let i = 0; i < 120; i++) {
+      calm(rec);
+      rec.step(1 / 60);
+      if (rec.extractArmed) armedEarly = true;
+    }
+    const stage = rec.stages[rec.stageIndex];
+    const extra = { spawned: rec.prisoners.length, stageKind: stage?.kind };
+    workAt(rec, stage.x, stage.z, 400);
+    const freedExtra = !!stage.entity?.released;
+    return {
+      sabKinds, opened, secondPlaced, secondBang,
+      recKinds, before, armedEarly, extra, freedExtra,
+      stageAfter: rec.stageIndex,
+    };
+  });
+
+  // Sabotage: plant first, then sweep the wreckage.
+  expect(r.sabKinds[0]).toBe('plant');
+  expect(r.opened.kind).toBe('plant');
+  expect(r.opened.hasCharge, 'the plant stage brought no charge to place').toBe(true);
+  expect(r.secondPlaced, 'the second charge could not be placed').toBe(true);
+  expect(r.secondBang, 'the second charge never went off').toBe(true);
+
+  // Recovery: another pen, guarded, on the same ledger.
+  expect(r.recKinds[0]).toBe('free');
+  expect(r.before).toBe(3);
+  expect(r.armedEarly,
+    'extraction armed from the pen — updateRecovery is completing stage objectives again').toBe(false);
+  expect(r.extra.stageKind).toBe('free');
+  expect(r.extra.spawned, 'the far pen held nobody').toBe(4);
+  expect(r.freedExtra, 'the extra held person could not be cut loose').toBe(true);
+  expect(r.stageAfter, 'freeing them did not move the chain on').toBeGreaterThan(0);
+});

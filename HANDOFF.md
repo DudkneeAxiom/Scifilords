@@ -1,7 +1,7 @@
 # Handoff
 
-Current as of the map-soak round (the commit carrying this file), **97/97
-acceptance tests passing**. Pushed history lives at
+Current as of the contract-stages round (the commit carrying this file),
+**98/98 acceptance tests passing**. Pushed history lives at
 <https://github.com/DudkneeAxiom/Scifilords>; push only when asked.
 
 The last long session was almost entirely strategic-layer work, aimed at making
@@ -27,7 +27,7 @@ here, and the reasons behind decisions that look arbitrary from the outside.
 
 ```bash
 npm run serve                 # static server on 8124; PLAY.cmd on Windows
-node tools/snaptest.mjs       # the 97 acceptance tests against a COPY of the tree
+node tools/snaptest.mjs       # the 98 acceptance tests against a COPY of the tree
 npx playwright test           # the same, against the live tree
 node tools/soak.mjs 500 40    # 500 campaign days, 40 deployments, unattended
 node tools/mapsoak.mjs 240    # 240 days played through WorldMap.update()
@@ -389,11 +389,25 @@ Open, in rough priority order:
    probe finally passed. It was recorded before the probe was seeded and
    deterministic, so it was one draw from the seed lottery — see item 1 for
    what replaced it. The ranging-in mechanism itself is real and stays.)
-3. **Mission stages are a scaffold, not a design system.** `buildStages()` in
-   `src/mission.js` generates two generic kinds (sweep, hold) from the site
-   geometry for open-field contracts above 26 strength. The natural next step is
-   stages that suit the contract — a sabotage wanting a second charge placed, a
-   recovery with another group held elsewhere.
+3. ~~**Mission stages are a scaffold, not a design system.**~~ Done: the stage
+   suits the contract. A heavy sabotage's first stage is a second charge
+   (`plant` — snapped to the nearest solid obstacle so the wire goes on a
+   structure, and each charge now gets its own explosion; `blown` used to
+   latch after the first); a heavy recovery's is another held person at the
+   far end (`free` — spawned with guards when the stage opens, pushed into
+   `this.prisoners` so the extraction rule and the loss accounting cover them
+   like everyone else). Skirmish keeps sweep/hold.
+
+   The bug found on the way in matters more than the feature: heavy
+   recoveries had never actually run their stages. `updateRecovery()` runs
+   every frame and re-completed the objective whenever "everyone is freed"
+   held — which, once a stage borrowed `this.objective`, was every frame, so
+   the whole chain fell through in two frames and armed extraction from the
+   pen. It now touches the objective only while `objective.type` is
+   'recovery' (death toasts and the nobody-left path stay live throughout).
+   If you add a stage kind whose completion an always-running per-type
+   updater might re-trigger, this is the shape to check for. The acceptance
+   test "the stage suits the contract" holds the regression.
 4. **The palette runs muddy at distance.** `nearGround()` now dresses the
    spawn surroundings that `outskirts()` starts 26m outside of, so the bare
    insertion point is dealt with; the colour problem is not.
