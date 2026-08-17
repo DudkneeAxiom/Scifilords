@@ -327,7 +327,14 @@ function enterLocation() {
   // mid-visit, and made anything walking the menu fail whenever a frame took
   // longer than usual.
   G.visiting = true;
-  const leave = () => { G.visiting = false; G.world?.setPaused(false); };
+  // Through the gate: the company is indoors, so the token leaves the map for
+  // the duration — a visit is being somewhere, not parking outside it.
+  G.world?.setInside(true);
+  const leave = () => {
+    G.visiting = false;
+    G.world?.setInside(false);
+    G.world?.setPaused(false);
+  };
 
   const openMenu = () => {
     UI.settlementMenu(S, loc, {
@@ -361,6 +368,15 @@ function enterLocation() {
         }
         if (verb === 'market') {
           UI.inventoryPanel(S, { onClose: () => openMenu(), onLoadout: () => openLoadout() });
+          return;
+        }
+        if (verb === 'wait') {
+          // Six hours indoors while the Reach runs. Party tokens are synced
+          // by the map's update loop, which is paused behind this panel — so
+          // sync them here, and the roads visibly move while you wait.
+          State.advanceTime(S, 6);
+          G.world?.syncParties();
+          openMenu();
           return;
         }
         if (verb === 'rest') {
@@ -433,10 +449,11 @@ const UIesc = (s) => String(s).replace(/[&<>"]/g, (ch) => (
  */
 function startVisit(loc) {
   const S = G.campaign;
+  const fav = State.favourAt(S, loc.id);
   const spec = {
     type: 'visit', site: loc.id, layout: loc.layout || 'settlement',
     siteName: loc.name, services: loc.services,
-    hasFavour: !!State.favourAt(S, loc.id), locId: loc.id,
+    hasFavour: !!fav, favourWho: fav?.who || null, locId: loc.id,
   };
   // The commander walks alone. A squad in tow turns every lane into a
   // pathing exercise, and nobody brings four riflemen to buy rations.

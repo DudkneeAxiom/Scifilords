@@ -2093,6 +2093,11 @@ export function settlementMenu(S, loc, cbs) {
       `${(S.prisoners || []).length} in the truck — paying ${rate.toFixed(2)}x today`, 'warn');
   }
   if (has('contracts')) verb('board', 'Read the posting board', 'See what work is going');
+  // Waiting is the other half of being indoors: safe inside the walls while
+  // the Reach moves without you. Six hours at a click, and the DAY line in
+  // the tag ticks over so the passage of time is something you watch rather
+  // than take on faith.
+  verb('wait', 'Wait a while', 'Six hours pass. The Reach moves; you do not.');
   verb('rest', 'Stand the company down', 'A day here. Wounds close, wages still leave.');
   if (held) verb('holdings', 'Look over what you hold', 'Build it up, or fit out a caravan');
   if (!held) verb('raid', 'Take the place apart', 'They will not forget it', 'warn');
@@ -2121,7 +2126,8 @@ export function settlementMenu(S, loc, cbs) {
 
   modal({
     title: loc.name.toUpperCase(),
-    tag: `DAY ${S.day}`,
+    // The hour as well as the day, so waiting visibly moves the clock.
+    tag: `DAY ${S.day} · ${String(Math.floor(S.hour || 0)).padStart(2, '0')}00`,
     body,
     foot: `<span class="spacer">CREDITS ${S.credits} · RATIONS ${S.rations || 0}d
       · WAGES ${State.payrollOf(S)}/day</span>

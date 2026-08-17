@@ -1,7 +1,7 @@
 # Handoff
 
-Current as of the town-walk round (the commit carrying this file),
-**99/99 acceptance tests passing**. Pushed history lives at
+Current as of the visits round (the commit carrying this file),
+**100/100 acceptance tests passing**. Pushed history lives at
 <https://github.com/DudkneeAxiom/Scifilords>; push only when asked.
 
 The last long session was almost entirely strategic-layer work, aimed at making
@@ -27,7 +27,7 @@ here, and the reasons behind decisions that look arbitrary from the outside.
 
 ```bash
 npm run serve                 # static server on 8124; PLAY.cmd on Windows
-node tools/snaptest.mjs       # the 99 acceptance tests against a COPY of the tree
+node tools/snaptest.mjs       # the 100 acceptance tests against a COPY of the tree
 npx playwright test           # the same, against the live tree
 node tools/soak.mjs 500 40    # 500 campaign days, 40 deployments, unattended
 node tools/mapsoak.mjs 240    # 240 days played through WorldMap.update()
@@ -475,19 +475,26 @@ Open, in rough priority order:
 8. No audio mixing, no key rebinding.
 9. **The town walk is a v1.** Settlements can be visited on foot (the `visit`
    mission type: settlement menu → "Walk the streets" — the real site, no
-   garrison, townsfolk standing about, hold-E doorways for market / board /
-   hiring / infirmary / the notable's door, the south checkpoint to leave).
-   Three deliberate limits worth knowing before extending it. Only
-   `settlement`-layout towns offer the walk — a layout opts in by declaring
-   `areas` and a `gate` in its builder meta, and `build()`'s return is a
-   WHITELIST, so a new meta field must also be added there or it silently
-   never arrives (that is how garrisons were lost once). Townsfolk are
-   scenery: they stand where placed, and nothing happens if you shoot one —
-   the town does not react, which is the first thing to fix if the walk grows
-   teeth. And a walk deliberately books no deployment: `endMission` in
-   main.js returns straight to the map for `visit` specs, skipping
-   applyMissionResult — anything added to the walk that SHOULD reach the
-   campaign has to go through its own door, not that one.
+   garrison, townsfolk standing about, the south checkpoint to leave). Every
+   area is a PERSON: a named NPC stands at the market, the board, the hiring
+   row, the infirmary and the notable's door, the interactable anchors to the
+   entity (the cut-restraints mechanism), and the prompt is "speak with the
+   trader", not a marker floating over dirt. The gate is a person too. While
+   visiting — menu or walk — the company token leaves the world map
+   (`setInside`), and the menu's WAIT verb passes six hours a click with the
+   clock in the panel tag, so being in town is being somewhere.
+
+   Limits worth knowing before extending it. Only `settlement`-layout towns
+   offer the walk — a layout opts in by declaring `areas` and a `gate` in its
+   builder meta, and `build()`'s return is a WHITELIST, so a new meta field
+   must also be added there or it silently never arrives (that is how
+   garrisons were lost once). NPCs and townsfolk are static: they stand where
+   placed, and nothing happens if you shoot one — the town does not react,
+   which is the first thing to fix if the walk grows teeth. And a walk
+   deliberately books no deployment: `endMission` in main.js returns straight
+   to the map for `visit` specs, skipping applyMissionResult — anything added
+   to the walk that SHOULD reach the campaign has to go through its own door,
+   not that one.
 
 ---
 

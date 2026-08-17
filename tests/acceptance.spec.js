@@ -4571,10 +4571,17 @@ test('a town can be walked, and the walk is not a deployment', async ({ page }) 
       hostiles: m.entities.filter((e) => e.side === 'enemy').length,
       townsfolk: m.entities.filter((e) => e.townsfolk).length,
       areas: m.interactables.filter((i) => i.kind === 'area').map((i) => i.area),
+      // Every area is a person: the interactable anchors to a named NPC, so
+      // the prompt is "speak with somebody" and the somebody is standing there.
+      staffed: m.interactables.filter((i) => i.kind === 'area')
+        .every((i) => !!i.entity && !!i.entity.name && !i.entity.dead),
       gate: m.interactables.filter((i) => i.kind === 'leave').length,
+      gateWatch: !!m.interactables.find((i) => i.kind === 'leave')?.entity?.name,
       missionsBefore: window.KR.campaign.stats.missions,
     };
   });
+  expect(walk.staffed, 'an area doorway had nobody standing at it').toBe(true);
+  expect(walk.gateWatch, 'the gate has no watch').toBe(true);
   expect(walk.intro, 'a town visit played the assault cinematic').toBe(false);
   expect(walk.hostiles).toBe(0);
   expect(walk.townsfolk).toBeGreaterThan(2);
@@ -4614,4 +4621,48 @@ test('a town can be walked, and the walk is not a deployment', async ({ page }) 
   }));
   expect(after.missions, 'a walk was booked as a deployment').toBe(walk.missionsBefore);
   expect(after.atTown).toBe(await page.evaluate(() => window.__town));
+});
+
+test('a visit is being somewhere: token off the map, hours passing indoors', async ({ page }) => {
+  test.setTimeout(120000);
+  await boot(page);
+  await newCampaign(page);
+
+  await page.evaluate(() => {
+    const { DATA } = window.KR.dev;
+    const S = window.KR.campaign;
+    const town = DATA.LOCATIONS.find((l) => l.services.includes('market'));
+    window.KR.world.stopTravel();
+    S.pos.x = town.x; S.pos.z = town.z;
+    window.__testSite = [town.x, town.z];
+  });
+  await enterLocation(page, '#modal [data-verb="wait"]');
+
+  // Indoors: the company token has left the map. The camera loop keeps
+  // running behind the panel, so the flag reaches the mesh within a frame.
+  await page.waitForFunction(() => window.KR.world.playerToken.visible === false,
+    null, { timeout: 5000 });
+
+  // Waiting moves the world's clock by six hours a click, safely.
+  const before = await page.evaluate(() => {
+    const S = window.KR.campaign;
+    return { clock: S.day * 24 + S.hour, roster: S.roster.length };
+  });
+  await page.click('#modal [data-verb="wait"]');
+  await page.waitForFunction((b) => {
+    const S = window.KR.campaign;
+    return S.day * 24 + S.hour >= b + 6;
+  }, before.clock, { timeout: 5000 });
+  const after = await page.evaluate(() => {
+    const S = window.KR.campaign;
+    return { clock: S.day * 24 + S.hour, roster: S.roster.length,
+      menuUp: !!document.querySelector('#modal [data-verb="wait"]') };
+  });
+  expect(after.menuUp, 'waiting closed the settlement menu').toBe(true);
+  expect(after.roster).toBe(before.roster);
+
+  // Back to the road: the token returns with the company.
+  await page.click('#modal [data-x="close"]');
+  await page.waitForFunction(() => window.KR.world.playerToken.visible === true,
+    null, { timeout: 5000 });
 });

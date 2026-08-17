@@ -967,24 +967,52 @@ export class Mission {
   buildVisit() {
     this.objective = {
       text: `Walking ${this.level.name}`,
-      sub: 'Hold E at a doorway to deal. The gate leads back to the road.',
+      sub: 'Speak with people to deal. The gate watch will see you out.',
       progress: 0, need: 1, done: false, type: 'visit',
     };
     const services = this.spec.services || [];
+    // Every area is a PERSON, not a doorway. A hold-E marker floating over
+    // bare street read as an objective from a fight; a named trader standing
+    // at their own stall reads as a town. The interactable anchors to the
+    // entity — the same mechanism cut-restraints uses — so the prompt is
+    // "speak with somebody", and the somebody is visibly there.
+    const WHO = {
+      market: { name: 'The trader', label: 'Speak with the trader' },
+      board: { name: 'The posting clerk', label: 'Read the board with the clerk' },
+      recruit: { name: 'The hiring agent', label: 'Speak with the hiring agent' },
+      medical: { name: 'The medic', label: 'Call on the medic' },
+      favour: { name: this.spec.favourWho || 'A notable', label: 'Hear them out' },
+    };
+    let n = 0;
     for (const a of this.level.areas || []) {
-      // Only areas the town actually staffs — and the notable's door only
-      // when somebody is actually asking for the company.
+      // Only areas the town actually staffs — and the notable only when
+      // somebody is actually asking for the company.
       if (a.service && !services.includes(a.service)) continue;
       if (a.id === 'favour' && !this.spec.hasFavour) continue;
+      const who = WHO[a.id] || { name: 'Somebody', label: 'Speak with them' };
+      const npc = this.spawnEntity({
+        id: `npc_${n++}`, side: 'civil', faction: null, x: a.x, z: a.z,
+        // Facing the street, where the customers come from.
+        yaw: Math.atan2(-a.x, -a.z) + Math.PI, hp: 40, weapon: null,
+        model: 'soldier_prisoner', speed: 3.0, name: who.name,
+      });
+      npc.released = true;
       this.interactables.push({
-        kind: 'area', area: a.id, x: a.x, z: a.z, progress: 0, need: 0.8,
-        label: a.label,
+        kind: 'area', area: a.id, entity: npc, x: npc.x, z: npc.z,
+        progress: 0, need: 0.8, label: who.label,
       });
     }
+    // The way out is people too: a gate watch at the checkpoint.
     const gate = this.level.gate || this.level.objectivePoint;
+    const watch = this.spawnEntity({
+      id: 'npc_gate', side: 'civil', faction: null, x: gate.x, z: gate.z,
+      yaw: Math.PI, hp: 40, weapon: null,
+      model: 'soldier_prisoner', speed: 3.0, name: 'The gate watch',
+    });
+    watch.released = true;
     this.interactables.push({
-      kind: 'leave', x: gate.x, z: gate.z, progress: 0, need: 0.8,
-      label: 'Back to the road',
+      kind: 'leave', entity: watch, x: watch.x, z: watch.z,
+      progress: 0, need: 0.8, label: 'Back to the road',
     });
     // Townsfolk, so the streets read as lived-in rather than evacuated. The
     // worker model, unbound; they stand where the day put them.

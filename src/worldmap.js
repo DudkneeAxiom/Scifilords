@@ -1117,6 +1117,13 @@ export class WorldMap {
     this.sun.target.position.set(S.pos.x, 0, S.pos.z);
     this.sun.target.updateMatrixWorld();
 
+    // Inside a settlement the company is INSIDE — not a truck idling on the
+    // doorstep. The token leaves the map for the duration of the visit, the
+    // way the games this is modelled on do it; the halo goes with it so
+    // nothing glows on an empty road.
+    const inside = !!this.inside;
+    this.playerToken.visible = !inside;
+    this.playerHalo.visible = !inside;
     this.playerToken.position.set(S.pos.x, y, S.pos.z);
     this.playerToken.rotation.y = lerp(
       this.playerToken.rotation.y, this.playerHeading || 0, 1 - Math.exp(-dt * 6));
@@ -1207,6 +1214,9 @@ export class WorldMap {
   }
 
   setPaused(p) { this.paused = p; }
+
+  /** The company is indoors: token off the map until they come back out. */
+  setInside(v) { this.inside = !!v; }
 
   /**
    * Halted, running, or running fast.
