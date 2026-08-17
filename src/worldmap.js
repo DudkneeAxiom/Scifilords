@@ -13,8 +13,12 @@ import { LOCATIONS, REGION, REGIONS, FACTIONS } from './data.js';
 import * as State from './state.js';
 import * as Dip from './diplomacy.js';
 import { clamp, lerp, rng, range, pick } from './util.js';
+// The ground lives in its own module so the simulation can read it too. It used
+// to be defined here, which meant state.js — imported by this file — could not
+// see the terrain its parties were walking across without a cycle.
+import { regionHeight, regionMoisture, travelFactor, ROADS, HALF } from './region.js';
 
-const HALF = REGION.size / 2;
+export { regionHeight, regionMoisture };
 // Fast-forward. Four is about the most you can run the map at before you drive
 // straight past the parties you were meant to notice.
 const FAST = 4;
@@ -43,127 +47,6 @@ const TERRITORY_TINTS = {
  * in the middle. Settlements sit in the pan; the rim is what makes the region
  * feel enclosed and the fog do its work.
  */
-/**
- * The shape of the Reach.
- *
- * The interior used to have nothing in it above a 1000-unit wavelength, which
- * at this camera height means barely one undulation on screen — so a continent
- * built to be crossed read as a flat brown plate with a wall around it. The
- * terrain now runs in four bands: the rim that encloses the region, long ranges
- * that divide it into country, hills that give each stretch of road a profile,
- * and a last roughness that exists to break the facets up.
- *
- * Nothing here goes below ~150 units of wavelength on purpose. The mesh samples
- * every ~35 units, and the old version carried grain at 30 and 82 — under and
- * barely over the sample spacing — which does not render as texture, it
- * renders as per-vertex speckle. That was the "pixel" look: aliasing, not art.
- */
-// Bearings for the terrain octaves, precomputed because regionHeight() is
-// called for every terrain vertex, every border sample and every label, frame
-// after frame.
-const A1 = 0.00, A2 = 0.85, A3 = 2.20;
-const C1 = Math.cos(A1), S1 = Math.sin(A1);
-const C2 = Math.cos(A2), S2 = Math.sin(A2);
-const C3 = Math.cos(A3), S3 = Math.sin(A3);
-
-export function regionHeight(x, z) {
-  const d = Math.hypot(x, z) / HALF;
-  // The rim starts much further out on a continent — the playable interior has
-  // to be genuinely large, with the highlands only closing in at the edges.
-  const rim = Math.pow(clamp((d - 0.66) / 0.34, 0, 1), 1.7) * 240;
-  // Continental tilt: which half of the map is high country at all.
-  const swell = Math.sin(x * 0.0011 + 0.7) * Math.cos(z * 0.0013 - 0.3) * 34;
-  // Each octave is sampled on its own rotated axes.
-  //
-  // Every band used to be sin(x)·cos(z) on the same two axes, which does not
-  // make hills — it makes corduroy. All the ridges came out parallel and the
-  // continent read as a ploughed field seen from orbit. Turning each octave to
-  // a different bearing decorrelates them, and the crossings between bearings
-  // are what produce basins, spurs and saddles instead of stripes.
-  const rx1 = x * C1 - z * S1, rz1 = x * S1 + z * C1;
-  const rx2 = x * C2 - z * S2, rz2 = x * S2 + z * C2;
-  const rx3 = x * C3 - z * S3, rz3 = x * S3 + z * C3;
-  // Ranges, ~900 units apart. These are what separate one stretch of country
-  // from the next, and what a road has to find its way around.
-  const ranges = Math.sin(rx1 * 0.0070 + 1.2) * Math.cos(rz1 * 0.0064 - 0.4) * 46;
-  // Hills, ~380 units. Several to a screen: the scale that actually reads as
-  // terrain while travelling.
-  const hills = Math.sin(rx2 * 0.0165 - 0.9) * Math.cos(rz2 * 0.0172 + 0.5) * 21
-    + Math.cos(rx3 * 0.0139 + 2.1) * Math.sin(rz3 * 0.0128 - 1.1) * 13;
-  // Broken ground, ~170 units — four samples to a cycle, comfortably above the
-  // mesh resolution. This is what gives the facets something to catch.
-  const broken = Math.sin(rx3 * 0.0370 + 0.3) * Math.cos(rz1 * 0.0355 - 0.8) * 7;
-  // The finest band the mesh can actually carry, ~140 units — four samples to a
-  // cycle at 288 segments. It exists for the close zoom, where the view holds
-  // too few of the larger landforms to read as anything but a plain. Going
-  // finer than this is how the old speckle happened: below about 70 units the
-  // mesh cannot represent the wave at all and each vertex samples it at random.
-  const grain = Math.sin(rx2 * 0.0450 - 1.4) * Math.cos(rz3 * 0.0435 + 0.9) * 3.5;
-  // Relief grows toward the rim: the pan stays walkable, the edges get savage.
-  const relief = 0.55 + d * 0.9;
-  return rim + swell + (ranges + hills + broken + grain) * relief;
-}
-
-/**
- * How wet a place is, 0 dry to 1 wet. Low frequency on purpose — biomes have to
- * be large enough to be somewhere you are, rather than a per-vertex mottle.
- */
-export function regionMoisture(x, z) {
-  // Biome scale is a compromise. Too fine and it is mottling rather than
-  // country; too coarse and a whole screen sits inside one band and the map
-  // looks uniform — the first attempt ran at a 7400-unit wavelength against a
-  // view about 2000 units across, so no transition was ever visible. These give
-  // roughly one and a half changes of country per screen.
-  const m = Math.sin(x * 0.0022 - 1.1) * Math.cos(z * 0.0025 + 0.6) * 0.42
-    + Math.sin(x * 0.0048 + 2.3) * Math.cos(z * 0.0043 - 0.7) * 0.2
-    + Math.sin(x * 0.00082 + 0.4) * 0.16;      // a damp half and a dry half
-  return clamp(0.5 + m, 0, 1);
-}
-
-// Roads are authored, not generated — they are the routes the player will
-// actually learn, and one of them (Vetch → Sump → west) only matters after the
-// north rim goes dark.
-const ROADS = [
-  ['dolmet', 'rampart'],
-  ['dolmet', 'vetch'],
-  ['vetch', 'perran'],
-  ['perran', 'grellan'],
-  ['vetch', 'sump'],
-  ['sump', 'dolmet'],
-  ['rampart', 'grellan'],
-  // The wider Reach.
-  ['rampart', 'lowmark'],
-  ['lowmark', 'grellan'],
-  ['perran', 'kestrel'],
-  ['kestrel', 'grellan'],
-  ['sump', 'harrow'],
-  ['harrow', 'culvert'],
-  ['culvert', 'dolmet'],
-  ['vetch', 'pale'],
-  ['pale', 'harrow'],
-  // ---- trunk roads out of the Reach to the rest of the continent ----
-  ['rampart', 'pellcross'],
-  ['lowmark', 'sarnhold'],
-  ['sarnhold', 'vantree'],
-  ['sarnhold', 'pellcross'],
-  ['sarnhold', 'meridian'],
-  ['pellcross', 'vantree'],
-  ['kestrel', 'tallow'],
-  ['tallow', 'wealbastion'],
-  ['wealbastion', 'ondrel'],
-  ['wealbastion', 'fenmarrow'],
-  ['fenmarrow', 'kestrel'],
-  ['culvert', 'scourgate'],
-  ['scourgate', 'draypits'],
-  ['scourgate', 'gallows'],
-  ['gallows', 'harrow'],
-  ['draypits', 'scourhold'],
-  ['scourhold', 'scourgate'],
-  ['pale', 'oldquay'],
-  ['oldquay', 'anchorage'],
-  ['anchorage', 'brine'],
-  ['anchorage', 'wealbastion'],
-];
 
 export class WorldMap {
   constructor({ campaign, container, onEnterLocation, onEncounter, onHud }) {
@@ -1048,7 +931,10 @@ export class WorldMap {
     if (this.keys.has('d')) mx += 1;
     // The company's real speed, not the constant. Recomputed per frame so a
     // sale at a market or a soldier recovering is felt immediately.
-    const pace = State.partySpeed(S).speed;
+    // What the company can do, and what the ground under it allows. Crossing a
+    // range is slower than following a road, which is what makes a route a
+    // choice rather than a straight line between two dots.
+    const pace = State.partySpeed(S).speed * travelFactor(S.pos.x, S.pos.z);
     // The clock, and then the distance — not the other way round.
     //
     // Time used to be DERIVED from how far the company had walked, so the Reach
@@ -1168,13 +1054,17 @@ export class WorldMap {
 
     for (const p of near) {
       if (this.nearSet.has(p.id)) continue;
-      // Not while you are standing in a settlement. Bands break off pursuit
-      // near a location already, but they still patrol TO locations, so without
-      // this a raider walking into town starts a fight with you on the steps of
-      // it — and the clock runs while you stand there now, so it will happen.
-      // Leaving a settlement panel straight into an encounter is the specific
-      // misery this prevents.
-      if (loc && p.hostileToPlayer) continue;
+      // Nothing accosts you inside a settlement. Anything at all.
+      //
+      // Patrol routes lead TO locations, so parties are constantly arriving at
+      // the place the company is standing in — and the clock runs while you
+      // stand there now, so it happens often. This first suppressed only
+      // HOSTILE parties, which left the hole open: a caravan or a patrol
+      // wandering in still threw a panel over the town, which is both wrong
+      // (you deal with people through the settlement, not by ambush on its
+      // steps) and the cause of an intermittent failure where closing the
+      // settlement panel dropped the player straight into another one.
+      if (loc) continue;
       const cd = this.encounterCooldown[p.id] || 0;
       if (S.day * 24 + S.hour < cd) continue;
       this.encounterCooldown[p.id] = S.day * 24 + S.hour + 6;
@@ -1256,6 +1146,9 @@ export class WorldMap {
       chasing: this.chaseId
         ? (this.S.parties.find((p) => p.id === this.chaseId)?.name || null) : null,
       panned: Math.hypot(this.camPan.x, this.camPan.z) > 1,
+      // What the ground is doing to the company right now, so the pace readout
+      // can say "slowed by broken ground" rather than silently dropping.
+      ground: travelFactor(this.S.pos.x, this.S.pos.z),
       contract: State.activeContract(S),
       contracts: S.contracts,
       nearParties: (this.nearParties || []).map((p) => ({

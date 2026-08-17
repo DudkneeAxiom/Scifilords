@@ -246,6 +246,21 @@ company is inside one. Both are needed and the second is easy to miss:
 into town picks a fight with you on the steps of it — which was survivable when
 the world barely moved while you stood still, and is constant now that it does.
 
+**The ground lives in `src/region.js`, and both layers read it.** `regionHeight`
+used to be defined in `worldmap.js`, which imports `state.js` — so the
+simulation could not see the terrain its parties were walking across without an
+import cycle, and movement ignored the landscape entirely. `region.js` is pure
+geometry with no Three.js and no DOM, so it can be driven headlessly.
+
+`travelFactor(x, z)` is what crossing the ground costs: slope slows you, roads
+speed you up, everyone is subject to it. **It is normalised so ordinary ground
+comes out at 1.** Without the `NORM` constant it averaged 0.65, which is not a
+terrain rule at all — it is a thirty-five per cent tax on every journey in the
+game, silently re-pricing every contract deadline and wage day that was balanced
+without it. If you retune the terrain octaves, re-measure the mean with
+`tools/terrainpace.mjs` and move `NORM` with it, or the whole campaign quietly
+changes pace.
+
 **`S.atLocation` belongs to the renderer. Never simulate off it.** `worldmap.js`
 is the only thing that writes it, so it is correct while the map is on screen
 and stuck on wherever the campaign started in every headless run. It has now

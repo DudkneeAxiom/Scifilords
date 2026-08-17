@@ -509,11 +509,19 @@ export function renderWorldHud(h) {
   // why is just a mystery.
   const pace = $('wh-pace');
   if (pace && h.pace) {
-    pace.textContent = `${Math.round(h.pace.mul * 100)}%`;
-    pace.className = h.pace.mul < 0.75 ? 'val warn' : (h.pace.mul > 1 ? 'val good' : 'val');
-    pace.title = h.pace.factors.length
-      ? h.pace.factors.map((f) => `${f.effect > 0 ? '+' : ''}${Math.round(f.effect * 100)}% ${f.label}`).join('\n')
-      : 'Travelling light.';
+    // The company's own condition times what it is driving over. Showing only
+    // the former left the player watching the truck crawl up a range with a
+    // readout insisting everything was fine.
+    const ground = h.ground ?? 1;
+    const total = h.pace.mul * ground;
+    pace.textContent = `${Math.round(total * 100)}%`;
+    pace.className = total < 0.75 ? 'val warn' : (total > 1 ? 'val good' : 'val');
+    const groundNote = ground < 0.92 ? `${Math.round((ground - 1) * 100)}% broken ground`
+      : ground > 1.08 ? `+${Math.round((ground - 1) * 100)}% on the road` : null;
+    const lines = h.pace.factors.map((f) =>
+      `${f.effect > 0 ? '+' : ''}${Math.round(f.effect * 100)}% ${f.label}`);
+    if (groundNote) lines.push(groundNote);
+    pace.title = lines.length ? lines.join('\n') : 'Travelling light, on good ground.';
   }
   const banner = $('wh-banner');
   banner.textContent = h.ownFaction ? h.ownFaction.name

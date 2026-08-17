@@ -15,6 +15,7 @@ import {
   effective, WOUNDS, resolveCasualty,
 } from './roster.js';
 import { companyMods } from './perks.js';
+import { travelFactor } from './region.js';
 import * as Dip from './diplomacy.js';
 import { rng, pick, irange, range, clamp, uid, uidFloor, setUidFloor } from './util.js';
 
@@ -890,7 +891,8 @@ function moveParties(S, hours, r) {
       // Toward the company, or directly away from it.
       const sign = intent === 'chase' ? 1 : -1;
       const speed = intent === 'chase' ? PURSUIT_SPEED : Math.max(p.speed, PURSUIT_SPEED * 0.8);
-      const step = Math.min(intent === 'chase' ? sd : Infinity, speed * hours);
+      const step = Math.min(intent === 'chase' ? sd : Infinity,
+        speed * hours * travelFactor(p.x, p.z));
       p.x += (sx / sd) * step * sign;
       p.z += (sz / sd) * step * sign;
       p.heading = Math.atan2(sx * sign, sz * sign);
@@ -904,7 +906,10 @@ function moveParties(S, hours, r) {
     const dx = p.tx - p.x, dz = p.tz - p.z;
     const d = Math.hypot(dx, dz);
     if (d < 6) { pickPartyTarget(S, r, p); continue; }
-    const step = Math.min(d, p.speed * hours);
+    // Everyone is subject to the same ground. If only the company paid for
+    // slope, a chase across a range would be decided by which side the rule
+    // applied to rather than by anything the player did.
+    const step = Math.min(d, p.speed * hours * travelFactor(p.x, p.z));
     p.x += (dx / d) * step;
     p.z += (dz / d) * step;
     p.heading = Math.atan2(dx, dz);

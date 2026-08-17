@@ -2989,9 +2989,23 @@ test('the map clock halts, runs and fast-forwards', async ({ page }) => {
     const t0 = S.day * 24 + S.hour;
     const from = { x: S.pos.x, z: S.pos.z };
     W.setSpeed(sp);
-    await new Promise((r) => setTimeout(r, 1800));
+    // Run until the company has covered the SAME STRETCH, not for the same
+    // number of seconds.
+    //
+    // Ground affects pace now — a road is quicker than a hillside — so a fixed
+    // wall-clock sample lets 4x travel four times as far and therefore across
+    // different country, and the two rates differ because they measured
+    // different roads. The claim being tested is that a given piece of road
+    // costs the same hours whichever speed you watched it at, so both runs have
+    // to cover the same ground.
+    const TARGET = 260;
+    const deadline = Date.now() + 6000;
+    let dist = 0;
+    while (dist < TARGET && Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 40));
+      dist = Math.hypot(S.pos.x - from.x, S.pos.z - from.z);
+    }
     const hours = (S.day * 24 + S.hour) - t0;
-    const dist = Math.hypot(S.pos.x - from.x, S.pos.z - from.z);
     W.setSpeed(0);
     return { hours, dist, rate: hours > 0 ? dist / hours : null, paused: W.paused };
   }, s);
