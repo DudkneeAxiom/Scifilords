@@ -27,7 +27,7 @@ export class NavGrid {
     for (const o of obstacles) {
       // Only things tall enough to actually stop a person block movement;
       // ankle-height scenery should not carve holes in the navigation.
-      if (o.h < 0.7) continue;
+      if ((o.coverH ?? o.h) < 0.7) continue;
       const pad = radius;
       const minX = o.x - o.hw - pad, maxX = o.x + o.hw + pad;
       const minZ = o.z - o.hd - pad, maxZ = o.z + o.hd + pad;

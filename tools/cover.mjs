@@ -51,7 +51,12 @@ const out = await page.evaluate(async () => {
 
   // A piece of low cover with a body directly behind it, and a shooter on the
   // far side at a realistic firefight range.
-  const cov = m.level.covers.find((o) => o.h > 0.7 && o.h < 1.5);
+  // Selected on coverH, not h. Since the ground stopped being flat, `h` is the
+  // physical box — it reaches down to the lowest terrain under the footprint to
+  // seal the gap bullets used to fly through, so on a slope it is taller than
+  // the thing looks. coverH is what it stands proud of the ground by, which is
+  // the "chest-high sandbag" this probe means.
+  const cov = m.level.covers.find((o) => o.coverH > 0.7 && o.coverH < 1.5);
   const victim = m.entities.find((e) => e.side === 'enemy' && !e.dead);
   const shooter = m.player;
 
@@ -132,7 +137,7 @@ const out = await page.evaluate(async () => {
   const brokeOff = !m.cover;
 
   return {
-    coverH: +cov.h.toFixed(2),
+    coverH: +cov.coverH.toFixed(2),
     upright, tucked, leaning, open, openTucked, flankedTucked,
     took, tuckedIn: +tuckedIn.toFixed(2), leanOut: +leanOut.toFixed(2),
     backDown: +backDown.toFixed(2), brokeOff,

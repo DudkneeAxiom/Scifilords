@@ -678,10 +678,112 @@ function maintainParties(S, r) {
   }
 }
 
+// How far off a band notices the company, and how fast it moves once it has.
+//
+// Patrol speeds are 21-23 against a company that travels at 55-165, so before
+// this a raider could not have caught the player if it had wanted to — and
+// nothing in here wanted to, because nothing ever looked at where the player
+// was. The road was weather: bands drifted between locations and you collided
+// with them or you did not.
+//
+// PURSUIT_SPEED sits deliberately inside the company's own range. A lean
+// company outruns anything on the map; a full truck, carried wounded and an
+// unfed roster does not. That makes speed something you spend rather than a
+// number you have, and it is the reason to drop cargo and run.
+const PURSUIT_SIGHT = 190;
+const PURSUIT_SPEED = 86;
+// Give up once they are this far behind — otherwise a band trails the player
+// across the continent forever and the map turns into one long chase.
+const PURSUIT_GIVE_UP = 300;
+// How close to a location counts as being under its protection. Comfortably
+// wider than the 38 at which entering a location is offered, so the company is
+// safe from the moment the place is a realistic destination rather than only
+// once it has arrived.
+const PURSUIT_SANCTUARY = 55;
+
+/**
+ * Does this band want the company, want away from it, or neither?
+ *
+ * Judged on the same numbers the fight itself resolves on, so a band that
+ * closes is one that genuinely fancies its chances. Looters are cowards by
+ * design — the tier description says they run if it goes against them, and
+ * until now nothing made that true on the map.
+ */
+/**
+ * How bad a fight a band will pick, as the chance it needs to commit.
+ *
+ * Not one threshold for everybody. Scavengers at the bottom of the map are
+ * desperate and will take a fight they are likely to lose, which is exactly
+ * why they are the thing that harasses a new company — and they are beatable,
+ * so that harassment is a fight worth having rather than a death sentence.
+ * Organised bands want real odds before they commit.
+ *
+ * Tuned against the numbers rather than guessed: a starting company of four
+ * rates 0.64 against a five-strong looter band, so anything demanding better
+ * than a third of a chance leaves the early map as inert as it was.
+ */
+const BOLDNESS = { strays: 0.16, looters: 0.20, scrappers: 0.28 };
+const BOLDNESS_DEFAULT = 0.42;
+
+function partyIntent(S, p, squad) {
+  if (!p.hostileToPlayer) return 'patrol';
+  // Nobody presses an attack up to a settlement's gate. A location has people
+  // in it and usually a garrison, and a band that would take on four mercenaries
+  // on an empty road will not do it in front of a town.
+  //
+  // This is also what stops a settlement becoming a trap. Without it a band that
+  // chased the company into town waits outside, and closing the settlement panel
+  // drops the player straight into an encounter — every time, on the doorstep,
+  // with the map still paused behind the new panel.
+  // Deliberately derived from position, not from S.atLocation. That field is
+  // maintained by the world map renderer and nothing else, so it is only true
+  // while the map is on screen: it starts life as 'vetch' and stays that way
+  // for the whole of any headless run, which turns this line into "no band ever
+  // chases anybody". A rule the simulation depends on cannot be owned by the
+  // view.
+  if (locationAt(S, PURSUIT_SANCTUARY)) return 'patrol';
+  const d = Math.hypot(p.x - S.pos.x, p.z - S.pos.z);
+  if (d > (p.chasing ? PURSUIT_GIVE_UP : PURSUIT_SIGHT)) return 'patrol';
+  if (!squad.length) return 'chase';
+  const { odds } = estimateFight(S, squad, p);
+  // estimateFight reports the COMPANY's chance, so theirs is what is left.
+  const theirs = 1 - odds;
+  const bold = BOLDNESS[p.kind] ?? BOLDNESS_DEFAULT;
+  if (theirs > bold) return 'chase';
+  // Well under what they would accept: not merely uninterested, but actively
+  // getting out of the way. This is the tier description made true — looters
+  // are written as running if it goes against them.
+  if (theirs < bold * 0.45) return 'flee';
+  return 'patrol';
+}
+
 function moveParties(S, hours, r) {
+  // Resolved once, not once per band: every hostile party asks the same
+  // question about the same company, and this runs on every world tick.
+  const squad = ready(S).slice(0, deployLimit(S));
   for (const p of S.parties) {
     // A hideout is a place, not a patrol.
     if (PARTY_TIERS[p.kind]?.static) continue;
+
+    const intent = partyIntent(S, p, squad);
+    p.chasing = intent === 'chase';
+    if (intent !== 'patrol') {
+      const sx = S.pos.x - p.x, sz = S.pos.z - p.z;
+      const sd = Math.hypot(sx, sz) || 1;
+      // Toward the company, or directly away from it.
+      const sign = intent === 'chase' ? 1 : -1;
+      const speed = intent === 'chase' ? PURSUIT_SPEED : Math.max(p.speed, PURSUIT_SPEED * 0.8);
+      const step = Math.min(intent === 'chase' ? sd : Infinity, speed * hours);
+      p.x += (sx / sd) * step * sign;
+      p.z += (sz / sd) * step * sign;
+      p.heading = Math.atan2(sx * sign, sz * sign);
+      // Their patrol route is stale once they break off; pick a fresh one when
+      // they next settle rather than snapping back to where they were headed.
+      p.target = null;
+      continue;
+    }
+
+    if (!p.target) { pickPartyTarget(S, r, p); continue; }
     const dx = p.tx - p.x, dz = p.tz - p.z;
     const d = Math.hypot(dx, dz);
     if (d < 6) { pickPartyTarget(S, r, p); continue; }

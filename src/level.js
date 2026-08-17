@@ -21,24 +21,40 @@ import { rng, range, irange, pick } from './util.js';
  * pan, and flat ground keeps sightlines honest and AI pathing reliable.
  */
 export function heightAt(x, z) {
-  // Kept shallow on purpose, and it is a constraint rather than a preference.
+  // The ground has relief now. It was flat for a long time, and the reason was
+  // real: every obstacle is an axis-aligned box that used to be anchored to ONE
+  // ground sample, so a rampart across a slope had daylight under its downhill
+  // end and rounds went beneath the wall. Sinking the boxes to close that gap
+  // changed what an obstacle's height meant, and height was what classified a
+  // box as shoot-over cover, so the cover list emptied instead.
   //
-  // Real relief was tried — swells of five metres across the enlarged pan — and
-  // it broke the game underneath: every obstacle is an axis-aligned box
-  // anchored to ONE ground sample, so a nine-metre rampart standing across a
-  // slope has daylight under one end and rounds go beneath the wall. Closing
-  // that by sinking the boxes changes what an obstacle's height means, and its
-  // height is what classifies it as shoot-over cover, so the cover list empties.
-  // Making the ground properly three-dimensional needs obstacles that follow
-  // the terrain, which is a larger job than a visual tweak.
+  // What unlocked it was separating the two meanings — see seatObstacle().
+  // A box now reaches down to the LOWEST ground under its own footprint, which
+  // seals the gap, while `coverH` measures it from the HIGHEST, which is what
+  // every gameplay judgement reads. Sinking no longer costs anything.
   //
-  // Depth in the sites comes from fog range, structure and scatter instead.
+  // Scale is chosen against the play space rather than for looks: swells about
+  // 70m across, so a 189m heavy fight crosses three or four of them, and the
+  // steepest gradient is around ten degrees, which walks and paths normally.
+  // Peak to trough is roughly nine metres — enough that a fold in the ground is
+  // somewhere to be, which is the point.
   return (
-    Math.sin(x * 0.021) * Math.cos(z * 0.019) * 0.75 +
-    Math.sin(x * 0.058 + 1.7) * 0.28 +
-    Math.cos(z * 0.047 - 0.6) * 0.24
+    Math.sin(x * 0.0165) * Math.cos(z * 0.0148) * 2.6 +           // the basin's tilt
+    Math.sin(x * 0.049 + 1.7) * Math.cos(z * 0.041 - 0.6) * 1.35  // long folds
+    // The term that makes the ground tactical rather than scenic. The two
+    // above have wavelengths longer than a firefight, so they read as a tilted
+    // plain: pretty, but there is nowhere to get down into. This one runs at
+    // about 60m, so a hollow is roughly one bound across and dropping into it
+    // genuinely breaks a sightline — dead ground you can use, which is the
+    // difference between relief and decoration.
+    + Math.sin(x * 0.105 - 0.4) * Math.cos(z * 0.098 + 0.3) * 2.0
+    + Math.cos(z * 0.19 + 1.1) * 0.3                              // grain
   );
 }
+
+// Peak-to-trough of heightAt(), used to normalise anything that shades by
+// elevation. Kept beside the function so the two cannot drift apart.
+export const RELIEF = 6.0;
 
 function buildGround(size, colorTop, colorLow) {
   // Enough segments that the swells read as ground and not as facets. The
@@ -58,7 +74,11 @@ function buildGround(size, colorTop, colorLow) {
     // Vertex colour by height plus a coarse blotch, so the floor has grain
     // without a texture. Low ground is darker and wetter-looking.
     const n = (Math.sin(x * 0.13) * Math.cos(z * 0.11) + 1) * 0.5;
-    c.copy(cLow).lerp(cTop, Math.min(1, Math.max(0, (y + 1.1) / 2.0 * 0.7 + n * 0.4)));
+    // Normalised against the actual relief. This ramp was written for ground
+    // that never left +/-1m; feeding it real elevation pins every high slope at
+    // full brightness and every hollow at black.
+    const e = (y + RELIEF) / (RELIEF * 2);
+    c.copy(cLow).lerp(cTop, Math.min(1, Math.max(0, e * 0.7 + n * 0.4)));
     colors[i * 3] = c.r; colors[i * 3 + 1] = c.g; colors[i * 3 + 2] = c.b;
   }
   geo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
@@ -67,6 +87,68 @@ function buildGround(size, colorTop, colorLow) {
   const m = new THREE.Mesh(geo, mat);
   m.receiveShadow = true;
   return m;
+}
+
+/**
+ * The lowest and highest ground under a footprint.
+ *
+ * This is what makes relief survivable. An obstacle is a single axis-aligned
+ * box, and on sloping ground one ground sample cannot describe it: anchor the
+ * box at its centre and the downhill end has daylight under it, which bullets
+ * go through — rayHit() tests the true 3D box, so the gap is real and not
+ * cosmetic. Sampling the whole footprint gives both numbers the box needs: a
+ * bottom low enough to seal, and the ground a person standing beside it is
+ * actually on.
+ */
+function groundSpan(x, z, hw, hd) {
+  let lo = Infinity, hi = -Infinity;
+  // Corners, edge midpoints and centre. Nine samples is enough for the broad
+  // swells this terrain has; it is not trying to catch a knife-edge ridge,
+  // because there are none and the ground function is smooth.
+  for (let i = -1; i <= 1; i++) {
+    for (let j = -1; j <= 1; j++) {
+      const y = heightAt(x + i * hw, z + j * hd);
+      if (y < lo) lo = y;
+      if (y > hi) hi = y;
+    }
+  }
+  return { lo, hi };
+}
+
+/**
+ * Fill in an obstacle's vertical extent from the ground beneath it.
+ *
+ * Two heights, because the old single `h` was being asked to mean two
+ * different things and could only stay honest while the ground was flat:
+ *
+ *   h       the physical box, bottom to top. Collision and both ray systems
+ *           use this. It grows as the ground falls away, which is exactly what
+ *           seals the underside.
+ *   coverH  how tall the thing is as drawn — its top above the ground at its
+ *           own centre, which is where the model sits. Every gameplay
+ *           judgement uses this: whether it is shoot-over cover, whether it
+ *           blocks navigation, whether it is a wall worth sliding around.
+ *
+ * Keeping them separate is the whole trick. Sinking the boxes to close the gap
+ * used to empty the cover list, because a sunk box measured as too tall to
+ * shoot over. Now sinking changes h and leaves coverH alone.
+ *
+ * coverH is deliberately measured from the CENTRE and not from the highest
+ * ground under the footprint. Measuring the worst case sounds more careful and
+ * is worse: it shortens every object on a slope, and cover only counts when it
+ * breaks a standing sightline at ~1.45m against a list capped at 1.7m, so a
+ * conservative measure pushes most of the world out of that narrow band and
+ * findCover() starts returning nothing. It did exactly that — the squad walked
+ * to a wall and stood beside it in the open. Centre-sampled, coverH is just the
+ * authored height, so classification is identical to how it behaved on flat
+ * ground and only the box's underside actually moves.
+ */
+function seatObstacle(o, topY) {
+  const { lo } = groundSpan(o.x, o.z, o.hw, o.hd);
+  o.y = lo;
+  o.h = topY - lo;
+  o.coverH = topY - heightAt(o.x, o.z);
+  return o;
 }
 
 // --------------------------------------------------------------------------
@@ -103,11 +185,26 @@ class Builder {
         x, z,
         hw: (swap ? hd : hw) * scale,
         hd: (swap ? hw : hd) * scale,
-        h: h * scale,
-        y: heightAt(x, z),
       };
+      // The top stays where the art is — the model is drawn from the centre
+      // sample, so that is where its roofline sits. Only the underside moves.
+      seatObstacle(o, heightAt(x, z) + h * scale);
       this.obstacles.push(o);
-      if (h <= 1.7) this.covers.push(o); // low enough to shoot over
+      // Deliberately the AUTHORED height, before `scale`, which is what this
+      // has always used. It is not what it looks like: a rock authored at 1.5m
+      // and placed at scale 2.4 stands 3.6m and still counts as shoot-over
+      // cover. That looks like a bug and is load-bearing — findCover() only
+      // accepts a position that breaks a STANDING sightline at 1.45m, so the
+      // scaled-up entries are the only things in the list tall enough to
+      // shield anybody. Classifying on true height instead drops the list from
+      // 89 covers to 61, findCover starts returning null, and the squad walks
+      // to a wall and stands beside it in the open.
+      //
+      // Worth fixing properly one day, by widening the band to "tall enough to
+      // hide behind, short enough to shoot over" measured on o.coverH. That is
+      // a cover-balance change and wants its own round with the cover probe,
+      // not a side effect of making the ground three-dimensional.
+      if (h <= 1.7) this.covers.push(o);
     }
     return this;
   }
@@ -129,11 +226,15 @@ class Builder {
     // surface is the plate you stand on; taking the model's full height would
     // put the floor at the top of its railings, several metres above where it
     // is drawn, and make the underside a solid pillar.
+    // Not seated to the ground like a solid obstacle: a deck's underside is
+    // headroom on purpose, and sealing it to the terrain would turn a walkway
+    // you pass beneath into a pillar.
     const o = {
       x, z,
       hw: (swap ? hd : hw) * scale,
       hd: (swap ? hw : hd) * scale,
       h: 0.25,
+      coverH: 0.25,
       y: heightAt(x, z) + lift,
       walk: true,
     };
@@ -220,6 +321,8 @@ class Builder {
         hw: along ? 0.5 : width / 2,
         hd: along ? width / 2 : 0.5,
         h,
+        // A tread is a step, never cover — climbing one is the point.
+        coverH: h,
         y: heightAt(sx, sz), walk: true,
       });
     }
@@ -326,6 +429,42 @@ class Builder {
             cx + range(this.r, -6, 6), cz + range(this.r, -6, 6),
             this.r() * 6.28, 'auto', range(this.r, 1.2, 2.4));
         }
+      }
+    }
+  }
+
+  /**
+   * Dress the ground you actually arrive on.
+   *
+   * outskirts() fills the middle distance and deliberately starts 26m out, and
+   * its sqrt() radial bias pushes clusters further out still, so the one piece
+   * of ground every single deployment begins on was the barest on the site. You
+   * land, and the first thing the game shows you is an empty plain.
+   *
+   * This is scatter rather than cover on purpose. Hard cover at the insertion
+   * point would turn every mission into a defensible start and remove the
+   * reason to move; what the near ground needs is texture — something for the
+   * eye to measure distance against, and the relief to read against.
+   */
+  nearGround(cx, cz, radius, n) {
+    // A clearing at the exact spawn, or soldiers materialise inside a boulder.
+    const KEEP = 5.5;
+    for (let i = 0; i < n; i++) {
+      const a = this.r() * Math.PI * 2;
+      const d = KEEP + this.r() * (radius - KEEP);
+      const x = cx + Math.cos(a) * d, z = cz + Math.sin(a) * d;
+      if (!this.clear(x, z, 2.4, true)) continue;
+      const k = this.r();
+      if (k < 0.62) {
+        // Loose stone, small enough to walk over and be shot across.
+        this.prop(pick(this.r, ['rock_0', 'rock_1', 'rock_2', 'rock_3']),
+          x, z, this.r() * 6.28, 'auto', range(this.r, 0.45, 1.05));
+      } else if (k < 0.85) {
+        this.prop('crate', x, z, this.r() * 6.28, BOX.crate, range(this.r, 0.8, 1));
+      } else {
+        // The occasional abandoned position, so the ground has a history.
+        const aa = this.r() * Math.PI * 2;
+        this.prop('sandbags', x, z, aa, BOX.sandbags, 1);
       }
     }
   }
@@ -919,6 +1058,11 @@ export function build(siteId, seed, override = {}) {
   // grow together: the middle distance gets filled in, and the edge is pushed
   // out well past where the fighting happens.
   b.outskirts(26, BOUND - 14, Math.round(34 * (override.spread || 1) ** 2));
+  // ...and the spawn's own surroundings, which the ring above starts outside of.
+  // Run after it so the clear() checks see everything already placed.
+  if (meta.playerSpawn) {
+    b.nearGround(meta.playerSpawn.x, meta.playerSpawn.z, 26, 30);
+  }
 
   const group = new THREE.Group();
   const ground = buildGround(BOUND * 4.2, meta.palette.ground, meta.palette.groundLow);
@@ -1021,7 +1165,9 @@ export function highestSurface(obstacles, x, z) {
 export function resolveMove(obstacles, x, z, nx, nz, feet = -Infinity) {
   let px = nx, pz = nz;
   for (const o of obstacles) {
-    if (o.h < 0.5) continue;
+    // What it stands proud of the ground by, not how far its sealed base
+    // reaches down — a kerb on a slope is still a kerb you step over.
+    if ((o.coverH ?? o.h) < 0.5) continue;
     // Low enough to step onto — which includes anything you are already
     // standing on. Using the same limit as surfaceAt matters: if this were
     // stricter, the player would be stopped by the face of a stair tread they
@@ -1048,13 +1194,31 @@ export function resolveMove(obstacles, x, z, nx, nz, feet = -Infinity) {
  * Segment-versus-box sweep. Returns the nearest blocking hit, or null.
  * `height` is the y the shot travels at, so a shooter can fire over low cover.
  */
-export function raycast(obstacles, ax, az, bx, bz, height = 1.2, maxT = 1) {
+export function raycast(obstacles, ax, az, bx, bz, height = 1.2, maxT = 1, ay = null, by = null) {
   let best = null;
   const dx = bx - ax, dz = bz - az;
   for (const o of obstacles) {
-    if (o.y + o.h < height) continue; // shot passes over this one
     const t = segBox(ax, az, dx, dz, o);
-    if (t !== null && t <= maxT && (!best || t < best.t)) {
+    if (t === null || t > maxT) continue;
+    // The sightline's height WHERE IT CROSSES this box.
+    //
+    // `height` is an absolute world y, and every caller was passing an eye
+    // height — 1.45, 1.5 — which is a height above the ground. Those are the
+    // same number only while the ground is at y=0, which it was for a long
+    // time. With real relief a barricade standing on ground at -3m has its top
+    // at -1.5m, which is below 1.45, so this concluded the shot passed over it.
+    // Cover on low ground stopped blocking anything at all, findCover() could
+    // not find a position that broke a sightline, and the squad walked to a
+    // wall and stood beside it in the open.
+    const y = ay !== null ? ay + (by - ay) * t : height;
+    if (o.y + o.h < y) continue; // passes over this one
+    // ...and under this one. Only decks and walkways are ever raised clear of
+    // the ground, but without this the sight model disagreed with the bullet
+    // model: rayHit() has always tested a true 3D box and let rounds through
+    // the gap, while this said the same box was solid to the floor. Two ray
+    // systems answering differently is what makes cover unreadable.
+    if (o.y > y) continue;
+    if (!best || t < best.t) {
       best = { t, obstacle: o, x: ax + dx * t, z: az + dz * t };
     }
   }
@@ -1079,7 +1243,31 @@ function segBox(ax, az, dx, dz, o) {
 
 /** Can A see B? Eye height matters — this is what makes low cover mean something. */
 export function hasLOS(obstacles, ax, az, bx, bz, eye = 1.5) {
-  return !raycast(obstacles, ax, az, bx, bz, eye, 1);
+  // `eye` is a height above the ground at each end, so the sightline runs
+  // between two absolute points that are only equal on flat ground.
+  const ay = heightAt(ax, az) + eye;
+  const by = heightAt(bx, bz) + eye;
+  if (raycast(obstacles, ax, az, bx, bz, eye, 1, ay, by)) return false;
+  // The ground blocks too, now that there is some.
+  //
+  // This was safe to leave out while the pan was flat, and became a bug the
+  // moment it was not: rayHit() has always walked the terrain and stopped
+  // rounds in a hillside, so without the same test here the AI would hold a
+  // target through a ridge, shoot the near slope for as long as it took to
+  // reload, and never understand why nobody died. Every mismatch between what
+  // the AI believes it can see and where its bullets actually go reads to the
+  // player as the game cheating in one direction or the other.
+  const dx = bx - ax, dz = bz - az;
+  const d = Math.hypot(dx, dz);
+  if (d < 6) return true;              // too short for relief to matter
+  // One sample per ~8m. The swells are 60m across, so this cannot step over a
+  // crest, and it keeps the cost sane where hasLOS is called per candidate.
+  const steps = Math.min(16, Math.max(3, Math.round(d / 8)));
+  for (let i = 1; i < steps; i++) {
+    const t = i / steps;
+    if (heightAt(ax + dx * t, az + dz * t) > ay + (by - ay) * t) return false;
+  }
+  return true;
 }
 
 /**

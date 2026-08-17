@@ -3539,7 +3539,9 @@ test('collision matches what you can see', async ({ page }) => {
         out.push({
           model: p.model,
           ratio: (o.hw * o.hd) / (dw * dd),
-          hRatio: drawnH && drawnH > 0.05 ? o.h / drawnH : 1,
+          // coverH is the drawn height; `h` also spans however far the box was
+          // sunk to seal the ground under it, which is not a modelling error.
+          hRatio: drawnH && drawnH > 0.05 ? (o.coverH ?? o.h) / drawnH : 1,
         });
       }
     }
@@ -3684,7 +3686,12 @@ test('cover stops rounds, and leaning out spends that protection', async ({ page
     m.paused = false; m.hadLock = true;
     if (m.intro) { m.intro.active = false; m.time = m.intro.graceUntil + 0.1; }
 
-    const cov = m.level.covers.find((o) => o.h > 0.7 && o.h < 1.5);
+    // coverH, not h: since the ground gained relief, `h` is the physical box,
+    // which reaches down to the lowest terrain under the footprint so bullets
+    // cannot pass beneath it. On a slope that makes a chest-high barricade
+    // measure well over 1.5. coverH is what it stands proud of the ground by,
+    // which is the waist-high thing this test means to hide behind.
+    const cov = m.level.covers.find((o) => o.coverH > 0.7 && o.coverH < 1.5);
     const victim = m.entities.find((e) => e.side === 'enemy' && !e.dead);
     const shooter = m.player;
     const trial = (tuck) => {
@@ -3932,7 +3939,8 @@ test('the squad can be ordered into cover, and out of it again', async ({ page }
     if (m.intro) { m.intro.active = false; m.time = m.intro.graceUntil + 0.1; }
 
     const threat = m.entities.find((e) => e.side === 'enemy' && !e.dead);
-    const cov = m.level.covers.find((o) => o.h > 0.7 && o.h < 1.6);
+    // coverH rather than h — see the note in the cover test above.
+    const cov = m.level.covers.find((o) => o.coverH > 0.7 && o.coverH < 1.6);
     m.player.x = cov.x + 4; m.player.z = cov.z + 9;
     threat.x = cov.x; threat.z = cov.z - 22;
     m.squad.forEach((s, i) => { s.x = m.player.x + (i - 1) * 2.4; s.z = m.player.z + 1.5; });

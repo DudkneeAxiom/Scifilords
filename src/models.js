@@ -56,6 +56,7 @@ export async function preload(onProgress) {
       // get collapsed from ~31 meshes to one per animated joint. At 60
       // combatants that is the difference between ~1900 draw calls and ~500.
       if (name.startsWith('soldier_')) mergeCharacter(root);
+      markShared(root);
       cache.set(name, root);
       onProgress?.(++done, MODELS.length, name);
       resolve();
@@ -65,6 +66,70 @@ export async function preload(onProgress) {
       resolve();
     });
   })));
+}
+
+/**
+ * Tag everything the cache owns.
+ *
+ * get() hands out clone(true), and a THREE clone SHARES its geometry and
+ * material with the original — that sharing is the whole reason sixty soldiers
+ * are affordable. It also means a scene teardown that walks its graph calling
+ * geometry.dispose() is not freeing its own buffers, it is destroying the
+ * asset for everybody: every clone still on screen, and every clone made
+ * afterwards. That is what turned the world map black on the way back from a
+ * deployment — the mission's teardown had disposed the rocks, the dead trees
+ * and the party tokens the map draws itself with, so the map rebuilt correctly
+ * around geometry that no longer had any buffers behind it.
+ */
+function markShared(root) {
+  root.traverse((o) => {
+    if (!o.isMesh) return;
+    if (o.geometry) o.geometry.userData.shared = true;
+    for (const m of (Array.isArray(o.material) ? o.material : [o.material])) {
+      if (m) m.userData.shared = true;
+    }
+  });
+}
+
+/**
+ * Tear down a scene graph without touching anything the model cache owns.
+ *
+ * Use this instead of a hand-rolled traverse-and-dispose anywhere a scene is
+ * thrown away. Geometry built for one scene — ground, tracers, decals — is
+ * freed; anything that came out of get() is left alone, because the cache is
+ * still using it and will hand it out again.
+ */
+export function disposeScene(root) {
+  if (!root) return;
+  root.traverse((o) => {
+    if (!o.isMesh && !o.isLine && !o.isPoints) return;
+    if (o.geometry && !o.geometry.userData.shared) o.geometry.dispose?.();
+    for (const m of (Array.isArray(o.material) ? o.material : [o.material])) {
+      if (m && !m.userData.shared) m.dispose?.();
+    }
+  });
+}
+
+/**
+ * Give a renderer's WebGL context back to the browser.
+ *
+ * dispose() frees what three.js allocated but does NOT release the context
+ * itself — the browser holds it until garbage collection gets round to it,
+ * which may be never. Every deployment builds a renderer and every return to
+ * the Reach builds another, so a session leaks two contexts per engagement
+ * against a browser limit of about sixteen. Past that the browser starts
+ * killing the OLDEST live context to make room, and the map is usually it: a
+ * black canvas with the DOM party labels still drawn over the top of it and a
+ * campaign still running happily underneath. That is the "map went black but I
+ * could still see the icons and move" report, and it explains why it takes a
+ * few engagements to appear rather than happening the first time.
+ *
+ * forceContextLoss() hands it straight back.
+ */
+export function releaseRenderer(renderer) {
+  if (!renderer) return;
+  renderer.dispose();
+  try { renderer.forceContextLoss(); } catch { /* already gone */ }
 }
 
 /** A fresh instance of a loaded model. Materials are shared; transforms are not. */
@@ -230,6 +295,16 @@ function gait(t) {
  */
 export function makeCharacter(variant, weaponModel = null, tint = null) {
   const group = new THREE.Group();
+  // Yaw first, then pitch, then roll.
+  //
+  // The default XYZ order applies the pitch in world space, so a soldier facing
+  // east on a slope that falls away north tips sideways instead of leaning back
+  // — the tilt is right in magnitude and attached to the wrong axis. YXZ turns
+  // them to face first and then leans them about their OWN right and forward
+  // axes, which is what standing on a hillside is. It also improves the
+  // collapse, which was already writing pitch and roll on a yawed group: a body
+  // now folds forward relative to the way it was facing.
+  group.rotation.order = 'YXZ';
   const body = get(variant);
   group.add(body);
 
@@ -273,6 +348,10 @@ export function makeCharacter(variant, weaponModel = null, tint = null) {
     // Per-character variation so a field of bodies is not a field of clones.
     roll: (Math.random() - 0.5) * 0.7,
     idleOffset: Math.random() * TAU,
+    // Ground lean, smoothed. Stepping onto a walkway or over a crest changes
+    // the slope underfoot in one frame, and snapping to it reads as a twitch.
+    gPitch: 0,
+    gRoll: 0,
   };
 
   const setX = (node, v) => { if (node) node.rotation.x = v; };
@@ -280,6 +359,7 @@ export function makeCharacter(variant, weaponModel = null, tint = null) {
   function update(dt, {
     speed = 0, moveX = 0, moveZ = 0, aiming = false, down = false, dead = false,
     pitch = 0, reload = 0, sprint = false, turn = 0,
+    slopePitch = 0, slopeRoll = 0,
   } = {}) {
     const s = state;
 
@@ -423,8 +503,14 @@ export function makeCharacter(variant, weaponModel = null, tint = null) {
     // The collapse rotation is applied to the GROUP, but its Y position is the
     // terrain height the caller placed us at and must never be written here —
     // doing so pinned every character to y=0 and buried them in sloped ground.
-    group.rotation.x = d * -1.40;
-    group.rotation.z = d * s.roll * 0.8;
+    //
+    // The ground lean is added rather than blended away as the body goes down:
+    // somebody lying on a hillside is lying ON the hillside. Both are expressed
+    // about the character's own axes — see the YXZ rotation order above.
+    s.gPitch = smooth(s.gPitch, slopePitch, dt, 8);
+    s.gRoll = smooth(s.gRoll, slopeRoll, dt, 8);
+    group.rotation.x = s.gPitch + d * -1.40;
+    group.rotation.z = s.gRoll + d * s.roll * 0.8;
     if (rig.hips) {
       rig.hips.position.y = restHipY + bob + d * -0.42;
       rig.hips.position.z = restHipZ + d * 0.10;
@@ -435,7 +521,10 @@ export function makeCharacter(variant, weaponModel = null, tint = null) {
   function flinch() { state.flinch = 1; }
 
   function dispose() {
-    group.traverse((o) => { if (o.isMesh) o.geometry?.dispose?.(); });
+    // Detach only. Every mesh here is a clone of cached geometry shared with
+    // every other soldier on the field, so disposing it would delete the asset
+    // out from under them rather than free anything belonging to this one.
+    disposeScene(group);
   }
 
   return { group, rig, weapon, update, kick, flinch, state, dispose };

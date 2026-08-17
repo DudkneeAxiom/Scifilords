@@ -106,7 +106,17 @@ const run = async (layout, label) => {
           if (los) {
             t.losFrames++;
             const fired = (e.shotsFired || 0) > (shotsBefore.get(e.id) || 0);
-            if (!fired && e.reloading <= 0 && e.cooldown <= 0) t.losNoFire++;
+            // Not firing is only a pathology when nothing is legitimately
+            // stopping the shot. Reload and cooldown were already excluded;
+            // burstRest and the first-contact reaction delay were not, and
+            // between them they account for most of a soldier's time in a
+            // firefight — burstRest alone is 1.0-2.6s between every burst.
+            // Counting those read as "19 entities with a clear shot refusing
+            // to take it" when the truth was "soldiers pacing their bursts",
+            // which is the behaviour the design asks for.
+            const paused = e.burstRest > 0
+              || (e.reaction !== undefined && (e.seenFor || 0) < e.reaction);
+            if (!fired && e.reloading <= 0 && e.cooldown <= 0 && !paused) t.losNoFire++;
           }
           // Standing in the open with a wall a couple of paces away.
           const cover = Level.findCover(m.level.obstacles, m.level.covers,

@@ -992,14 +992,11 @@ export class WorldMap {
     if (this.labelHost) this.labelHost.innerHTML = '';
     this.partyLabels?.clear();
     Audio.stopAmbience();
-    this.scene?.traverse((o) => {
-      if (o.isMesh) {
-        o.geometry?.dispose?.();
-        if (Array.isArray(o.material)) o.material.forEach((m) => m.dispose?.());
-        else o.material?.dispose?.();
-      }
-    });
-    this.renderer?.dispose();
+    // Same rule as the mission's teardown: the map draws rocks, dead trees and
+    // party tokens straight out of the shared cache, so disposing them here
+    // would break the deployment that comes next just as surely.
+    Models.disposeScene(this.scene);
+    Models.releaseRenderer(this.renderer);
     if (this.renderer?.domElement?.parentNode) {
       this.renderer.domElement.parentNode.removeChild(this.renderer.domElement);
     }

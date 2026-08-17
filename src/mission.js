@@ -45,6 +45,15 @@ const MARK_RANGE = 85;
 const ARRIVE_MIN_DIST = 30;
 const ARRIVE_GRACE = 1.3;
 
+// Ranging in. A shooter holding a target for RANGE_IN seconds has its aim
+// scatter fall from RANGE_IN_WIDE times the tuned figure to the tuned figure
+// itself. The window is roughly the time it takes to cross a street: long
+// enough that breaking contact and moving is a real answer to being shot at,
+// short enough that standing in the open is still fatal. Losing sight of the
+// target gives some of the window back, so bounding between cover works.
+const RANGE_IN = 2.2;
+const RANGE_IN_WIDE = 2.5;
+
 /**
  * How much of a body a shot can actually find.
  *
@@ -453,7 +462,7 @@ export class Mission {
     if (!p || p.down || !this.grounded) return false;
     let best = null;
     for (const o of this.level.covers) {
-      if (o.h < COVER_MIN_H) continue;
+      if ((o.coverH ?? o.h) < COVER_MIN_H) continue;
       // Distance to the box, not to its centre — a long barricade is reachable
       // anywhere along its length.
       const dx = Math.max(Math.abs(p.x - o.x) - o.hw, 0);
@@ -1057,7 +1066,7 @@ export class Mission {
     this.breached = false;
 
     // The charge goes on the gate, which the layout puts on the wall line.
-    const gate = this.level.obstacles.find((o) => o.h > 5.5 && Math.abs(o.x) < 6)
+    const gate = this.level.obstacles.find((o) => (o.coverH ?? o.h) > 5.5 && Math.abs(o.x) < 6)
       || { x: 0, z: -14 };
     this.gateObstacle = gate;
     this.interactables.push({
@@ -1939,6 +1948,13 @@ export class Mission {
     e.cooldown = 60 / w.rpm;
     e.char.kick();
     if (e.isPlayer) this.stats.shotsFired++;
+    // Per-entity round count. The mission-wide stat above is the player's only,
+    // because that is what the debrief reports; the probes need to know whether
+    // an individual soldier is shooting. tools/aiaudit.mjs read e.shotsFired
+    // from the day it was written and nothing ever wrote it, so its
+    // "clear shot, not taking it" check compared 0 > 0 and every soldier with
+    // line of sight scored as idle. It reported a pathology that was never there.
+    e.shotsFired = (e.shotsFired || 0) + 1;
 
     const muzzle = new THREE.Vector3(e.x,
       Level.heightAt(e.x, e.z) + (e.elev || 0) + CHEST + 0.22, e.z);
@@ -2564,7 +2580,10 @@ export class Mission {
       this.completeObjective();
       // The whole garrison now knows exactly where you are.
       for (const e of this.entities) {
-        if (e.side === 'enemy' && !e.dead) { e.alert = 1; e.state = 'hunt'; e.target = this.player; }
+        if (e.side === 'enemy' && !e.dead) {
+          this.sendHunting(e, this.player.x, this.player.z, 45);
+          e.target = this.player;
+        }
       }
       this.spawnReinforcements(4);
       return;
@@ -2585,7 +2604,7 @@ export class Mission {
       // Robbing people in their own street brings the street out.
       this.spawnReinforcements(3);
       for (const e of this.entities) {
-        if (e.side === 'enemy' && !e.dead) { e.alert = 1; e.state = 'hunt'; }
+        if (e.side === 'enemy' && !e.dead) this.sendHunting(e, this.player.x, this.player.z, 30);
       }
       this.updateRaid();
       return;
@@ -2713,6 +2732,28 @@ export class Mission {
     }
   }
 
+  /**
+   * Put a unit on the hunt for a place, with a clock.
+   *
+   * Setting `state = 'hunt'` on its own does not survive a single frame. The
+   * hunt branch walks toward `lastSeen`, and when there is none it checks
+   * `huntUntil` — an absent one reads as 0, which is always in the past, so the
+   * unit stands straight back down to 'guard' on the very next update.
+   *
+   * Three places raised the alarm without setting either field. It went
+   * unnoticed because the garrison could see clear across a flat site, so
+   * acquire() found the player and promoted them to 'engage' before the
+   * stand-down could fire. Once the ground had relief and could interrupt a
+   * sightline, the alarm stopped meaning anything: looting a store in a raid
+   * turned the whole street out and every one of them forgot within a frame.
+   */
+  sendHunting(e, x, z, seconds = 25) {
+    e.alert = 1;
+    e.state = 'hunt';
+    e.lastSeen = { x, z };
+    e.huntUntil = Math.max(e.huntUntil || 0, this.time + seconds);
+  }
+
   spawnReinforcements(n) {
     // They arrive from the map edge, on the side the player is NOT extracting
     // toward, so the pressure pushes you along the intended route.
@@ -2725,7 +2766,10 @@ export class Mission {
         pick(this.r, ['rifleman', 'rifleman', 'breacher', 'gunner']));
     }
     const list = this.entities.filter((e) => e.side === 'enemy' && !e.dead);
-    for (const e of list.slice(-n)) { e.state = 'hunt'; e.alert = 1; e.target = this.player; }
+    for (const e of list.slice(-n)) {
+      this.sendHunting(e, this.player.x, this.player.z, 40);
+      e.target = this.player;
+    }
   }
 
   // ======================================================================
@@ -3194,9 +3238,17 @@ export class Mission {
     if (this.inserting) return;
     // Losing the shot decays readiness rather than erasing it, so a target
     // bobbing in and out of cover still eventually draws fire.
-    if (d > w.range) { e.seenFor = Math.max(0, (e.seenFor || 0) - dt); return; }
+    // Losing the shot also un-ranges it, at half the rate it was gained: a
+    // target that ducks behind a wall and comes out somewhere else has to be
+    // walked onto again. Bounding from cover to cover is the counter-play.
+    if (d > w.range) {
+      e.seenFor = Math.max(0, (e.seenFor || 0) - dt);
+      e.aimFor = Math.max(0, (e.aimFor || 0) - dt * 0.5);
+      return;
+    }
     if (!Level.hasLOS(this.level.obstacles, e.x, e.z, t.x, t.z, CHEST + 0.2)) {
       e.seenFor = Math.max(0, (e.seenFor || 0) - dt * 0.5);
+      e.aimFor = Math.max(0, (e.aimFor || 0) - dt * 0.5);
       return;
     }
     // Facing gate: no shooting through the back of the head.
@@ -3206,6 +3258,21 @@ export class Mission {
     e.seenFor = (e.seenFor || 0) + dt;
     if (e.reaction === undefined) e.reaction = range(this.r, 0.35, 0.85);
     if (e.seenFor < e.reaction) return;
+
+    // 1b. Ranging in. Reaction time governs when the first round leaves the
+    // barrel; this governs where it lands. Without it a soldier's very first
+    // shot is as good as their hundredth, so crossing open ground killed you
+    // before you could read where the fire was coming from — the complaint was
+    // that combat felt unfair rather than hard, and this is the mechanism.
+    // Fall of shot walks onto the target over RANGE_IN seconds of holding it.
+    //
+    // Applied to both sides deliberately. It is one code path, and an accuracy
+    // rule that quietly favours whoever the player is not is the thing that
+    // reads as cheating.
+    if (e.aimTarget !== t.id) { e.aimTarget = t.id; e.aimFor = 0; }
+    e.aimFor = (e.aimFor || 0) + dt;
+    // Settles 1 -> 0 across the window; the spread multiplier rides on it.
+    const settle = 1 - clamp(e.aimFor / RANGE_IN, 0, 1);
 
     // 2. Burst discipline.
     if (e.burstRest > 0) { e.burstRest -= dt; return; }
@@ -3226,6 +3293,7 @@ export class Mission {
     // thing, which is why pinning a position before crossing it works.
     const rangeK = 0.17 * (1 - (e.eff?.rangeAcc || 0));
     const spread = (1 - e.acc) * (0.9 + d * rangeK)
+      * (1 + settle * (RANGE_IN_WIDE - 1))
       * this.coverPenalty(e, t) / this.suppressionPenalty(e);
     // Aim at the middle of whatever is actually showing, not at a fixed chest
     // height. Firing at 1.15m regardless of posture would make a tucked body
@@ -3344,7 +3412,7 @@ export class Mission {
     // hugs, and the pair oscillate.
     const probeX = e.x + ux * 1.6, probeZ = e.z + uz * 1.6;
     for (const o of (e.path ? [] : this.level.obstacles)) {
-      if (o.h < 0.6) continue;
+      if ((o.coverH ?? o.h) < 0.6) continue;
       if (Math.abs(probeX - o.x) < o.hw + 0.7 && Math.abs(probeZ - o.z) < o.hd + 0.7) {
         // Slide around rather than into.
         const nx = -uz, nz = ux;
@@ -3903,6 +3971,33 @@ export class Mission {
       const w = e.weapon;
       const reload = (w && e.reloading > 0) ? 1 - (e.reloading / w.reload) : 0;
 
+      // Stand on the slope rather than in it.
+      //
+      // Everyone is placed at a single heightAt() sample and drawn bolt
+      // upright, which was exactly right while the ground was flat and became
+      // the most obvious artefact of giving it relief: on a 17 degree slope the
+      // downhill boot hangs in the air and the uphill one disappears into the
+      // dirt. Sampling across a stance width and leaning the body to match puts
+      // both feet back on the ground.
+      //
+      // Not applied to anyone standing on something. A catwalk is level however
+      // the terrain under it runs, and tilting a soldier to match the hillside
+      // beneath a walkway would lean them off it.
+      let slopePitch = 0, slopeRoll = 0;
+      if (!e.elev) {
+        const S = 0.55;                       // about half a stance
+        const gx = (Level.heightAt(e.x + S, e.z) - Level.heightAt(e.x - S, e.z)) / (2 * S);
+        const gz = (Level.heightAt(e.x, e.z + S) - Level.heightAt(e.x, e.z - S)) / (2 * S);
+        const sy = Math.sin(e.yaw), cy = Math.cos(e.yaw);
+        // Into the character's own frame: how the ground runs ahead of them,
+        // and how it runs across them.
+        const ahead = gx * sy + gz * cy;
+        const across = gx * cy - gz * sy;
+        // Rising ahead leans them back; rising to the right lifts that side.
+        slopePitch = -Math.atan(ahead);
+        slopeRoll = Math.atan(across);
+      }
+
       e.char.update(dt, {
         speed,
         moveX: mx,
@@ -3914,6 +4009,8 @@ export class Mission {
         reload,
         sprint: e.isPlayer ? (this.keys.has('shift') && !this.aiming && speed > 4) : false,
         turn: e.turnRate || 0,
+        slopePitch,
+        slopeRoll,
       });
       // Anything standing on top of the camera is removed from the render.
       // A squadmate holding formation directly behind the commander sits almost
@@ -4116,14 +4213,11 @@ export class Mission {
     this._boundHandlers = [];
     if (document.pointerLockElement) document.exitPointerLock();
     Audio.stopAmbience();
-    this.scene?.traverse((o) => {
-      if (o.isMesh) {
-        o.geometry?.dispose?.();
-        if (Array.isArray(o.material)) o.material.forEach((m) => m.dispose?.());
-        else o.material?.dispose?.();
-      }
-    });
-    this.renderer?.dispose();
+    // Frees what this mission built and leaves the model cache alone. Walking
+    // the scene disposing everything took the shared assets with it, and the
+    // next screen to draw a rock or a party token got an empty buffer.
+    Models.disposeScene(this.scene);
+    Models.releaseRenderer(this.renderer);
     if (this.renderer?.domElement?.parentNode) {
       this.renderer.domElement.parentNode.removeChild(this.renderer.domElement);
     }
