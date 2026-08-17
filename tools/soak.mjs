@@ -75,12 +75,25 @@ const sim = await page.evaluate(({ days }) => {
     renown: S.renown,
     parties: S.parties?.length ?? 0,
     log: (S.log || []).length,
+    // Reported because the roster shrinking to one looks alarming and is not.
+    // This loop banks half a million credits so wages always clear, and never
+    // buys food — so the company starves from the day its rations run out,
+    // morale floors, and people desert one at a time until the "never the last
+    // one, never the commander" guard stops it at 1. Without these three
+    // numbers on screen that reads as an economy bug rather than five hundred
+    // days of nobody doing the shopping.
+    morale: Math.round(S.morale ?? 0),
+    rations: S.rations ?? 0,
+    deserted: S.stats?.deserted || 0,
   };
 }, { days: DAYS });
 
 console.log(`Campaign soak: ${DAYS} days simulated`);
 console.log(`  day=${sim.day} credits=${sim.credits} roster=${sim.roster}`
-  + ` holdings=${sim.holdings} renown=${sim.renown} parties=${sim.parties} log=${sim.log}`);
+  + ` holdings=${sim.holdings} renown=${Math.round(sim.renown)} parties=${sim.parties}`
+  + ` log=${sim.log}`);
+console.log(`  morale=${sim.morale} rations=${sim.rations} deserted=${sim.deserted}`
+  + `${sim.rations <= 0 ? '   <- nobody bought food; the roster shrinking is that, not the economy' : ''}`);
 if (sim.problems.length) {
   console.log(`  ${sim.problems.length} invariant failure(s):`);
   for (const p of sim.problems.slice(0, 12)) console.log(`    ${p}`);
@@ -160,6 +173,18 @@ for (let i = 0; i < BATTLES; i++) {
       let goal = null;
       if (m.objective?.done && m.extractArmed && m.level.extraction) {
         goal = m.level.extraction;
+      } else if (m.objective?.type === 'stage' && m.objective.stage) {
+        // Follow the marker, which is what a player does.
+        //
+        // A heavy open-field contract opens a second and third task elsewhere
+        // on the site, and both require standing ON that ground — a sweep
+        // counts nothing unless you are inside its radius. advanceStage() moves
+        // the HUD marker but deliberately leaves level.objectivePoint alone, so
+        // walking to the original point and holding E is standing in an empty
+        // field waiting for an objective that moved. That is what five STALLED
+        // rows were: not a softlock, a probe navigating by a pointer the game
+        // had stopped using.
+        goal = { x: m.objective.stage.x, z: m.objective.stage.z };
       } else {
         let best = Infinity;
         for (const it of m.interactables) {

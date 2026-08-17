@@ -85,6 +85,14 @@ which produced confidently wrong readings:
 - **Summary statistics hide shape.** A broker price that climbed in a perfectly
   straight line had a healthy standard deviation. Print the sequence.
 
+- **Navigate by the marker the game is actually showing.** `tools/soak.mjs`
+  walked to `level.objectivePoint` and held E. A heavy open-field contract opens
+  a second and third task elsewhere on the site, and `advanceStage()` moves the
+  HUD marker while deliberately leaving `objectivePoint` alone — so the soak
+  stood in an empty field waiting for an objective that had moved, and reported
+  five deployments as `STALLED`. The tell was that the same mission types passed
+  at strength 18 and stalled at 42 and 66, which is exactly where stages open.
+  Not a softlock; a probe reading a pointer the game had stopped using.
 - **Probe a field that something actually writes.** `tools/aiaudit.mjs` judged
   "had a clear shot and did not take it" by watching `e.shotsFired`, and
   nothing in `src/` had ever written that field — only the mission-wide
