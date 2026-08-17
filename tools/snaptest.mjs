@@ -41,9 +41,17 @@ try {
   // for the duration of a run.
   symlinkSync(join(ROOT, 'node_modules'), join(snap, 'node_modules'), 'junction');
 
-  // A port of its own, so this never collides with the dev server on 8124 or
-  // with a probe that is mid-run against it.
-  const port = String(process.env.KR_PORT || 8231);
+  // A port of its own PER RUN, not per tool.
+  //
+  // A fixed 8231 was fine until two of these ran at once: reuseExistingServer
+  // means the second attaches to the FIRST run's server, so it tests the first
+  // run's snapshot rather than its own — and when the first finishes and takes
+  // the server with it, the second collapses mid-flight. That looked exactly
+  // like a catastrophic regression (thirty failures out of ninety-six) and was
+  // entirely this line. Derived from the snapshot directory so concurrent runs
+  // cannot land on the same number.
+  const spread = [...snap].reduce((a, c) => (a * 31 + c.charCodeAt(0)) % 900, 7);
+  const port = String(process.env.KR_PORT || (8300 + spread));
   const args = process.argv.slice(2);
   console.log(`snapshot: ${snap}`);
   console.log(`port:     ${port}\n`);

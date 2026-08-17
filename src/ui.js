@@ -705,6 +705,9 @@ export function rosterPanel(S, cbs) {
             ${l.defeats ? `&middot; beaten ${l.defeats}x` : ''}</div>
         </div>
         <button class="btn" data-lransom="${l.id}">RANSOM ${State.lordRansom(S, l)}</button>
+        ${S.ownFaction ? `<button class="btn" data-lswear="${l.id}"
+          title="Likelier the more often you have beaten them, and the more you are worth serving">
+          OFFER SERVICE (${Math.round(State.lordServiceOdds(S, l) * 100)}%)</button>` : ''}
         <button class="btn" data-lrelease="${l.id}">RELEASE</button>
       </div>`).join('')}</div>`;
   })()}
@@ -756,6 +759,13 @@ export function rosterPanel(S, cbs) {
     el.onclick = () => {
       if (State.releasePrisoner(S, el.dataset.release)) { Audio.uiMove(); again(); }
       else Audio.uiDeny();
+    };
+  }
+  for (const el of document.querySelectorAll('#modal [data-lswear]')) {
+    el.onclick = () => {
+      const res = State.offerService(S, el.dataset.lswear);
+      if (res.ok) { res.took ? Audio.uiSelect() : Audio.uiDeny(); again(); }
+      else { Audio.uiDeny(); toastModal(res.why); }
     };
   }
   for (const el of document.querySelectorAll('#modal [data-lransom]')) {
@@ -1414,6 +1424,26 @@ export function holdingsPanel(S, cbs) {
       <span class="rr-threat ${r.threat >= 0.6 ? 'hurt' : ''}">${r.threat >= 1 ? 'ATTACK DUE'
     : r.threat > 0.6 ? 'pressure building' : 'quiet'}</span>
     </div>`).join('')}</div>
+    ${(() => {
+    // Who holds what for you. A vassal on a fief defends it out of their own
+    // household, which is the whole reason to have one: every place you hold
+    // otherwise has to be garrisoned from the same finite roster you deploy
+    // with, so taking ground makes the company weaker in the field.
+    const mine = State.vassals(S);
+    if (!mine.length) return '';
+    return `<div class="section-title">SWORN TO YOU</div>
+      <div class="realm-roll">${mine.map((l) => `<div class="realm-row">
+        <span class="rr-name">${esc(l.name)}</span>
+        <span class="rr-cr">${l.wins ? `${l.wins} win(s)` : 'untried'}</span>
+        <span class="rr-gar">${l.fief ? `holds ${esc(State.locName(l.fief))}` : 'no fief granted'}</span>
+        <span class="rr-men">${l.fief
+      ? `+${State.vassalStrength(S, l.fief).toFixed(1)} defence` : ''}</span>
+        <span class="rr-threat"><select data-grant-for="${l.id}">
+          <option value="">— grant a fief —</option>
+          ${sum.rows.map((r) => `<option value="${r.id}"${l.fief === r.id ? ' selected' : ''}>${esc(r.name)}</option>`).join('')}
+        </select></span>
+      </div>`).join('')}</div>`;
+  })()}
     <div class="section-title">EACH PLACE</div>` : '';
 
   const body = stores + realm + (held.length ? held.map(({ id, loc, h }) => {
@@ -1524,6 +1554,14 @@ export function holdingsPanel(S, cbs) {
     el.onclick = () => {
       if (State.buyCaravan(S, el.dataset.caravan)) { Audio.uiSelect(); holdingsPanel(S, cbs); }
       else { Audio.uiDeny(); toastModal('Cannot fit one out here'); }
+    };
+  }
+  for (const el of document.querySelectorAll('#modal [data-grant-for]')) {
+    el.onchange = () => {
+      if (!el.value) return;
+      const res = State.grantFief(S, el.dataset.grantFor, el.value);
+      if (res.ok) { Audio.uiSelect(); holdingsPanel(S, cbs); }
+      else { Audio.uiDeny(); toastModal(res.why); }
     };
   }
   for (const el of document.querySelectorAll('#modal [data-station]')) {

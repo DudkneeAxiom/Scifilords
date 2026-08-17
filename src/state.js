@@ -3040,7 +3040,10 @@ export function garrisonStrength(S, locId) {
   // and it shows, but a defended place with conscription is meaningfully harder
   // to take — which is what the policy is bought for.
   const levies = hasPolicy(S, 'conscription') ? 1.6 : 0;
-  return (power + militia + levies) * (1 + works * 0.22);
+  // A vassal holding the place defends it with their own household, which is
+  // the entire point of granting one a fief: ground you hold otherwise has to
+  // be garrisoned out of the same finite roster you deploy with.
+  return (power + militia + levies + vassalStrength(S, locId)) * (1 + works * 0.22);
 }
 
 /**
@@ -3508,6 +3511,84 @@ function tickWar(S, r) {
  * collectHoldings() runs on the day tick, factored out so it can be shown
  * rather than only applied.
  */
+/**
+ * Take a beaten commander into your service.
+ *
+ * The obvious thing to do with a prisoner is sell them back. This is the other
+ * thing, and it is the one that builds something: a lord who swears to you
+ * stops being an enemy who returns every few weeks and becomes somebody who
+ * holds your ground while you are two provinces away.
+ *
+ * They are far likelier to listen if you have beaten them repeatedly and if you
+ * are somebody worth serving — a company nobody has heard of asking a
+ * professional soldier to change sides is a joke, and it is refused as one.
+ */
+export function lordServiceOdds(S, lord) {
+  if (!S.ownFaction) return 0;
+  const beaten = Math.min(0.45, (lord.defeats || 0) * 0.15);
+  const standing = Math.min(0.3, (S.renown || 0) / 4000);
+  // Somebody with a record of winning thinks rather more of their present
+  // employer than somebody you have broken three times.
+  const pride = Math.min(0.3, (lord.wins || 0) * 0.06);
+  return clamp(0.1 + beaten + standing - pride, 0.05, 0.8);
+}
+
+export function offerService(S, id) {
+  const lord = lordById(S, id);
+  if (!lord || !lord.captured || !lord.heldByPlayer) return { ok: false, why: 'Not yours to ask' };
+  if (!S.ownFaction) return { ok: false, why: 'Nobody swears to a company for hire' };
+  const r = rng((S.seed + S.day * 131 + (lord.id.length * 17)) | 0);
+  const took = r() < lordServiceOdds(S, lord);
+  lord.captured = false;
+  lord.heldByPlayer = false;
+  if (!took) {
+    // Asked and refused. They go home knowing you asked, which is its own cost.
+    lord.freeDay = S.day + 10;
+    if (S.rep[lord.faction] != null) S.rep[lord.faction] -= 2;
+    pushLog(S, `${lord.name} refused to take your colours, and went home saying so.`, 'bad');
+    return { ok: true, took: false };
+  }
+  const from = lord.faction;
+  lord.faction = S.ownFaction.id;
+  lord.vassal = true;
+  lord.fief = null;
+  lord.freeDay = S.day + 2;
+  if (S.rep[from] != null) S.rep[from] -= 8;
+  S.renown = (S.renown || 0) + 25;
+  pushLog(S, `${lord.name} has sworn to ${S.ownFaction.name}.`, 'good');
+  return { ok: true, took: true };
+}
+
+export const vassals = (S) => (S.lords || []).filter((l) => l.vassal);
+
+/**
+ * Put a vassal on one of your holdings.
+ *
+ * This is what a vassal is FOR. Ground you hold has to be garrisoned out of
+ * your own roster, which is the same finite handful of people you deploy with —
+ * so every place you take makes the company weaker in the field. A lord holding
+ * it for you breaks that trade: they defend it with their own people, and you
+ * get your soldiers back.
+ */
+export function grantFief(S, lordId, locId) {
+  const lord = lordById(S, lordId);
+  if (!lord?.vassal) return { ok: false, why: 'Not one of yours' };
+  if (!isHolding(S, locId)) return { ok: false, why: 'You do not hold that' };
+  const taken = vassals(S).find((l) => l.fief === locId && l.id !== lordId);
+  if (taken) return { ok: false, why: `${taken.name} already holds it` };
+  lord.fief = locId;
+  pushLog(S, `${lord.name} holds ${locName(locId)} for ${S.ownFaction?.name || 'Bracket'}.`, 'good');
+  return { ok: true };
+}
+
+/** What a vassal adds to the defence of the place they hold. */
+export function vassalStrength(S, locId) {
+  const l = vassals(S).find((v) => v.fief === locId);
+  if (!l) return 0;
+  // Their own household, and better for a commander who has won things.
+  return 3.5 + Math.min(4, (l.wins || 0) * 0.8);
+}
+
 export const hasPolicy = (S, id) => !!S.policies?.[id];
 
 /**

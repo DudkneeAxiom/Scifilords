@@ -1838,6 +1838,13 @@ test('paying and feeding the company stops the bleeding', async ({ page }) => {
   await newCampaign(page);
   const r = await page.evaluate(() => {
     const { State, DATA } = window.KR.dev;
+    // Pinned, because the seed decides how many mouths there are.
+    //
+    // This buys a fixed thirty rations and then asserts that nobody deserts
+    // over the following ten days. A larger starting company eats that in under
+    // ten, goes hungry again, and somebody walks — so on some seeds the test
+    // fails for a reason that has nothing to do with the thing it is checking.
+    window.KR.campaign = State.newCampaign(31415);
     const S = window.KR.campaign;
     S.credits = 0; S.rations = 0;
     for (let d = 0; d < 25; d++) State.advanceTime(S, 24);
