@@ -43,18 +43,81 @@ const TERRITORY_TINTS = {
  * in the middle. Settlements sit in the pan; the rim is what makes the region
  * feel enclosed and the fog do its work.
  */
+/**
+ * The shape of the Reach.
+ *
+ * The interior used to have nothing in it above a 1000-unit wavelength, which
+ * at this camera height means barely one undulation on screen — so a continent
+ * built to be crossed read as a flat brown plate with a wall around it. The
+ * terrain now runs in four bands: the rim that encloses the region, long ranges
+ * that divide it into country, hills that give each stretch of road a profile,
+ * and a last roughness that exists to break the facets up.
+ *
+ * Nothing here goes below ~150 units of wavelength on purpose. The mesh samples
+ * every ~35 units, and the old version carried grain at 30 and 82 — under and
+ * barely over the sample spacing — which does not render as texture, it
+ * renders as per-vertex speckle. That was the "pixel" look: aliasing, not art.
+ */
+// Bearings for the terrain octaves, precomputed because regionHeight() is
+// called for every terrain vertex, every border sample and every label, frame
+// after frame.
+const A1 = 0.00, A2 = 0.85, A3 = 2.20;
+const C1 = Math.cos(A1), S1 = Math.sin(A1);
+const C2 = Math.cos(A2), S2 = Math.sin(A2);
+const C3 = Math.cos(A3), S3 = Math.sin(A3);
+
 export function regionHeight(x, z) {
   const d = Math.hypot(x, z) / HALF;
   // The rim starts much further out on a continent — the playable interior has
   // to be genuinely large, with the highlands only closing in at the edges.
   const rim = Math.pow(clamp((d - 0.66) / 0.34, 0, 1), 1.7) * 240;
-  const ridge =
-    Math.sin(x * 0.0062 + 1.2) * Math.cos(z * 0.0071 - 0.4) * 13 +
-    Math.sin(x * 0.0141 - 0.9) * 5.5 +
-    Math.cos(z * 0.0123 + 2.1) * 4.5;
-  const basin = Math.sin(x * 0.0031) * Math.cos(z * 0.0029) * 6
-    + Math.sin(x * 0.0011 + 0.7) * Math.cos(z * 0.0013 - 0.3) * 34;
-  return rim + ridge * (0.35 + d) + basin;
+  // Continental tilt: which half of the map is high country at all.
+  const swell = Math.sin(x * 0.0011 + 0.7) * Math.cos(z * 0.0013 - 0.3) * 34;
+  // Each octave is sampled on its own rotated axes.
+  //
+  // Every band used to be sin(x)·cos(z) on the same two axes, which does not
+  // make hills — it makes corduroy. All the ridges came out parallel and the
+  // continent read as a ploughed field seen from orbit. Turning each octave to
+  // a different bearing decorrelates them, and the crossings between bearings
+  // are what produce basins, spurs and saddles instead of stripes.
+  const rx1 = x * C1 - z * S1, rz1 = x * S1 + z * C1;
+  const rx2 = x * C2 - z * S2, rz2 = x * S2 + z * C2;
+  const rx3 = x * C3 - z * S3, rz3 = x * S3 + z * C3;
+  // Ranges, ~900 units apart. These are what separate one stretch of country
+  // from the next, and what a road has to find its way around.
+  const ranges = Math.sin(rx1 * 0.0070 + 1.2) * Math.cos(rz1 * 0.0064 - 0.4) * 46;
+  // Hills, ~380 units. Several to a screen: the scale that actually reads as
+  // terrain while travelling.
+  const hills = Math.sin(rx2 * 0.0165 - 0.9) * Math.cos(rz2 * 0.0172 + 0.5) * 21
+    + Math.cos(rx3 * 0.0139 + 2.1) * Math.sin(rz3 * 0.0128 - 1.1) * 13;
+  // Broken ground, ~170 units — four samples to a cycle, comfortably above the
+  // mesh resolution. This is what gives the facets something to catch.
+  const broken = Math.sin(rx3 * 0.0370 + 0.3) * Math.cos(rz1 * 0.0355 - 0.8) * 7;
+  // The finest band the mesh can actually carry, ~140 units — four samples to a
+  // cycle at 288 segments. It exists for the close zoom, where the view holds
+  // too few of the larger landforms to read as anything but a plain. Going
+  // finer than this is how the old speckle happened: below about 70 units the
+  // mesh cannot represent the wave at all and each vertex samples it at random.
+  const grain = Math.sin(rx2 * 0.0450 - 1.4) * Math.cos(rz3 * 0.0435 + 0.9) * 3.5;
+  // Relief grows toward the rim: the pan stays walkable, the edges get savage.
+  const relief = 0.55 + d * 0.9;
+  return rim + swell + (ranges + hills + broken + grain) * relief;
+}
+
+/**
+ * How wet a place is, 0 dry to 1 wet. Low frequency on purpose — biomes have to
+ * be large enough to be somewhere you are, rather than a per-vertex mottle.
+ */
+export function regionMoisture(x, z) {
+  // Biome scale is a compromise. Too fine and it is mottling rather than
+  // country; too coarse and a whole screen sits inside one band and the map
+  // looks uniform — the first attempt ran at a 7400-unit wavelength against a
+  // view about 2000 units across, so no transition was ever visible. These give
+  // roughly one and a half changes of country per screen.
+  const m = Math.sin(x * 0.0022 - 1.1) * Math.cos(z * 0.0025 + 0.6) * 0.42
+    + Math.sin(x * 0.0048 + 2.3) * Math.cos(z * 0.0043 - 0.7) * 0.2
+    + Math.sin(x * 0.00082 + 0.4) * 0.16;      // a damp half and a dry half
+  return clamp(0.5 + m, 0, 1);
 }
 
 // Roads are authored, not generated — they are the routes the player will
@@ -113,6 +176,14 @@ export class WorldMap {
     this.zoom = 1;
     this.disposed = false;
     this.travelling = false;
+    // Which band the company is running down, if any. Held by id rather than by
+    // reference, so a party that dies or is culled simply stops resolving and
+    // the chase ends on its own.
+    this.chaseId = null;
+    // How far the view has been pushed off the company by dragging. Cleared by
+    // recentre() and by anything that means the player wants to see themselves.
+    this.camPan = { x: 0, z: 0 };
+    this.panning = null;
     this.encounterCooldown = {};
     this.nearSet = new Set();
     this.nearSeeded = false;
@@ -157,8 +228,15 @@ export class WorldMap {
     // back, and the old 2200 clipped the entire landmass away.
     this.camera = new THREE.PerspectiveCamera(46, w / h, 5, 22000);
 
-    this.scene.add(new THREE.HemisphereLight(0x6a7480, 0x201f18, 1.5));
-    const sun = new THREE.DirectionalLight(0xe8c489, 2.6);
+    // Ambient down, sun up.
+    //
+    // A hemisphere light at 1.5 lights every normal to nearly the same value,
+    // which is exactly the wrong thing for terrain: it flattens the ground into
+    // a single flat colour no matter what shape it is. The relief cannot read
+    // unless a slope facing the sun is meaningfully brighter than one facing
+    // away, and that difference is what the faceted look is made of.
+    this.scene.add(new THREE.HemisphereLight(0x6a7480, 0x201f18, 0.62));
+    const sun = new THREE.DirectionalLight(0xe8c489, 3.1);
     sun.position.set(-620, 900, 460);
     sun.castShadow = true;
     sun.shadow.mapSize.set(2048, 2048);
@@ -198,7 +276,10 @@ export class WorldMap {
   buildTerrain() {
     // The mesh runs well past the playable region so the camera never sees the
     // edge of the world at full zoom-out; the overspill is all rim.
-    const seg = 210;
+    // Finer than it was: the terrain now carries features down to ~170 units,
+    // and at 210 segments those fell below the sample spacing and turned to
+    // noise. 288 puts roughly five samples across the smallest landform.
+    const seg = 288;
     const geo = new THREE.PlaneGeometry(REGION.size * 1.6, REGION.size * 1.6, seg, seg);
     geo.rotateX(-Math.PI / 2);
     const pos = geo.attributes.position;
@@ -208,25 +289,59 @@ export class WorldMap {
     // longer paints over the ground, so the ground has to carry the map on its
     // own: cold silt in the deepest pan, dry scrub through the basin, bare rock
     // and pale stone up the rim.
-    const cSilt = new THREE.Color(0x33403c);  // the wet bottom of the pan
-    const cLow = new THREE.Color(0x4a4632);   // pan floor
-    const cMid = new THREE.Color(0x60583e);
-    const cHigh = new THREE.Color(0x74684f);  // rim rock
-    const cPeak = new THREE.Color(0x99907c);
+    // Biomes, not an elevation ramp.
+    //
+    // Colour used to be a pure function of height, so the whole continent was
+    // one gradient repeated everywhere and no two places looked like different
+    // country. Elevation still decides the broad band, but moisture decides
+    // WHICH band — so the map has a wet green side and a dry ochre one, with
+    // the change happening over hundreds of units rather than per vertex, and
+    // the same elevation reads differently depending on where you are.
+    // Pulled further apart than looks sensible in a swatch. Two palettes that
+    // differ only slightly average out to one colour across a whole screen, and
+    // the map went back to reading as uniform olive — at this camera height the
+    // separation has to survive being seen a thousand units away through haze.
+    const cMarsh = new THREE.Color(0x27403a);  // standing water in the deep pan
+    const cSilt = new THREE.Color(0x453f30);
+    const cGrass = new THREE.Color(0x44602f);  // the watered side of the basin
+    const cScrub = new THREE.Color(0x6b5c37);
+    const cDust = new THREE.Color(0x8a7748);   // the dry side
+    const cUpland = new THREE.Color(0x5d6a4a);
+    const cRock = new THREE.Color(0x7e7264);   // exposed stone on the rim
+    const cPeak = new THREE.Color(0xa79d88);
     const c = new THREE.Color();
+    const wet = new THREE.Color();
+    const dry = new THREE.Color();
 
     for (let i = 0; i < pos.count; i++) {
       const x = pos.getX(i), z = pos.getZ(i);
       const y = regionHeight(x, z);
       pos.setY(i, y);
-      // Below zero is the drained pan bottom, which the old ramp clamped flat.
-      if (y < 0) c.copy(cSilt).lerp(cLow, clamp((y + 45) / 45, 0, 1));
-      else {
-        const t = clamp(y / 120, 0, 1);
-        if (t < 0.20) c.copy(cLow).lerp(cMid, t / 0.20);
-        else if (t < 0.55) c.copy(cMid).lerp(cHigh, (t - 0.20) / 0.35);
-        else c.copy(cHigh).lerp(cPeak, (t - 0.55) / 0.45);
+      const m = regionMoisture(x, z);
+      // Two ramps of the same shape, one for wet country and one for dry, mixed
+      // by the moisture field. Keeping the ramps parallel is what stops the
+      // boundary reading as a seam.
+      const t = clamp((y + 60) / 200, 0, 1);
+      if (t < 0.28) {
+        wet.copy(cMarsh).lerp(cGrass, t / 0.28);
+        dry.copy(cSilt).lerp(cScrub, t / 0.28);
+      } else if (t < 0.62) {
+        wet.copy(cGrass).lerp(cUpland, (t - 0.28) / 0.34);
+        dry.copy(cScrub).lerp(cDust, (t - 0.28) / 0.34);
+      } else {
+        wet.copy(cUpland).lerp(cPeak, (t - 0.62) / 0.38);
+        dry.copy(cDust).lerp(cRock, (t - 0.62) / 0.38);
       }
+      c.copy(dry).lerp(wet, m);
+
+      // Steep ground is bare rock whatever the climate. This is what makes the
+      // relief legible as relief: a hillside catches a different colour from
+      // the ground either side of it, so the facets describe a shape instead of
+      // just being darker.
+      const gx = (regionHeight(x + 26, z) - regionHeight(x - 26, z)) / 52;
+      const gz = (regionHeight(x, z + 26) - regionHeight(x, z - 26)) / 52;
+      const slope = clamp(Math.hypot(gx, gz) * 1.5, 0, 1);
+      c.lerp(cRock, slope * 0.55);
       // Contour banding. Quantising elevation into steps and darkening the
       // seam between them turns the basin into something that reads as a
       // surveyed map sheet rather than a smooth brown expanse — the terrain
@@ -234,21 +349,25 @@ export class WorldMap {
       // political layer no longer needs to paint over it.
       // One contour every 15m. In the basin — where the player spends the
       // whole early game — a 20m interval produced two lines and nothing else.
-      const band = y / 15;
+      // Contours, lighter than they were. They existed to make a flat plate
+      // legible; now that the ground has shape of its own they only need to
+      // help read gradient, and at the old strength they fought the landforms.
+      const band = y / 25;
       const seam = Math.abs(band - Math.round(band));
-      // A dark hairline at each contour, plus a slight step in value so
-      // successive bands separate even away from the line itself.
-      const contour = seam < 0.07 ? -0.085 : 0;
-      const terrace = (Math.round(band) % 2 === 0 ? 0.022 : -0.022);
-      c.offsetHSL(0, 0, contour + terrace);
-      // Grain, not blotches. At low frequency this reads as huge soft dark
-      // patches across the basin; it has to be fine enough to look like ground
-      // texture at the strategic camera height.
-      const n = Math.sin(x * 0.21) * Math.cos(z * 0.19) * 0.015
-        + Math.sin(x * 0.077) * Math.cos(z * 0.083) * 0.009;
-      colors[i * 3] = clamp(c.r + n, 0, 1);
-      colors[i * 3 + 1] = clamp(c.g + n, 0, 1);
-      colors[i * 3 + 2] = clamp(c.b + n * 0.6, 0, 1);
+      const contour = seam < 0.06 ? -0.05 : 0;
+      c.offsetHSL(0, 0, contour);
+
+      // No grain term.
+      //
+      // There used to be two, at 30 and 82 units of wavelength, against a mesh
+      // that samples every 35. Both were at or under the sample spacing, so
+      // neither could ever resolve as texture — each vertex simply picked an
+      // arbitrary point on the wave, which is precisely the per-vertex speckle
+      // that made this look pixelated. Facets and slope shading do the job that
+      // grain was reaching for, and they do it at a scale the mesh can carry.
+      colors[i * 3] = clamp(c.r, 0, 1);
+      colors[i * 3 + 1] = clamp(c.g, 0, 1);
+      colors[i * 3 + 2] = clamp(c.b, 0, 1);
     }
     geo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
     geo.computeVertexNormals();
@@ -301,7 +420,7 @@ export class WorldMap {
     for (const l of LOCATIONS) {
       const owner = State.isHolding(this.S, l.id)
         ? (this.S.ownFaction?.id || 'player')
-        : l.faction;
+        : State.ownerOf(this.S, l.id);      // not l.faction: borders move now
       if (!owner) continue;
       const d = Math.hypot(l.x - x, l.z - z);
       // Settlements project authority further than an outpost does.
@@ -320,8 +439,9 @@ export class WorldMap {
     for (const l of LOCATIONS) {
       if (l.kind === 'open') continue;
       if (State.isHolding(S, l.id)) { out.player++; continue; }
-      if (l.faction === 'trust') out.trust++;
-      else if (l.faction === 'syndic') out.syndic++;
+      const owner = State.ownerOf(S, l.id);
+      if (owner === 'trust') out.trust++;
+      else if (owner === 'syndic') out.syndic++;
     }
     return out;
   }
@@ -347,18 +467,52 @@ export class WorldMap {
     // one power's authority stops and another's begins, in that power's colour,
     // laid on the ground like a surveyed boundary.
     //
-    // The sampling grid is coarse on purpose. A border wants to read as a
-    // deliberate line on a map, not trace every fold in the ground.
-    const seg = 420;
+    // Traced, not stepped.
+    //
+    // This used to emit an axis-aligned quad for every grid cell that disagreed
+    // with a neighbour, so a border could only ever run along grid lines and
+    // came out as a staircase of little blocks — the single most artificial
+    // thing on the map. Instead each power's claim is expressed as a continuous
+    // field, and the line where that field meets its rivals is traced through
+    // the cells with interpolation, which puts the border wherever it actually
+    // falls rather than on the nearest grid edge.
+    const seg = 300;
     const size = REGION.size * 1.25;
     const step = size / seg;
     const cols = seg + 1;
     const half = size / 2;
 
-    const owners = new Array(cols * cols);
-    for (let gz = 0; gz < cols; gz++) {
-      for (let gx = 0; gx < cols; gx++) {
-        owners[gz * cols + gx] = this.ownerAt(-half + gx * step, -half + gz * step);
+    // Every power that actually holds ground, and how strongly each one claims
+    // each sample. Score is distance weighted by the kind of place claiming it,
+    // so the strongest claim is the smallest number.
+    const powers = [];
+    for (const l of LOCATIONS) {
+      if (l.kind === 'open') continue;
+      const o = State.isHolding(this.S, l.id)
+        ? (this.S.ownFaction?.id || 'player') : State.ownerOf(this.S, l.id);
+      if (o && !powers.includes(o)) powers.push(o);
+    }
+    const REACH = 900;                        // past this, nobody's country
+    const BORDER_INSET = 26;                  // how far inside its own ground each line sits
+    const nP = powers.length;
+    // score[p][i]: best claim power p has on sample i.
+    const score = powers.map(() => new Float32Array(cols * cols).fill(Infinity));
+    for (const l of LOCATIONS) {
+      if (l.kind === 'open') continue;
+      const o = State.isHolding(this.S, l.id)
+        ? (this.S.ownFaction?.id || 'player') : State.ownerOf(this.S, l.id);
+      if (!o) continue;
+      const pi = powers.indexOf(o);
+      const weight = l.kind === 'settlement' ? 0.72 : 1.0;
+      const s = score[pi];
+      for (let gz = 0; gz < cols; gz++) {
+        const z = -half + gz * step;
+        for (let gx = 0; gx < cols; gx++) {
+          const x = -half + gx * step;
+          const d = Math.hypot(l.x - x, l.z - z) * weight;
+          const i = gz * cols + gx;
+          if (d < s[i]) s[i] = d;
+        }
       }
     }
 
@@ -385,29 +539,79 @@ export class WorldMap {
       push(p3x, p3z, c); push(p2x, p2z, c); push(p4x, p4z, c);
     };
 
-    for (let gz = 0; gz < cols; gz++) {
-      for (let gx = 0; gx < cols; gx++) {
-        const o = owners[gz * cols + gx];
-        if (!o) continue;                       // unclaimed ground draws nothing
-        const c = this.territoryColour(o);
-        if (!c) continue;
-        const x = -half + gx * step, z = -half + gz * step;
-        // Look right and down only; the mirrored comparison is made by the
-        // neighbouring sample, which keeps each edge from being emitted twice
-        // in the same colour.
-        for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
-          const nx = gx + dx, nz = gz + dz;
-          if (nx < 0 || nz < 0 || nx >= cols || nz >= cols) continue;
-          if (owners[nz * cols + nx] === o) continue;
-          // The segment runs perpendicular to the direction of disagreement,
-          // sitting slightly inside this power's own ground.
-          // Sit the line just inside this power's own ground, so where two
-          // powers meet their colours run alongside each other rather than
-          // fighting for the same pixels.
-          const mx = x + dx * step * 0.34, mz = z + dz * step * 0.34;
-          const ax = mx - dz * step * 0.52, az = mz - dx * step * 0.52;
-          const bx = mx + dz * step * 0.52, bz = mz + dx * step * 0.52;
-          quad(ax, az, bx, bz, dx, dz, c);
+    // A ribbon between two points, mitred by the segment's own direction, so
+    // consecutive pieces of a traced line meet instead of overlapping in a
+    // stack of little rectangles.
+    const ribbon = (ax, az, bx, bz, c) => {
+      const dx = bx - ax, dz = bz - az;
+      const len = Math.hypot(dx, dz) || 1;
+      const nx = -dz / len, nz = dx / len;     // perpendicular, unit length
+      quad(ax, az, bx, bz, nx, nz, c);
+    };
+
+    // Marching squares, one power at a time.
+    //
+    // phi is how much better this power's claim is than its best rival, so the
+    // border is the contour phi = 0. Interpolating where that crossing falls
+    // along each cell edge is what turns a staircase into a line: the vertex
+    // lands at the true crossing point rather than at a grid corner.
+    for (let pi = 0; pi < nP; pi++) {
+      const c = this.territoryColour(powers[pi]);
+      if (!c) continue;
+      const mine = score[pi];
+      const phi = new Float32Array(cols * cols);
+      for (let i = 0; i < phi.length; i++) {
+        let other = Infinity;
+        for (let q = 0; q < nP; q++) {
+          if (q !== pi && score[q][i] < other) other = score[q][i];
+        }
+        // Authority also simply runs out, so unclaimed ground bounds a power
+        // exactly as a rival does.
+        const bound = Math.min(other, REACH);
+        // Traced just INSIDE this power's own ground rather than exactly on the
+        // frontier. Two rivals share one frontier, so contouring both at zero
+        // draws both lines through identical points and whichever is drawn
+        // second simply hides the first — the map lost a colour. Offsetting
+        // each inward runs them alongside each other, which is also how a real
+        // survey draws a disputed line.
+        phi[i] = (bound - mine[i]) - BORDER_INSET;
+      }
+
+      // Where along an edge between two samples does phi cross zero?
+      const cross = (i0, i1, x0, z0, x1, z1) => {
+        const a = phi[i0], b = phi[i1];
+        const t = Math.abs(a - b) < 1e-6 ? 0.5 : a / (a - b);
+        return [x0 + (x1 - x0) * t, z0 + (z1 - z0) * t];
+      };
+
+      for (let gz = 0; gz < cols - 1; gz++) {
+        for (let gx = 0; gx < cols - 1; gx++) {
+          const i00 = gz * cols + gx, i10 = i00 + 1;
+          const i01 = i00 + cols, i11 = i01 + 1;
+          const code = (phi[i00] > 0 ? 1 : 0) | (phi[i10] > 0 ? 2 : 0)
+            | (phi[i11] > 0 ? 4 : 0) | (phi[i01] > 0 ? 8 : 0);
+          if (code === 0 || code === 15) continue;   // wholly in or wholly out
+          const x0 = -half + gx * step, z0 = -half + gz * step;
+          const x1 = x0 + step, z1 = z0 + step;
+          // Midpoints of the four cell edges, placed at the true crossing.
+          const eB = () => cross(i00, i10, x0, z0, x1, z0);
+          const eR = () => cross(i10, i11, x1, z0, x1, z1);
+          const eT = () => cross(i01, i11, x0, z1, x1, z1);
+          const eL = () => cross(i00, i01, x0, z0, x0, z1);
+          let a = null, b = null;
+          switch (code) {
+            case 1: case 14: a = eL(); b = eB(); break;
+            case 2: case 13: a = eB(); b = eR(); break;
+            case 3: case 12: a = eL(); b = eR(); break;
+            case 4: case 11: a = eR(); b = eT(); break;
+            case 6: case 9: a = eB(); b = eT(); break;
+            case 7: case 8: a = eL(); b = eT(); break;
+            // Saddles: two separate crossings through one cell.
+            case 5: ribbon(...eL(), ...eT(), c); a = eB(); b = eR(); break;
+            case 10: ribbon(...eL(), ...eB(), c); a = eT(); b = eR(); break;
+            default: break;
+          }
+          if (a && b) ribbon(a[0], a[1], b[0], b[1], c);
         }
       }
     }
@@ -430,7 +634,13 @@ export class WorldMap {
 
   /** Cheap fingerprint of who owns what, so the overlay only rebuilds on change. */
   territorySignature() {
-    return `${Object.keys(this.S.holdings || {}).sort().join(',')}|${this.S.ownFaction?.id || ''}`;
+    // Settlements change hands between the major factions now, so the overlay
+    // has to notice a border moving and not only the player taking ground —
+    // without the third term the map keeps drawing a front line that has moved.
+    const war = Object.entries(this.S.mapOwner || {})
+      .map(([k, v]) => `${k}:${v}`).sort().join(',');
+    return `${Object.keys(this.S.holdings || {}).sort().join(',')}`
+      + `|${this.S.ownFaction?.id || ''}|${war}`;
   }
 
   refreshTerritory() {
@@ -707,18 +917,60 @@ export class WorldMap {
     this.raycaster = new THREE.Raycaster();
     this.ndc = new THREE.Vector2();
 
-    add(el, 'pointerdown', (e) => {
-      if (e.button !== 0) return;
+    const toNdc = (e) => {
       const rect = el.getBoundingClientRect();
       this.ndc.x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
       this.ndc.y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
       this.raycaster.setFromCamera(this.ndc, this.camera);
+    };
+
+    add(el, 'pointerdown', (e) => {
+      // Right button drags the map around, and does not open a context menu on
+      // top of it.
+      if (e.button === 2) {
+        this.panning = { x: e.clientX, y: e.clientY };
+        el.setPointerCapture?.(e.pointerId);
+        return;
+      }
+      if (e.button !== 0) return;
+      toNdc(e);
+
+      // A party first, the ground second.
+      //
+      // Clicking a moving band used to drop a destination pin on the patch of
+      // dirt it happened to be standing on, so chasing anything meant clicking
+      // once a second and watching it walk out from under the marker. Picking
+      // the party itself and following it is the whole verb: you set off after
+      // something and close on it, or you do not.
+      const tokens = [...this.partyMeshes.entries()];
+      const hitParty = this.raycaster.intersectObjects(tokens.map(([, m]) => m), true)[0];
+      if (hitParty) {
+        let obj = hitParty.object;
+        while (obj && !tokens.some(([, m]) => m === obj)) obj = obj.parent;
+        const entry = tokens.find(([, m]) => m === obj);
+        if (entry) { this.chase(entry[0]); return; }
+      }
+
       const hits = this.raycaster.intersectObject(this.terrain, false);
       if (hits.length) {
         const p = hits[0].point;
         this.setDestination(p.x, p.z);
       }
     });
+    add(el, 'contextmenu', (e) => e.preventDefault());
+    add(el, 'pointermove', (e) => {
+      if (!this.panning) return;
+      // Drag distance is scaled by zoom so the ground keeps pace with the
+      // cursor whether you are looking at a province or a crossroads.
+      const k = 2.6 * this.zoom;
+      this.camPan.x -= (e.clientX - this.panning.x) * k;
+      this.camPan.z -= (e.clientY - this.panning.y) * k;
+      this.panning = { x: e.clientX, y: e.clientY };
+    });
+    const endPan = () => { this.panning = null; };
+    add(el, 'pointerup', endPan);
+    add(el, 'pointercancel', endPan);
+    add(el, 'pointerleave', endPan);
     add(el, 'wheel', (e) => {
       e.preventDefault();
       this.zoom = clamp(this.zoom * (1 + Math.sign(e.deltaY) * 0.12), 0.28, 2.8);
@@ -733,11 +985,39 @@ export class WorldMap {
       // press twice is not a halt.
       if (k === ' ') { this.stopTravel(); this.setSpeed(this.timeScale ? 0 : 1); }
       if (k === 'f') this.setSpeed(this.timeScale === FAST ? 1 : FAST);
+      // Put the camera back on the company. A map you can push around needs a
+      // way home, or being lost two provinces away is a mouse-hunt.
+      //
+      // H for home. C opens the roster and V the character sheet — both were
+      // tried first, and either would have fired its panel every single time
+      // the player wanted the camera back. The world screen already spends
+      // c l i k v p b e, so this is one of the few letters actually free.
+      if (k === 'h') this.recentre();
     });
     add(window, 'keyup', (e) => this.keys.delete(e.key.toLowerCase()));
   }
 
-  setDestination(x, z) {
+  /** Run something down. The destination becomes wherever it is, each frame. */
+  chase(partyId) {
+    const p = this.S.parties.find((x) => x.id === partyId);
+    if (!p) return;
+    this.chaseId = partyId;
+    this.recentre();
+    this.setDestination(p.x, p.z, true);
+    Audio.uiSelect();
+  }
+
+  /** Put the view back over the company. */
+  recentre() {
+    this.camPan.x = 0;
+    this.camPan.z = 0;
+  }
+
+  setDestination(x, z, keepChase = false) {
+    // Clicking the ground is a decision to go THERE, so it calls off a chase —
+    // otherwise the destination is overwritten again on the very next frame and
+    // the click appears to do nothing at all.
+    if (!keepChase) this.chaseId = null;
     const b = HALF - 40;
     this.S.dest = { x: clamp(x, -b, b), z: clamp(z, -b, b) };
     this.travelling = true;
@@ -748,6 +1028,7 @@ export class WorldMap {
 
   stopTravel() {
     this.travelling = false;
+    this.chaseId = null;
     this.S.dest = null;
     this.destMarker.visible = false;
   }
@@ -782,7 +1063,19 @@ export class WorldMap {
     // at has always worked. `dt` arrives already multiplied by timeScale, so
     // halt and fast-forward both fall out of it for free.
     const hours = dt * HOURS_PER_SECOND;
+
+    // A chase re-aims at its quarry every frame. Losing it — killed on the road
+    // by somebody else, or culled at the far edge of the map — simply ends the
+    // pursuit rather than leaving the company marching at a ghost.
+    if (this.chaseId) {
+      const quarry = S.parties.find((p) => p.id === this.chaseId);
+      if (!quarry) this.stopTravel();
+      else this.setDestination(quarry.x, quarry.z, true);
+    }
+
     if (mx || mz) {
+      // Steering by hand means you want to see where you are going.
+      this.recentre();
       this.stopTravel();
       const m = Math.hypot(mx, mz);
       const step = pace * hours;
@@ -906,12 +1199,29 @@ export class WorldMap {
     const height = 1400 * this.zoom;
     // Fixed fog distances made a zoomed-out map dissolve into flat haze.
     const eye = Math.hypot(dist, height);
-    this.scene.fog.near = eye * 0.55;
-    this.scene.fog.far = eye * 2.15;
-    const want = new THREE.Vector3(S.pos.x, y + height, S.pos.z + dist);
+    // Fog begins past the ground being looked at, not on top of it. At 0.55 the
+    // focus point itself sat about a quarter of the way into the haze, so every
+    // landform was washed toward the fog colour before it could be seen at all
+    // — the terrain read as flat because most of it was half fog.
+    this.scene.fog.near = eye * 0.95;
+    this.scene.fog.far = eye * 3.0;
+    // Where the view is looking: the company, plus however far it has been
+    // dragged off them. Clamped to the playable area so the map cannot be
+    // pushed out into empty space and lost.
+    const lim = HALF;
+    this.camPan.x = clamp(this.camPan.x, -lim, lim);
+    this.camPan.z = clamp(this.camPan.z, -lim, lim);
+    const cx = S.pos.x + this.camPan.x;
+    const cz = S.pos.z + this.camPan.z;
+    // Elevation of the ground actually being looked at, not of the company —
+    // dragging across a range otherwise keeps the camera at the height of
+    // wherever the company happens to be standing and buries the view in a hill.
+    const cy = regionHeight(cx, cz);
+
+    const want = new THREE.Vector3(cx, cy + height, cz + dist);
     if (!this.camInit) { this.camera.position.copy(want); this.camInit = true; }
     else this.camera.position.lerp(want, 1 - Math.exp(-dt * 4.5));
-    this.camera.lookAt(S.pos.x, y + 8, S.pos.z);
+    this.camera.lookAt(cx, cy + 8, cz);
 
     this.sun.position.set(S.pos.x - 260, 300, S.pos.z + 180);
     this.sun.target.position.set(S.pos.x, 0, S.pos.z);
@@ -936,7 +1246,16 @@ export class WorldMap {
       ready: State.ready(S).length,
       wounded: State.living(S).filter((s) => s.status === 'wounded').length,
       location: this.nearLocation,
+      // Who flies a flag over it today. LOCATIONS carries the founding owner,
+      // and after a war those are different things — the panel should not still
+      // be calling a captured town by its old allegiance.
+      locationOwner: this.nearLocation ? State.ownerOf(S, this.nearLocation.id) : null,
       travelling: this.travelling,
+      // What the company is running down, and whether the view has been pushed
+      // off them — the interface has to be able to offer a way back.
+      chasing: this.chaseId
+        ? (this.S.parties.find((p) => p.id === this.chaseId)?.name || null) : null,
+      panned: Math.hypot(this.camPan.x, this.camPan.z) > 1,
       contract: State.activeContract(S),
       contracts: S.contracts,
       nearParties: (this.nearParties || []).map((p) => ({

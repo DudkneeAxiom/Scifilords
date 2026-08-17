@@ -13,10 +13,26 @@ here, and the reasons behind decisions that look arbitrary from the outside.
 
 ```bash
 npm run serve                 # static server on 8124; PLAY.cmd on Windows
-npx playwright test           # the 96 acceptance tests, ~8.5 min (12+ under load)
+node tools/snaptest.mjs       # the 96 acceptance tests against a COPY of the tree
+npx playwright test           # the same, against the live tree
 node tools/soak.mjs 500 40    # 500 campaign days, 40 deployments, unattended
 node tools/shots.mjs          # photograph 20 screens into qa-shots/
 ```
+
+**Use `snaptest` unless you have a reason not to.** The suite serves `src/` off
+disk, so editing anything during a run invalidates it — which meant either
+downing tools for ten minutes at a time or quietly throwing a run away, and both
+happened. `tools/snaptest.mjs` copies the tree (3.8MB; `node_modules` is
+junctioned) into a temp directory and runs there on its own port, so the live
+tree stays editable. It takes arguments through to Playwright:
+`node tools/snaptest.mjs -g "cover"`.
+
+While you are in there: `webServer.command` in the Playwright config used to be
+the literal `node tools/serve.mjs`. Node is a portable install here and is not
+on PATH, so that could never spawn — every run for months only worked because a
+dev server was already listening on 8124 and `reuseExistingServer` skipped it.
+It uses `process.execPath` now, but it is the kind of thing to check if a clean
+checkout will not start.
 
 ### Working on this repo
 
@@ -229,6 +245,25 @@ company is inside one. Both are needed and the second is easy to miss:
 `pickPartyTarget()` sends patrols TO locations, so without it a raider wandering
 into town picks a fight with you on the steps of it — which was survivable when
 the world barely moved while you stood still, and is constant now that it does.
+
+**`S.atLocation` belongs to the renderer. Never simulate off it.** `worldmap.js`
+is the only thing that writes it, so it is correct while the map is on screen
+and stuck on wherever the campaign started in every headless run. It has now
+caused three separate bugs: pursuit that never triggered, wound healing that
+used the starting settlement's facilities for the whole campaign, and hiring
+that drew manpower from the wrong town. Derive from position with
+`locationAt(S, 38)`; fall back to the field only for callers that place the
+company by setting it rather than by moving it.
+
+**Everyone draws on the same manpower.** A settlement has a pool that refills
+daily toward a cap by kind. You spend it hiring, faction columns spend it
+mustering (three times as fast at war), and raider bands camped nearby take
+people off it and stop it recruiting for `RAID_SHOCK` days. Two properties are
+load-bearing and easy to break: peacetime recruiting must be untouched — a quiet
+region refills faster than anyone drains it, so war is the only thing that makes
+bodies scarce — and a garrison must stop raids outright, because that is the
+first thing in the game that makes defending a town worth doing. An unchecked
+hideout takes a full settlement from 14 down to 3 in a month.
 
 **Creeds are derived from `portraitSeed`, not rolled.** Taking another number
 off the seeded generator in `makeSoldier` would shift every roll after it and

@@ -553,10 +553,13 @@ export function renderWorldHud(h) {
   const btn = $('wh-enter');
   if (h.location) {
     lEl.classList.remove('hidden');
-    const f = h.location.faction ? FACTIONS[h.location.faction] : null;
+    // Current holder, not founding owner — a town Trust took last month flies
+    // a Trust flag.
+    const owner = h.locationOwner ?? h.location.faction;
+    const f = owner ? FACTIONS[owner] : null;
     lEl.innerHTML = `<div class="panel-title">${esc(h.location.name)}</div>
       <div class="panel-body">
-        <span class="tag ${h.location.faction || 'none'}">${f ? esc(f.short) : 'UNALIGNED'}</span>
+        <span class="tag ${owner || 'none'}">${f ? esc(f.short) : 'UNALIGNED'}</span>
         <div style="margin-top:7px">${esc(h.location.blurb)}</div>
       </div>`;
     btn.disabled = false;
@@ -1986,6 +1989,20 @@ export function settlementPanel(S, loc, cbs) {
       </div>
       <div>
         ${canRecruit ? `<div class="section-title">AVAILABLE FOR HIRE</div>
+          ${(() => {
+    // Say why the list is short. Everyone draws on the same people — you and
+    // every column that musters here — so an empty board after a war has a
+    // reason, and "nobody today" with no explanation reads as a broken screen.
+    const left = Math.floor(State.manpowerAt(S, loc.id));
+    const cap = State.manpowerCap(loc);
+    if (!cap) return '';
+    const frac = left / cap;
+    const note = frac <= 0 ? 'Mustered out. There is nobody left here to take your money.'
+      : frac < 0.35 ? 'Picked over — somebody has been raising troops here.'
+        : 'The usual crowd, and some of them are looking for work.';
+    return `<div class="rel-note" style="margin-bottom:8px">
+      <b>${left}</b> of ${cap} able bodies — ${esc(note)}</div>`;
+  })()}
           ${pool.map((s, i) => `<div class="card" data-hire="${i}">
             <div class="card-top">
               <span class="card-title">${RANKS[s.rank].abbr} ${esc(s.name)}</span>
@@ -2065,8 +2082,9 @@ export function settlementPanel(S, loc, cbs) {
   for (const el of document.querySelectorAll('#modal [data-hire]')) {
     el.onclick = () => {
       const s = pool[Number(el.dataset.hire)];
-      if (State.hire(S, s)) { Audio.uiSelect(); cbs.onRefresh(); }
-      else { Audio.uiDeny(); toastModal('Not enough credits'); }
+      const res = State.hire(S, s);
+      if (res.ok) { Audio.uiSelect(); cbs.onRefresh(); }
+      else { Audio.uiDeny(); toastModal(res.why); }
     };
   }
   for (const el of document.querySelectorAll('#modal [data-weapon]')) {
@@ -2458,9 +2476,11 @@ export function controlsPanel({ onClose }) {
         <div class="section-title">IN THE REACH</div>
         ${kv('SPACE', 'Halt — stops the clock as well as the truck')}
         ${kv('F', 'Fast forward, and back again')}
-        ${kv('CLICK', 'Travel to a point')}
+        ${kv('CLICK GROUND', 'Travel to a point')}
+        ${kv('CLICK A PARTY', 'Run it down — you follow it wherever it goes')}
+        ${kv('RIGHT-DRAG', 'Push the map around without moving the company')}
+        ${kv('H', 'Put the view back on the company')}
         ${kv('W A S D', 'Steer directly')}
-        ${kv('SPACE', 'Halt')}
         ${kv('E', 'Enter a location')}
         ${kv('C / L / B', 'Roster / loadout / contract board')}
       </div>

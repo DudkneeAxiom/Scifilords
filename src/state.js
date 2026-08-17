@@ -42,6 +42,13 @@ export function newCampaign(seed = Math.floor(Math.random() * 1e9)) {
     prices: {},         // per-location price table, re-derived daily
     priceDay: -1,
     holdings: {},       // locId -> { upgrades, takenDay, threat }
+    // Who holds a settlement NOW, when that is no longer whoever built it.
+    // LOCATIONS carries the founding owner and is static module data shared by
+    // every campaign, so it must never be written to; this overrides it.
+    mapOwner: {},       // locId -> factionId
+    // Bodies a place has left to give. Everyone draws from the same well —
+    // you, and every faction column that musters here.
+    manpower: {},       // locId -> people available now
     renown: 0,          // how seriously the continent takes Bracket
     allegiance: null,   // faction id if the player has taken a commission
     ownFaction: null,   // { id, name, colour, declaredDay } once declared
@@ -266,10 +273,13 @@ export function generateContract(S, r) {
   const f = pick(r, flavours);
   if (S.contracts.some((c) => c.title === f.title && c.site === loc.id)) return null;
 
-  // Whoever is hiring is whoever does not own the ground.
+  // Whoever is hiring is whoever does not own the ground — as it stands today,
+  // not as it stood when the place was founded. A settlement Trust took last
+  // month should have Syndic paying to get it back.
   let employer = null;
-  if (loc.faction === 'trust') employer = 'syndic';
-  else if (loc.faction === 'syndic') employer = 'trust';
+  const holder = ownerOf(S, loc.id);
+  if (holder === 'trust') employer = 'syndic';
+  else if (holder === 'syndic') employer = 'trust';
   else employer = pick(r, ['trust', 'syndic', null]);
   // Sworn companies mostly get work from their own side.
   if (S.allegiance && r() < 0.6) employer = S.allegiance;
@@ -605,12 +615,39 @@ export function advanceTime(S, hours) {
     onNewDay(S, rng((S.seed + S.day * 7919) | 0));
   }
   moveParties(S, hours, r);
+  tickPartyBattles(S, r);
 }
 
 function onNewDay(S, r) {
   maybeSpawnTitan(S, r);
   payday(S, r);
-  const atMedical = !!(S.atLocation && locById(S.atLocation)?.services?.includes('medical'));
+  // The continent gets on with its own argument whether or not you are in it.
+  //
+  // On streams of their own, NOT the shared day-tick `r`. Every draw taken from
+  // that stream shifts every draw after it, so bolting new systems onto it
+  // silently re-rolls payday, desertion and everything else downstream — which
+  // is precisely the trap diplomacy was moved off it to avoid. It shows up as
+  // an unrelated test failing intermittently rather than as anything obviously
+  // to do with the new code.
+  tickWar(S, rng((S.seed ^ 0x7717) + S.day * 3301));
+  tickManpower(S, rng((S.seed ^ 0x2b19) + S.day * 4409));
+  tickFactionRecruiting(S, rng((S.seed ^ 0x51ad) + S.day * 5171));
+  tickRaids(S, rng((S.seed ^ 0x6c33) + S.day * 6113));
+  // A summons outlives its column if the column was broken on the road rather
+  // than arriving. The call still went out and you still did not answer it, but
+  // the contract has to go or it sits on the board forever pointing at an army
+  // that no longer exists.
+  for (const c of S.contracts.filter((x) => x.summons)) {
+    if (!S.parties.some((p) => p.id === c.summons)) {
+      closeSummons(S, c.summons, { showedUp: false });
+    }
+  }
+  // Where the company actually is. S.atLocation is written only by the world
+  // map renderer, so headlessly it is stuck on wherever the campaign started
+  // and every simulated day healed at that place's rate no matter where the
+  // company had got to. Position first, the field as a fallback.
+  const restingAt = locationAt(S, 38) || locById(S.atLocation);
+  const atMedical = !!restingAt?.services?.includes('medical');
   const mods = companyMods(S.roster);
   for (const s of S.roster) {
     const rec = dayTick(s, { atMedical, healMul: 1 + mods.healRate + upgradeTotal(S, 'infirmary') });
@@ -669,7 +706,12 @@ function maintainParties(S, r) {
     const want = reg.id === 'kettle'
       ? Math.round(6 * (S.world.raiderDensity + S.world.trustPatrolDensity) / 2)
       : 3 + Math.round(reg.danger * 0.8);
-    const here = S.parties.filter((p) => !p.owner && p.kind !== 'lair'
+    // A column on its way somewhere is never culled. Trimming picks whatever is
+    // furthest from the player, which is exactly where an offensive on the far
+    // side of the continent is — so without this, columns quietly vanish
+    // mid-march and the war simply stops arriving anywhere, with nothing in the
+    // log to say why.
+    const here = S.parties.filter((p) => !p.owner && p.kind !== 'lair' && !p.siegeTarget
       && (locById(p.home)?.region || 'kettle') === reg.id);
     if (here.length < want) {
       spawnParty(S, r, partyTypeFor(r, reg), pick(r, homes).id);
@@ -800,6 +842,26 @@ function moveParties(S, hours, r) {
   for (const p of S.parties) {
     // A hideout is a place, not a patrol.
     if (PARTY_TIERS[p.kind]?.static) continue;
+
+    // An army on the march has somewhere to be.
+    //
+    // Deliberately ahead of both the pursuit and the deterrence branches: a
+    // column that wanders off to chase the player, or shies away from a
+    // garrison, is not an offensive, and the war would never arrive anywhere.
+    if (p.siegeTarget) {
+      const dx = p.tx - p.x, dz = p.tz - p.z;
+      const d = Math.hypot(dx, dz);
+      if (d < 14) {
+        resolveSiege(S, p);
+        pickPartyTarget(S, r, p);             // back to ordinary soldiering
+      } else {
+        const step = Math.min(d, p.speed * hours);
+        p.x += (dx / d) * step;
+        p.z += (dz / d) * step;
+        p.heading = Math.atan2(dx, dz);
+      }
+      continue;
+    }
 
     // Somebody else's ground, held by people who can hold it. A band that would
     // otherwise be hunting the company gives the place a wide berth instead,
@@ -1236,10 +1298,11 @@ export function applyMissionResult(S, res) {
       // This is the whole cost of it. A raided settlement will not sell to you
       // and will not put anyone forward, for a long time.
       changeRelation(S, res.site, -45);
-      const loc = locById(res.site);
-      if (loc?.faction) {
-        S.rep[loc.faction] = (S.rep[loc.faction] || 0) - 8;
-        notes.push({ tone: 'bad', text: `${FACTIONS[loc.faction].name} will hear about this.` });
+      // Whoever holds it now is who takes offence, not whoever founded it.
+      const holder = ownerOf(S, res.site);
+      if (holder) {
+        S.rep[holder] = (S.rep[holder] || 0) - 8;
+        notes.push({ tone: 'bad', text: `${FACTIONS[holder].name} will hear about this.` });
       }
       // Soldiers know what they just did.
       S.morale = clamp((S.morale ?? 70) - 3, 0, 100);
@@ -1313,7 +1376,8 @@ export function applyMissionResult(S, res) {
     // fourth is a marcher lordship and has to be earned.
     const needed = fiefServiceFor(granted);
     if (S.service >= needed) {
-      const candidates = LOCATIONS.filter((l) => l.faction === S.allegiance
+      // A liege can only grant ground it actually still holds.
+      const candidates = LOCATIONS.filter((l) => ownerOf(S, l.id) === S.allegiance
         && !isHolding(S, l.id) && l.missions);
       // The ground nearest where the company actually operates, because a fief
       // on the far side of the continent is a chore rather than a reward.
@@ -1370,6 +1434,98 @@ export function applyMissionResult(S, res) {
 // Settlement services
 // --------------------------------------------------------------------------
 
+// --------------------------------------------------------------------------
+// Manpower
+//
+// A settlement used to produce a fresh list of recruits every day, out of
+// nowhere, for the player alone. Nobody else drew on it and nothing you did
+// used it up, so hiring was a shop with infinite stock and the factions raised
+// their armies from thin air.
+//
+// One well, and everyone drinks from it. You hire and the town has that many
+// fewer people; a Trust column musters here and the town has fewer still. In
+// peace it refills faster than anyone drains it, so ordinary recruiting is
+// unaffected — war is what makes bodies scarce, and a region that has been
+// fought over is a region with nobody left to sell you.
+// --------------------------------------------------------------------------
+
+const MANPOWER_CAP = { settlement: 14, outpost: 8, ruin: 5, wild: 4 };
+// How often a band can hit the same place, and how long that place is too busy
+// burying people to put anybody forward. Between them these decide whether a
+// hideout left alone is an inconvenience or a slow disaster: raids that only
+// take bodies are undone by the next few days of regrowth, so the pause is what
+// actually makes an unchecked lair ruin the country around it.
+const RAID_EVERY = 5;
+const RAID_SHOCK = 3;
+
+export function manpowerCap(loc) {
+  if (!loc || loc.kind === 'open') return 0;
+  return MANPOWER_CAP[loc.kind] ?? 6;
+}
+
+/** People available at a place right now. Older saves start full. */
+export function manpowerAt(S, locId) {
+  if (!S.manpower) S.manpower = {};
+  if (S.manpower[locId] == null) S.manpower[locId] = manpowerCap(locById(locId));
+  return S.manpower[locId];
+}
+
+/** Take up to `n`, and report how many were actually there. */
+export function drawManpower(S, locId, n) {
+  const have = manpowerAt(S, locId);
+  const took = Math.max(0, Math.min(have, n));
+  S.manpower[locId] = have - took;
+  return took;
+}
+
+function tickManpower(S, r) {
+  for (const l of LOCATIONS) {
+    const cap = manpowerCap(l);
+    if (!cap) continue;
+    const have = manpowerAt(S, l.id);
+    if (have >= cap) continue;
+    // A place that was raided in the last few days is not recruiting anybody.
+    if (S.day - (S.raided?.[l.id] ?? -99) < RAID_SHOCK) continue;
+    // A barracks is somewhere to put people you have raised, so your own ground
+    // refills faster. Everywhere else recovers at its own pace.
+    const barracks = S.holdings?.[l.id]?.upgrades?.barracks || 0;
+    S.manpower[l.id] = Math.min(cap, have + 1 + barracks * 0.5);
+  }
+}
+
+/**
+ * Factions raise troops from the ground they hold.
+ *
+ * This is the other half of making manpower mean anything: if only the player
+ * spent it, scarcity would just be a tax on the player. A column sitting on its
+ * own settlement takes people from it, and takes far more of them once there is
+ * a war on — which is what turns "the Trust are mustering at Dolmet" from a log
+ * line into a reason to get there first.
+ */
+function tickFactionRecruiting(S, r) {
+  const atWar = {};
+  for (const f of Dip.MAJOR_FACTIONS) {
+    atWar[f] = Dip.enemiesOf(S, f).length > 0;
+  }
+  for (const p of S.parties) {
+    const f = p.faction;
+    if (!f || f === 'raider' || p.owner === 'player') continue;
+    if (!Dip.MAJOR_FACTIONS.includes(f)) continue;
+    const def = PARTY_TIERS[p.kind];
+    if (!def) continue;
+    const ceiling = def.strength[1];
+    if (p.strength >= ceiling) continue;      // already up to establishment
+    // Whichever of their own settlements they are standing on.
+    const home = LOCATIONS.find((l) => l.kind !== 'open'
+      && ownerOf(S, l.id) === f && !isHolding(S, l.id)
+      && Math.hypot(l.x - p.x, l.z - p.z) < 60);
+    if (!home) continue;
+    const want = Math.min(ceiling - p.strength, atWar[f] ? 3 : 1);
+    const got = drawManpower(S, home.id, want);
+    if (got > 0) p.strength += got;
+  }
+}
+
 export function recruitPool(S, locId) {
   // Deterministic per location per day, so the player cannot reroll by leaving
   // and coming back — a small thing that makes the world feel like it exists.
@@ -1383,8 +1539,14 @@ export function recruitPool(S, locId) {
   const rel = relationOf(S, locId);
   if (rel <= -60) return [];
   const relBonus = rel >= 70 ? 2 : rel >= 35 ? 1 : rel <= -25 ? -1 : 0;
-  const n = Math.max(0, 2 + (l.faction && S.rep[l.faction] > 2 ? 1 : 0)
-    + mods.extraRecruit + barracks + relBonus);
+  const holderOfHere = ownerOf(S, locId);
+  // Capped by who is actually left. A place that has just been mustered out by
+  // its own side has nobody to put forward, however well it thinks of you.
+  const n = Math.min(
+    Math.floor(manpowerAt(S, locId)),
+    Math.max(0, 2 + (holderOfHere && S.rep[holderOfHere] > 2 ? 1 : 0)
+      + mods.extraRecruit + barracks + relBonus),
+  );
   const pool = [];
   // Who a place raises, and what they were trained to do.
   const originId = originForLocation(l);
@@ -2188,14 +2350,37 @@ export function hireCost(S, s) {
     + kitValue;
 }
 
+/**
+ * Take somebody on.
+ *
+ * Returns a truthy result on success and a reason on failure, because there are
+ * now two quite different ways to fail and the interface was reporting both as
+ * "not enough credits" — which is a lie the moment a town has been mustered out
+ * by its own side, and exactly the sort of thing that makes a working mechanic
+ * look like a broken button.
+ */
 export function hire(S, s) {
   const cost = hireCost(S, s);
-  if (S.credits < cost) return false;
+  if (S.credits < cost) return { ok: false, why: 'Not enough credits' };
+  // Where the company actually is, derived from position rather than read from
+  // S.atLocation — that field is maintained by the world map renderer and is
+  // stale in every headless run, which is survivable for a log line and not for
+  // a number that has to go down.
+  // Position first, S.atLocation only as a fallback. That field is written by
+  // the world map renderer, so it is authoritative in play and stale headless;
+  // deriving from position is right whenever the company is actually standing
+  // somewhere, and the fallback covers callers that place the company by
+  // setting the field rather than by moving it.
+  const here = locationAt(S, 38) || locById(S.atLocation);
+  if (here && manpowerAt(S, here.id) < 1) {
+    return { ok: false, why: 'There is nobody left here to take your money' };
+  }
   S.credits -= cost;
+  if (here) drawManpower(S, here.id, 1);
   S.roster.push(s);
   S.stats.recruited++;
-  pushLog(S, `${s.name} hired at ${locName(S.atLocation)}.`, 'good');
-  return true;
+  pushLog(S, `${s.name} hired at ${here ? here.name : locName(S.atLocation)}.`, 'good');
+  return { ok: true };
 }
 
 // --------------------------------------------------------------------------
@@ -2520,6 +2705,17 @@ export function spoilsFor(S, party, squadSize) {
 // Holdings — taking and improving ground
 // --------------------------------------------------------------------------
 
+/**
+ * Who holds this place today.
+ *
+ * `LOCATIONS[].faction` is the founding owner and never changes — it is static
+ * module data shared by every campaign in the process, so writing to it would
+ * leak one playthrough's war into the next and break seeded determinism. The
+ * current holder lives on the campaign.
+ */
+export const ownerOf = (S, locId) =>
+  S?.mapOwner?.[locId] || locById(locId)?.faction || null;
+
 export const isHolding = (S, locId) => !!S.holdings?.[locId];
 export const holdingList = (S) =>
   Object.keys(S.holdings || {}).map((id) => ({ id, loc: locById(id), h: S.holdings[id] }))
@@ -2535,11 +2731,15 @@ export function upgradeTotal(S, key) {
 export function seizeLocation(S, locId) {
   const l = locById(locId);
   if (!l || isHolding(S, locId)) return false;
+  // Taken FROM whoever was holding it, which after a war may not be whoever
+  // founded it — and it is that faction who wants it back, so formerFaction
+  // drives the retake column.
+  const from = ownerOf(S, locId);
   S.holdings[locId] = {
-    upgrades: {}, takenDay: S.day, threat: 0, formerFaction: l.faction || null,
+    upgrades: {}, takenDay: S.day, threat: 0, formerFaction: from || null,
   };
   // Taking ground from a faction is not a neutral act.
-  if (l.faction) S.rep[l.faction] = (S.rep[l.faction] || 0) - 6;
+  if (from) S.rep[from] = (S.rep[from] || 0) - 6;
   // Taking a place by force is not how you make friends inside it.
   changeRelation(S, locId, -30);
   pushLog(S, `${l.name} is under Bracket control.`, 'good');
@@ -2815,6 +3015,238 @@ export function payday(S, r) {
   }
 }
 
+// --------------------------------------------------------------------------
+// The war moves the map
+//
+// A war used to be a diplomatic state and nothing else: it decided who shot at
+// you on the road and left the continent exactly as it found it. Trust and
+// Syndic could be at war for two hundred days and not one settlement would
+// change hands, so the argument you were being paid to fight in had no visible
+// stake and no progress. This makes the front line real — and it makes taking a
+// commission mean something, because the side you swore to can now be losing.
+// --------------------------------------------------------------------------
+
+/** Settlements a faction holds right now, founding owner plus anything taken. */
+export function settlementsOf(S, factionId) {
+  return LOCATIONS.filter((l) => l.kind !== 'open'
+    && !isHolding(S, l.id)                  // yours is yours; it has its own siege
+    && ownerOf(S, l.id) === factionId);
+}
+
+/**
+ * One day of a war between two factions.
+ *
+ * The target is the defender's settlement CLOSEST to the attacker's own ground,
+ * so the border moves as a line rather than teleporting across the continent —
+ * a faction that takes the far side of the map on a lucky roll reads as noise,
+ * while one that pushes settlement by settlement reads as a war going badly.
+ */
+function tryCapture(S, r, attacker, defender) {
+  const mine = settlementsOf(S, attacker);
+  const theirs = settlementsOf(S, defender);
+  // Somebody has to be left to lose it. A faction reduced to one place keeps it
+  // — being wiped off the map entirely takes the player's contracts with it.
+  if (!mine.length || theirs.length <= 1) return null;
+  // One offensive at a time per faction. Without this a long war stacks columns
+  // until the map is nothing but armies.
+  if (S.parties.some((p) => p.siegeTarget && p.faction === attacker)) return null;
+
+  let best = null, bd = Infinity, from = null;
+  for (const t of theirs) {
+    for (const m of mine) {
+      const d = Math.hypot(t.x - m.x, t.z - m.z);
+      if (d < bd) { bd = d; best = t; from = m; }
+    }
+  }
+  if (!best) return null;
+
+  // March on it, rather than flipping a flag.
+  //
+  // A capture used to be a dice roll and a line in the log: the player read
+  // that a town had fallen and had no way to have been part of it. Sending a
+  // column that takes days to arrive makes the war a thing on the map you can
+  // ride out and meet — kill it and the town holds. It is also what lets the
+  // war go badly for the attacker without the player: tickPartyBattles() means
+  // a defending patrol can break the column on the road.
+  const col = spawnParty(S, r, attacker === 'trust' ? 'warband_trust' : 'warband_syndic', from.id);
+  col.x = from.x + range(r, -20, 20);
+  col.z = from.z + range(r, -20, 20);
+  col.siegeTarget = best.id;
+  col.tx = best.x;
+  col.tz = best.z;
+  col.name = `${FACTIONS[attacker]?.short || attacker} column`;
+  pushLog(S, `${FACTIONS[attacker]?.name || attacker} is moving on ${best.name}.`,
+    S.allegiance === defender ? 'bad' : 'info');
+
+  // Your own side calls you to it.
+  //
+  // Swearing to a faction used to mean taking its contracts off a board like
+  // anybody else's. A liege that never asks anything of you at a time of its
+  // choosing is an employer, not a liege — so when the side you are sworn to
+  // marches, you are expected on the field, and not turning up is noticed.
+  if (attacker === S.allegiance) {
+    S.contracts.push({
+      id: uid('con'),
+      type: 'siege',
+      site: best.id,
+      employer: attacker,
+      summons: col.id,
+      title: `Join the assault on ${best.name}`,
+      text: `${FACTIONS[attacker].name} is moving on ${best.name} and expects `
+        + 'Bracket on the field. Be there before the column arrives.',
+      pay: 500 + Math.round(bd * 0.4),
+      expiresDay: S.day + 4,
+      accepted: false,
+    });
+    pushLog(S, `${FACTIONS[attacker].name} has summoned Bracket to ${best.name}.`, 'world');
+  }
+  return { loc: best, attacker, defender, column: col };
+}
+
+/**
+ * Settle a summons the player never answered.
+ *
+ * Called when the column arrives or dies, because either way the moment has
+ * passed. The cost is standing rather than money: a liege does not fine you for
+ * not turning up, it remembers.
+ */
+function closeSummons(S, columnId, { showedUp }) {
+  const i = S.contracts.findIndex((c) => c.summons === columnId);
+  if (i < 0) return;                          // taken and completed already
+  const [c] = S.contracts.splice(i, 1);
+  if (showedUp || !c.employer) return;
+  S.rep[c.employer] = (S.rep[c.employer] || 0) - 5;
+  pushLog(S, `${FACTIONS[c.employer]?.name || c.employer} noted that Bracket `
+    + 'was not on the field.', 'bad');
+}
+
+/** A column that has reached what it was sent for. */
+function resolveSiege(S, p) {
+  const loc = locById(p.siegeTarget);
+  p.siegeTarget = null;
+  closeSummons(S, p.id, { showedUp: false });
+  if (!loc) return;
+  // The player's own ground is never taken this way — a holding has its own
+  // pressure and its own retake contract, and quietly losing one to a passing
+  // column would make that whole system a lie.
+  if (isHolding(S, loc.id)) return;
+  const defender = ownerOf(S, loc.id);
+  if (defender === p.faction) return;         // somebody got here first
+  S.mapOwner[loc.id] = p.faction;
+  pushLog(S, `${FACTIONS[p.faction]?.name || p.faction} has taken ${loc.name}`
+    + `${defender ? ` from ${FACTIONS[defender]?.name || defender}` : ''}.`,
+    S.allegiance === defender ? 'bad' : 'info');
+}
+
+/**
+ * Bands that hate each other, meeting on the road.
+ *
+ * Every party in this game used to be interested in exactly one thing — the
+ * player. Raiders and patrols could stand on the same crossroads for a hundred
+ * days without acknowledging one another, which made the Reach a stage set that
+ * only came alive when you walked onto it. Now a Trust column that runs into
+ * Syndic hauliers during a war has an opinion about it, and so does every
+ * raider band that meets anybody.
+ *
+ * Resolved rather than played: these happen off-screen, often, and turning one
+ * into a deployment the player did not choose would be an ambush by the
+ * simulation. What the player gets is the aftermath, and a road whose danger is
+ * not aimed solely at them.
+ */
+function partiesHostile(S, a, b) {
+  if (a.owner === 'player' || b.owner === 'player') {
+    // Your own hauliers are somebody else's target, which is the entire risk
+    // of running caravans and is already modelled in tickCaravans().
+    return false;
+  }
+  const fa = a.faction, fb = b.faction;
+  if (!fa || !fb || fa === fb) return false;
+  // Raiders are everybody's problem and have no diplomacy.
+  if (fa === 'raider' || fb === 'raider') return true;
+  return Dip.relationBetween(S, fa, fb) === 'war';
+}
+
+function tickPartyBattles(S, r) {
+  const list = S.parties.filter((p) => !PARTY_TIERS[p.kind]?.static);
+  const dead = new Set();
+  for (let i = 0; i < list.length; i++) {
+    const a = list[i];
+    if (dead.has(a.id)) continue;
+    for (let j = i + 1; j < list.length; j++) {
+      const b = list[j];
+      if (dead.has(b.id) || !partiesHostile(S, a, b)) continue;
+      if (Math.hypot(a.x - b.x, a.z - b.z) > 22) continue;
+
+      const pa = Math.max(1, a.strength) * (a.quality || 0.6);
+      const pb = Math.max(1, b.strength) * (b.quality || 0.6);
+      const aWins = r() < pa / (pa + pb);
+      const win = aWins ? a : b, lose = aWins ? b : a;
+      dead.add(lose.id);
+      // Winning costs. A band that fights its way across the map arrives
+      // somewhere worth fighting, rather than snowballing to infinity.
+      win.strength = Math.max(1, Math.round(win.strength * range(r, 0.55, 0.85)));
+      // Only worth telling the player about if they could plausibly have seen
+      // it. A feed of distant skirmishes is noise, not news.
+      if (Math.hypot(win.x - S.pos.x, win.z - S.pos.z) < 320) {
+        pushLog(S, `${win.name} broke ${lose.name} on the road.`);
+      }
+      break;                                  // one fight per band per tick
+    }
+  }
+  if (dead.size) S.parties = S.parties.filter((p) => !dead.has(p.id));
+}
+
+/**
+ * Raiders bleed the places they camp next to.
+ *
+ * A hideout produced bands that existed only to inconvenience the player, so
+ * clearing one was a contract rather than a rescue — the road got quieter and
+ * nothing else changed. Now a band sitting on a settlement takes people off it,
+ * which shows up as an empty hiring board and gives "something has dug in near
+ * Vetch" a consequence you can feel from two regions away.
+ *
+ * A garrison stops it. That is the point of a garrison, and it is the first
+ * thing in the game that makes defending somebody else's town worth doing.
+ */
+function tickRaids(S, r) {
+  for (const p of S.parties) {
+    if (p.faction !== 'raider' || PARTY_TIERS[p.kind]?.static) continue;
+    const loc = LOCATIONS.find((l) => l.kind !== 'open'
+      && Math.hypot(l.x - p.x, l.z - p.z) < 45);
+    if (!loc) continue;
+    // Anywhere with people standing in it is not worth the trouble.
+    if (isHolding(S, loc.id) && garrisonStrength(S, loc.id) > 0) continue;
+    S.raided = S.raided || {};
+    // Stores WHEN, not a cooldown stamp: the same number decides both how often
+    // a place can be hit and how long it stops recovering afterwards.
+    if (S.day - (S.raided[loc.id] ?? -99) < RAID_EVERY) continue;
+    const took = drawManpower(S, loc.id, irange(r, 3, 6));
+    if (!took) continue;
+    S.raided[loc.id] = S.day;
+    if (Math.hypot(loc.x - S.pos.x, loc.z - S.pos.z) < 420) {
+      pushLog(S, `${p.name} took people off ${loc.name}.`, 'bad');
+    }
+  }
+}
+
+function tickWar(S, r) {
+  const majors = Dip.MAJOR_FACTIONS;
+  for (let i = 0; i < majors.length; i++) {
+    for (let j = i + 1; j < majors.length; j++) {
+      const a = majors[i], b = majors[j];
+      if (Dip.relationBetween(S, a, b) !== 'war') continue;
+      // Slow on purpose. A settlement every couple of weeks is a war you notice
+      // across a campaign; one a day is a map that has stopped meaning anything.
+      if (r() > 0.07) continue;
+      // Momentum goes to whoever holds more ground, so wars resolve instead of
+      // oscillating between the same two towns forever.
+      const na = settlementsOf(S, a).length, nb = settlementsOf(S, b).length;
+      const aPush = r() < (na + 1) / (na + nb + 2);
+      tryCapture(S, r, aPush ? a : b, aPush ? b : a);
+    }
+  }
+}
+
 function collectHoldings(S) {
   const notes = [];
   for (const { id, loc, h } of holdingList(S)) {
@@ -2944,6 +3376,11 @@ export function load() {
     if (!S.pos || typeof S.pos.x !== 'number') return null;
     if (!Array.isArray(S.parties)) S.parties = [];
     if (!Array.isArray(S.contracts)) S.contracts = [];
+    // A save written before the front line could move has no record of one.
+    if (!S.mapOwner || typeof S.mapOwner !== 'object') S.mapOwner = {};
+    // Likewise one written before settlements could run out of people. Absent
+    // means full, which manpowerAt() fills in on demand.
+    if (!S.manpower || typeof S.manpower !== 'object') S.manpower = {};
     if (!S.world) return null;
     setUidFloor((S._uid || 1000) + 1);
     delete S._uid;
