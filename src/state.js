@@ -50,6 +50,9 @@ export function newCampaign(seed = Math.floor(Math.random() * 1e9)) {
     // Bodies a place has left to give. Everyone draws from the same well —
     // you, and every faction column that musters here.
     manpower: {},       // locId -> people available now
+    // The people who lead the factions' columns. They outlive their parties:
+    // beat one and they turn up again with a new command.
+    lords: [],          // { id, name, faction, defeats, wins, captured, freeDay }
     renown: 0,          // how seriously the continent takes Bracket
     allegiance: null,   // faction id if the player has taken a commission
     ownFaction: null,   // { id, name, colour, declaredDay } once declared
@@ -481,6 +484,68 @@ function seedParties(S, r) {
   }
 }
 
+// --------------------------------------------------------------------------
+// The people who lead the columns
+//
+// Every faction party was an anonymous token: "Trust Patrol", one of nine,
+// interchangeable and forgotten the moment it was beaten. Nothing that happened
+// to it meant anything later, so the map was populated rather than inhabited.
+//
+// A lord outlives their command. Break their column and they are captured or
+// they get away, and either way they come back — with a record of what has
+// passed between you. That is what turns a a chase into a grudge, and a
+// prisoner into somebody worth ransoming rather than a line of loot.
+// --------------------------------------------------------------------------
+
+const LORD_TIERS = 3;                        // tier at which a party rates a name
+
+export const lordById = (S, id) => (S.lords || []).find((l) => l.id === id);
+export const lordOfParty = (S, p) => (p?.lordId ? lordById(S, p.lordId) : null);
+
+/** Somebody of this faction who is not currently in the field. */
+function availableLord(S, r, faction) {
+  const busy = new Set(S.parties.map((p) => p.lordId).filter(Boolean));
+  const free = (S.lords || []).filter((l) => l.faction === faction
+    && !busy.has(l.id) && !l.captured && S.day >= (l.freeDay || 0));
+  if (free.length) return pick(r, free);
+  // Nobody spare, so the faction commissions somebody new.
+  const lord = {
+    id: uid('lord'),
+    name: `${pick(r, FIRST_NAMES)} ${pick(r, LAST_NAMES)}`,
+    faction,
+    defeats: 0,          // times the player has broken their command
+    wins: 0,             // times they have broken the player's
+    captured: false,
+    freeDay: 0,
+  };
+  S.lords = S.lords || [];
+  S.lords.push(lord);
+  return lord;
+}
+
+/**
+ * What happens to a commander whose column is gone.
+ *
+ * Never simply deleted. A lord who dies every time their party is beaten makes
+ * the faction a stream of strangers, which is the thing this is trying to fix.
+ */
+export function unhorseLord(S, r, party, { byPlayer }) {
+  const lord = lordOfParty(S, party);
+  if (!lord) return null;
+  if (byPlayer) lord.defeats++;
+  // Taken, or away across country on foot. Being captured is the interesting
+  // outcome and so it is the less likely one.
+  if (byPlayer && r() < 0.35) {
+    lord.captured = true;
+    lord.freeDay = S.day + irange(r, 20, 45);
+    pushLog(S, `${lord.name} was taken alive.`, 'good');
+  } else {
+    lord.freeDay = S.day + irange(r, 6, 16);
+    pushLog(S, `${lord.name} got away.`, byPlayer ? 'bad' : 'info');
+  }
+  return lord;
+}
+
 function spawnParty(S, r, kind, nearId) {
   const def = PARTY_TIERS[kind] || PARTY_TIERS.looters;
   const home = locById(nearId) || { x: 0, z: 0 };
@@ -509,6 +574,15 @@ function spawnParty(S, r, kind, nearId) {
     home: nearId,
     heading: r() * Math.PI * 2,
   };
+  // Anything organised enough to be worth remembering gets somebody to lead it.
+  // Raiders do not: a looter band is weather, and naming one would make every
+  // scrap on the road feel like a duel with a rival.
+  if (def.faction && def.faction !== 'raider' && (def.tier || 0) >= LORD_TIERS
+    && !def.owned && !def.static) {
+    const lord = availableLord(S, r, def.faction);
+    p.lordId = lord.id;
+    p.name = `${lord.name}'s ${def.name}`;
+  }
   pickPartyTarget(S, r, p);
   S.parties.push(p);
   return p;
@@ -634,6 +708,14 @@ function onNewDay(S, r) {
   tickManpower(S, rng((S.seed ^ 0x2b19) + S.day * 4409));
   tickFactionRecruiting(S, rng((S.seed ^ 0x51ad) + S.day * 5171));
   tickRaids(S, rng((S.seed ^ 0x6c33) + S.day * 6113));
+  // Captivity ends. A lord held indefinitely is a lord removed from the game,
+  // and the point of taking one is that they come back knowing who took them.
+  for (const l of S.lords || []) {
+    if (l.captured && S.day >= (l.freeDay || 0)) {
+      l.captured = false;
+      pushLog(S, `${l.name} has been ransomed home.`, 'info');
+    }
+  }
   // A summons outlives its column if the column was broken on the road rather
   // than arriving. The call still went out and you still did not answer it, but
   // the contract has to go or it sits on the board forever pointing at an army
@@ -1218,6 +1300,19 @@ export function applyMissionResult(S, res) {
           tone: 'good',
           text: `${won.who} is finished. ${won.credits} credits`
             + `${won.arms ? ` and ${won.arms} weapons` : ''} back where they belong.`,
+        });
+      }
+      // Whoever was leading it is taken or gets clear, and either way they
+      // remember it was you. This is what makes beating the same column twice
+      // different from beating two columns once.
+      const beaten = unhorseLord(S, rng((S.seed + S.day * 149 + S.stats.missions) | 0),
+        party, { byPlayer: true });
+      if (beaten) {
+        notes.push({
+          tone: beaten.captured ? 'good' : 'world',
+          text: beaten.captured
+            ? `${beaten.name} is your prisoner. Their people will want them back.`
+            : `${beaten.name} broke off and got away. That is ${beaten.defeats} now.`,
         });
       }
       // The band you just fought is gone from the map. Immediate, visible.
@@ -3187,6 +3282,12 @@ function tickPartyBattles(S, r) {
       const aWins = r() < pa / (pa + pb);
       const win = aWins ? a : b, lose = aWins ? b : a;
       dead.add(lose.id);
+      // Somebody was leading that. They are not on the field any more, but they
+      // are not gone either — byPlayer is false because this was two other
+      // powers settling something between themselves.
+      unhorseLord(S, r, lose, { byPlayer: false });
+      const winner = lordOfParty(S, win);
+      if (winner) winner.wins++;
       // Winning costs. A band that fights its way across the map arrives
       // somewhere worth fighting, rather than snowballing to infinity.
       win.strength = Math.max(1, Math.round(win.strength * range(r, 0.55, 0.85)));

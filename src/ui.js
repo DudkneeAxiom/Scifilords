@@ -2243,6 +2243,19 @@ export function encounterPanel(S, party, cbs) {
     title: party.name.toUpperCase(),
     tag: f ? f.short : 'UNALIGNED',
     body: `<div class="prose">${esc(flavour)}</div>
+      ${(() => {
+    // Who you are actually facing, and what has already passed between you. A
+    // column led by somebody you have beaten twice is a different proposition
+    // from an identical one you have never met, and the player cannot weigh
+    // that unless it is on the panel.
+    const lord = State.lordOfParty(S, party);
+    if (!lord) return '';
+    const past = [];
+    if (lord.defeats) past.push(`you have broken their command ${lord.defeats} time(s)`);
+    if (lord.wins) past.push(`they have ${lord.wins} win(s) on the road`);
+    return `<div class="prose mt"><span class="hl">${esc(lord.name)}</span> leads them${
+      past.length ? ` — ${esc(past.join(', '))}` : ''}.</div>`;
+  })()}
       ${PARTY_TIERS[party.kind]?.desc
     ? `<div class="prose dim">${esc(PARTY_TIERS[party.kind].desc)}</div>` : ''}
       ${est ? `<div class="prose dim mt" style="font-size:11px">

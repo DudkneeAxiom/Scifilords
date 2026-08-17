@@ -246,6 +246,18 @@ company is inside one. Both are needed and the second is easy to miss:
 into town picks a fight with you on the steps of it — which was survivable when
 the world barely moved while you stood still, and is constant now that it does.
 
+**Faction columns belong to people, and the people outlive the columns.**
+Anything of tier 3 or better that is not a raider gets a lord from `S.lords`.
+Beat one and `unhorseLord()` either takes them prisoner or lets them get away;
+either way they come back, carrying a record of what has passed between you,
+which is what the encounter panel shows. Three things are easy to break here
+and `tools/lords.mjs` checks all of them: the roll must be REUSED rather than
+minted fresh as parties churn (or it grows without bound over a long war),
+nobody may lead two columns at once, and captivity has to end — a lord held
+indefinitely is a lord quietly removed from the game. Raiders are deliberately
+anonymous: a looter band is weather, and naming one would make every scrap on
+the road feel like a duel with a rival.
+
 **The ground lives in `src/region.js`, and both layers read it.** `regionHeight`
 used to be defined in `worldmap.js`, which imports `state.js` — so the
 simulation could not see the terrain its parties were walking across without an
