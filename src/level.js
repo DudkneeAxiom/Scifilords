@@ -1068,14 +1068,12 @@ export function build(siteId, seed, override = {}) {
   const ground = buildGround(BOUND * 4.2, meta.palette.ground, meta.palette.groundLow);
   group.add(ground);
 
-  // Instanced-ish placement: each prop is a clone of a preloaded GLB.
-  for (const p of b.props) {
-    const o = Models.get(p.model);
-    o.position.set(p.x, p.y, p.z);
-    o.rotation.y = p.ry;
-    o.scale.setScalar(p.scale);
-    group.add(o);
-  }
+  // Scenery is baked into one mesh per model rather than placed as a clone
+  // each. A clone of a kit model is several meshes with several materials, so a
+  // dressed site was spending most of its draw calls on rocks that never move.
+  // Nothing here needs individual identity — anything that does (interactables,
+  // the gate, characters) is built elsewhere and stays its own object.
+  group.add(Models.mergeProps(b.props));
 
   return {
     id: siteId,

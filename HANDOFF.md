@@ -18,6 +18,20 @@ node tools/soak.mjs 500 40    # 500 campaign days, 40 deployments, unattended
 node tools/shots.mjs          # photograph 20 screens into qa-shots/
 ```
 
+### Working on this repo
+
+**Commit straight to `main`.** There is one developer, the history is linear,
+and there is no `gh` CLI on this machine to open a pull request with — a feature
+branch here does not get reviewed, it just gets stranded until somebody merges
+it by hand. One commit per round of work, with the reasoning in the message.
+Push when asked; the credential is stored, so it does not prompt.
+
+**Set a git identity before the first commit.** There was no global one, so a
+fresh clone fails with "Author identity unknown" even though every commit in the
+history is the same person. It is now set globally to
+`DudkneeAxiom <cptwhiterain@gmail.com>`; if you meet that error again, that is
+what it wants.
+
 ### Environment quirks on this machine
 
 - **Node is portable and not on PATH**: `%LOCALAPPDATA%\Programs\nodejs\node.exe`.
@@ -170,6 +184,44 @@ you change the terrain again, these are the shapes to look for.
    sightline, robbing a store in a raid turned the whole street out and every
    one of them forgot within a frame. Use `sendHunting()`.
 
+**A garrison is a posting on the soldier, not a list on the holding.**
+`s.garrison` holds a location id and `ready()` excludes anyone carrying one, so
+a garrisoned soldier cannot also be on the truck and cannot desync — dying or
+being dismissed takes the posting with them. `loseHolding()` clears the postings
+of everyone stationed there, or you would keep people pointed at ground you no
+longer own. `garrisonStrength()` is deliberately the same shape as the company's
+own power in `estimateFight()`, so a garrison and a raiding party can be
+compared without a second balance model that would drift away from the first.
+
+**Draw calls are the render budget, not triangles.** A dressed site was
+spending over a thousand of them on scenery, because every prop was placed as a
+clone and a clone of a kit model is several meshes with several materials.
+`Models.mergeProps()` bakes all instances of a model into one geometry with the
+transform applied — 1244 draw calls down to ~500 at forty combatants, with the
+triangle count slightly UP. Anything needing to move, hide or be picked
+individually must not go through it; it has no identity afterwards. Note that
+`tools/sites.mjs` used to count `group.children` as its measure of dressing,
+which reported "2" for a fully dressed site the moment this landed — it counts
+geometry now.
+
+**The world clock runs on time, not on distance.** `advanceTime()` used to be
+fed `moved / TRAVEL_SPEED`, so the Reach ran at full speed while the company
+travelled and at about three per cent of it while it stood still. Standing still
+was a way of stopping the world — nothing closed on you, nothing arrived, and a
+band you had provoked froze the moment you let go of the key. It also meant a
+laden company made the whole world slower, since time was distance over a
+constant. `HOURS_PER_SECOND` now drives the clock and speed decides how much
+ground an hour buys; `dt` arrives pre-multiplied by `timeScale`, so halt and
+fast-forward come free. This deliberately reverses an older rule that standing
+still should never burn a contract deadline: it now does, and halt is a keypress.
+
+**A settlement is a haven, in both directions.** Bands break off pursuit near a
+location (`PURSUIT_SANCTUARY`), *and* hostile encounters do not fire while the
+company is inside one. Both are needed and the second is easy to miss:
+`pickPartyTarget()` sends patrols TO locations, so without it a raider wandering
+into town picks a fight with you on the steps of it — which was survivable when
+the world barely moved while you stood still, and is constant now that it does.
+
 **Creeds are derived from `portraitSeed`, not rolled.** Taking another number
 off the seeded generator in `makeSoldier` would shift every roll after it and
 change every seeded campaign in the game.
@@ -194,15 +246,22 @@ Open, in rough priority order:
    rule that favours whoever the player is not is precisely what reads as
    cheating.
 
-   **The constant is not properly tuned, and item 1 is why.** Time-to-die
-   medians came out *non-monotonic* across values — 2.0 gave 7.4s, 2.5 gave
-   3.3s, 3.0 gave 22.55s at 12 trials each. That is noise, not a curve, and
-   anything fitted to it is fitted to nothing. `RANGE_IN_WIDE` is set to 2.5 on
-   the argument that first shots should land in a cone a couple of times too
-   wide, not because 2.5 measured better than 2.0. What *is* robust across every
-   value tested: the sub-second deaths are gone. The fastest death at 12m went
-   from 0.5s to 4.4s at ×3.0, and standing in the open is still fatal.
-   Settle it with a run of 60+ trials per range before trusting any median.
+   **`RANGE_IN_WIDE` is now measured rather than argued.** It was set to 2.5 on
+   principle because twelve-trial medians came out *non-monotonic* across
+   values — 2.0 gave 7.4s, 2.5 gave 3.3s, 3.0 gave 22.55s — which is noise, not
+   a curve. At sixty trials per range the picture is stable and `tools/
+   balance.mjs` passes its own criterion for the first time:
+
+   | range | incapacitated | median time to down |
+   |-------|---------------|---------------------|
+   | 12m   | 53/60         | 7.4s                |
+   | 22m   | 16/60         | 11.8s               |
+   | 34m   | 23/60         | 12.0s               |
+
+   Close range kills, distance buys you time to do something about it, and the
+   probe's verdict went from "range does not change the outcome enough to
+   matter" to "range is the whole game". Keep the sample size if you retune:
+   twelve trials cannot distinguish any of these values from any other.
 3. **Mission stages are a scaffold, not a design system.** `buildStages()` in
    `src/mission.js` generates two generic kinds (sweep, hold) from the site
    geometry for open-field contracts above 26 strength. The natural next step is

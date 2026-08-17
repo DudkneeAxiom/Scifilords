@@ -132,6 +132,96 @@ export function releaseRenderer(renderer) {
   try { renderer.forceContextLoss(); } catch { /* already gone */ }
 }
 
+/**
+ * Bake a pile of static scenery into one mesh per model.
+ *
+ * Level props are placed as a clone each, and a clone of a kit model is several
+ * meshes with several materials, so a site was spending over a thousand draw
+ * calls on rocks and crates that never move. Characters solved this at load
+ * with mergeCharacter(); scenery can go further, because it does not animate:
+ * every instance of a model can collapse into a single geometry with its
+ * transform already applied.
+ *
+ * The trade is memory for draw calls. Merged geometry is per-site rather than
+ * shared with the cache, so it costs one copy of every rock actually placed —
+ * and it is not marked shared, so disposeScene() correctly frees it when the
+ * site is torn down.
+ *
+ * Anything that needs to move, be hidden, or be picked individually must NOT
+ * come through here. It has no identity afterwards; it is scenery.
+ */
+export function mergeProps(props) {
+  const group = new THREE.Group();
+  const byModel = new Map();
+  for (const p of props) {
+    if (!byModel.has(p.model)) byModel.set(p.model, []);
+    byModel.get(p.model).push(p);
+  }
+
+  const dummy = new THREE.Object3D();
+  for (const [model, list] of byModel) {
+    const parts = [];
+    for (const p of list) {
+      const src = cache.get(model);
+      if (!src) continue;
+      dummy.position.set(p.x, p.y, p.z);
+      dummy.rotation.set(0, p.ry, 0);
+      dummy.scale.setScalar(p.scale ?? 1);
+      dummy.updateMatrix();
+      src.updateMatrixWorld(true);
+      src.traverse((o) => {
+        if (!o.isMesh || !o.geometry) return;
+        const g = o.geometry.index ? o.geometry.toNonIndexed() : o.geometry.clone();
+        // Into the model's own space, then into the world at this placement.
+        g.applyMatrix4(o.matrixWorld);
+        g.applyMatrix4(dummy.matrix);
+        for (const attr of Object.keys(g.attributes)) {
+          if (!['position', 'normal'].includes(attr)) g.deleteAttribute(attr);
+        }
+        if (!g.attributes.normal) g.computeVertexNormals();
+        // Material colour becomes vertex colour, so one material covers the lot.
+        const mat = Array.isArray(o.material) ? o.material[0] : o.material;
+        const col = new THREE.Color(0xffffff);
+        if (mat?.color) col.copy(mat.color);
+        if (mat?.emissive && mat.emissiveIntensity > 0) {
+          col.lerp(new THREE.Color(0xffffff), Math.min(0.6, mat.emissiveIntensity * 0.25));
+        }
+        const n = g.attributes.position.count;
+        const colors = new Float32Array(n * 3);
+        for (let i = 0; i < n; i++) {
+          colors[i * 3] = col.r; colors[i * 3 + 1] = col.g; colors[i * 3 + 2] = col.b;
+        }
+        g.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+        parts.push(g);
+      });
+    }
+    if (!parts.length) continue;
+    let merged = null;
+    try {
+      merged = BufferGeometryUtils.mergeGeometries(parts, false);
+    } catch { merged = null; }
+    if (!merged) {
+      // Fall back to placing them individually rather than losing the scenery.
+      for (const p of list) {
+        const o = get(p.model);
+        o.position.set(p.x, p.y, p.z);
+        o.rotation.y = p.ry;
+        o.scale.setScalar(p.scale ?? 1);
+        group.add(o);
+      }
+      continue;
+    }
+    const mesh = new THREE.Mesh(merged, new THREE.MeshLambertMaterial({
+      vertexColors: true, flatShading: true,
+    }));
+    mesh.name = `props_${model}`;
+    mesh.castShadow = true;
+    mesh.receiveShadow = true;
+    group.add(mesh);
+  }
+  return group;
+}
+
 /** A fresh instance of a loaded model. Materials are shared; transforms are not. */
 export function get(name) {
   const src = cache.get(name);

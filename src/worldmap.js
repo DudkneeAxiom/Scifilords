@@ -18,6 +18,12 @@ const HALF = REGION.size / 2;
 // Fast-forward. Four is about the most you can run the map at before you drive
 // straight past the parties you were meant to notice.
 const FAST = 4;
+// Game hours per real second at normal speed. Chosen to preserve the pace
+// travel already had — the old rule worked out at 1.6 hours per second on the
+// road, and this keeps a company at full speed covering exactly the same ground
+// per second as before. Only standing still changes, from 3% of that to all
+// of it.
+const HOURS_PER_SECOND = 1.6;
 
 // Border-line hues. These are drawn as thin surveyed boundaries rather than a
 // wash over the terrain, so they can afford to be saturated — the ground stays
@@ -762,10 +768,24 @@ export class WorldMap {
     // The company's real speed, not the constant. Recomputed per frame so a
     // sale at a market or a soldier recovering is felt immediately.
     const pace = State.partySpeed(S).speed;
+    // The clock, and then the distance — not the other way round.
+    //
+    // Time used to be DERIVED from how far the company had walked, so the Reach
+    // ran at full speed while you travelled and at about three per cent of it
+    // while you stood still. That made standing still a way of stopping the
+    // world: nothing closed on you, nothing arrived, no band you had provoked
+    // ever caught up. It also meant a laden company made the whole world slower,
+    // because time was distance over a constant.
+    //
+    // Now the hour hand moves at a fixed rate and speed decides how much ground
+    // you cover in an hour, which is the way the strategic layer this is aiming
+    // at has always worked. `dt` arrives already multiplied by timeScale, so
+    // halt and fast-forward both fall out of it for free.
+    const hours = dt * HOURS_PER_SECOND;
     if (mx || mz) {
       this.stopTravel();
       const m = Math.hypot(mx, mz);
-      const step = pace * dt * 1.6;
+      const step = pace * hours;
       S.pos.x = clamp(S.pos.x + (mx / m) * step, -HALF + 40, HALF - 40);
       S.pos.z = clamp(S.pos.z + (mz / m) * step, -HALF + 40, HALF - 40);
       this.playerHeading = Math.atan2(mx, mz);
@@ -776,7 +796,7 @@ export class WorldMap {
       if (d < 3) {
         this.stopTravel();
       } else {
-        const step = Math.min(d, pace * dt * 1.6);
+        const step = Math.min(d, pace * hours);
         S.pos.x += (dx / d) * step;
         S.pos.z += (dz / d) * step;
         this.playerHeading = Math.atan2(dx, dz);
@@ -784,16 +804,16 @@ export class WorldMap {
       }
     }
 
-    // Time only passes while the company is actually moving. Standing still on
-    // the map should never quietly burn contract deadlines.
+    // One clock, whether or not you went anywhere.
     //
-    // Except when you have asked it to: fast-forward on the spot is how you
-    // wait for a wound to close or a caravan to come home, and it can run much
-    // harder than fast-forward on the road, because the reason FAST is capped
-    // at four is that you drive past the parties you were meant to notice —
-    // which cannot happen when you are not going anywhere.
-    if (moved > 0) State.advanceTime(S, moved / State.TRAVEL_SPEED);
-    else State.advanceTime(S, dt * 0.05 * (this.timeScale === FAST ? 3 : 1));
+    // This deliberately reverses an older rule that standing still should never
+    // burn a contract deadline. It was protecting the player from the calendar
+    // and it cost the map its life: a world that only moves when you do is a
+    // world you cannot be caught in, and a chase you can end by letting go of
+    // the key is not a chase. Deadlines now run while you sit, which is the
+    // trade — and halt is a key away, panels pause the Reach on their own, and
+    // the speed chips are right there.
+    State.advanceTime(S, hours);
 
     this.syncParties();
     this.checkProximity();
@@ -855,6 +875,13 @@ export class WorldMap {
 
     for (const p of near) {
       if (this.nearSet.has(p.id)) continue;
+      // Not while you are standing in a settlement. Bands break off pursuit
+      // near a location already, but they still patrol TO locations, so without
+      // this a raider walking into town starts a fight with you on the steps of
+      // it — and the clock runs while you stand there now, so it will happen.
+      // Leaving a settlement panel straight into an encounter is the specific
+      // misery this prevents.
+      if (loc && p.hostileToPlayer) continue;
       const cd = this.encounterCooldown[p.id] || 0;
       if (S.day * 24 + S.hour < cd) continue;
       this.encounterCooldown[p.id] = S.day * 24 + S.hour + 6;

@@ -69,7 +69,20 @@ for (const layout of LAYOUTS) {
     const spread = Math.max(...radii) - Math.min(...radii);
     return {
       name: m.level.name,
-      props: m.level.group.children.length,
+      // Triangles of scenery in hundreds, not scene children. Dressing is baked
+      // into one mesh per model now, so counting children reports "2" for a
+      // fully dressed site — and would go on reporting 2 if every rock on it
+      // disappeared. Geometry is the thing; children is a proxy that just
+      // stopped tracking it.
+      props: (() => {
+        let tris = 0;
+        m.level.group.traverse((o) => {
+          if (!o.isMesh || !o.geometry) return;
+          const g = o.geometry;
+          tris += (g.index ? g.index.count : g.attributes.position?.count || 0) / 3;
+        });
+        return Math.round(tris / 100);
+      })(),
       obstacles: m.level.obstacles.length,
       tall: m.level.obstacles.filter((x) => x.h > 2.4).length,
       foes: foes.length,

@@ -1303,6 +1303,38 @@ export function holdingsPanel(S, cbs) {
         <span class="dim">${threat >= 1 ? 'ATTACK IMMINENT' : threat > 0.6 ? 'building' : 'quiet'}</span>
       </div>
       ${(() => {
+    // The garrison, and what it is buying. A number on its own would not tell
+    // the player whether four soldiers here is enough, so this says what the
+    // pressure is doing as a result and what would turn up if it boiled over.
+    const posted = State.garrisonOf(S, id);
+    const str = State.garrisonStrength(S, id);
+    const column = State.assaultOdds(S, id);
+    const spare = State.ready(S);
+    return `<div class="garrison-box">
+      <div class="cv-top">
+        <span class="lbl">GARRISON</span>
+        <span class="cv-count">${posted.length}</span>
+        <span class="dim">${str > 0
+      ? `holds against a raid ${Math.round(column * 100)}% of the time`
+      : 'nobody is standing in it'}</span>
+      </div>
+      ${posted.length ? `<div class="gar-list">${posted.map((s) => `
+        <span class="gar-man ${State.deployableSoldier(s) ? '' : 'hurt'}">
+          ${esc(s.name)}<button class="btn btn-tiny" data-recall="${s.id}">RECALL</button>
+        </span>`).join('')}</div>` : ''}
+      ${spare.length > 1 ? `<div class="gar-add">
+        <select data-station-for="${id}">
+          ${spare.filter((s) => !s.isCommander).map((s) =>
+      `<option value="${s.id}">${esc(s.name)} — ${esc(s.role)}</option>`).join('')}
+        </select>
+        <button class="btn" data-station="${id}">POST HERE</button>
+      </div>` : '<div class="cv-note">Nobody to spare — somebody has to take the field.</div>'}
+      <div class="cv-note">Soldiers posted here do not deploy with the company, and
+        still draw wages. They slow the pressure building, and if it boils over
+        while you are elsewhere they fight for the place themselves.</div>
+    </div>`;
+  })()}
+      ${(() => {
     // Caravans belong on the holdings screen because they are what a holding is
     // FOR: a place that pays a fixed yield is a number, a place that sends
     // trucks out is a business you have to protect.
@@ -1344,6 +1376,22 @@ export function holdingsPanel(S, cbs) {
     el.onclick = () => {
       if (State.buyCaravan(S, el.dataset.caravan)) { Audio.uiSelect(); holdingsPanel(S, cbs); }
       else { Audio.uiDeny(); toastModal('Cannot fit one out here'); }
+    };
+  }
+  for (const el of document.querySelectorAll('#modal [data-station]')) {
+    el.onclick = () => {
+      const id = el.dataset.station;
+      const sel = document.querySelector(`#modal [data-station-for="${id}"]`);
+      const res = State.stationSoldier(S, id, sel?.value);
+      if (res.ok) { Audio.uiSelect(); holdingsPanel(S, cbs); }
+      else { Audio.uiDeny(); toastModal(res.why); }
+    };
+  }
+  for (const el of document.querySelectorAll('#modal [data-recall]')) {
+    el.onclick = () => {
+      const res = State.recallSoldier(S, el.dataset.recall);
+      if (res.ok) { Audio.uiSelect(); holdingsPanel(S, cbs); }
+      else { Audio.uiDeny(); toastModal(res.why); }
     };
   }
   for (const el of document.querySelectorAll('#modal [data-up]')) {

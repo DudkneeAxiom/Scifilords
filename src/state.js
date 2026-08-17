@@ -12,7 +12,7 @@ import {
 } from './data.js';
 import {
   startingCompany, makeSoldier, dayTick, STATUS, deployable, addXp, maxHpOf,
-  effective, WOUNDS,
+  effective, WOUNDS, resolveCasualty,
 } from './roster.js';
 import { companyMods } from './perks.js';
 import * as Dip from './diplomacy.js';
@@ -107,7 +107,11 @@ export function pushLog(S, text, tone = 'info') {
 
 export const living = (S) => S.roster.filter((s) => s.status !== STATUS.DEAD);
 export const fallen = (S) => S.roster.filter((s) => s.status === STATUS.DEAD);
-export const ready = (S) => living(S).filter(deployable);
+// Stationed at a holding, and therefore not on the truck. The posting lives on
+// the soldier rather than in a list on the holding so it cannot desync: a
+// garrisoned soldier who dies or is dismissed takes their posting with them.
+export const stationed = (s) => !!s.garrison;
+export const ready = (S) => living(S).filter((s) => deployable(s) && !stationed(s));
 export const commander = (S) => S.roster.find((s) => s.isCommander);
 export const hasMedic = (S) => ready(S).some((s) => s.role === 'medic');
 export const awaitingAnyPerk = (S) =>
@@ -757,13 +761,64 @@ function partyIntent(S, p, squad) {
   return 'patrol';
 }
 
+// How far a garrison's reputation carries. Wider than pursuit sight: the point
+// of holding ground is that trouble stops coming near it, which you should be
+// able to see on the map as raiders giving the place a wide berth.
+const HOLDING_WATCH = 165;
+
+/**
+ * The nearest holding of yours this band wants no part of.
+ *
+ * Compared band-strength against garrison, so deterrence is relative: four
+ * soldiers behind wire clear the looters out of a valley and do not trouble a
+ * Titan. This is the visible half of a garrison — the half you can watch
+ * happening from the map rather than read in a number on a panel.
+ */
+function holdingDeterrent(watched, p) {
+  if (!watched.length) return null;
+  const theirs = Math.max(1, p.strength || 4) * (p.quality || 0.7) * 1.15;
+  let best = null, bd = HOLDING_WATCH;
+  for (const w of watched) {
+    if (w.strength <= theirs * 0.85) continue;
+    const d = Math.hypot(w.loc.x - p.x, w.loc.z - p.z);
+    if (d < bd) { bd = d; best = w; }
+  }
+  return best;
+}
+
 function moveParties(S, hours, r) {
   // Resolved once, not once per band: every hostile party asks the same
   // question about the same company, and this runs on every world tick.
   const squad = ready(S).slice(0, deployLimit(S));
+  // Likewise the garrisons. garrisonStrength() walks the roster and rebuilds
+  // the company's perk mods, so asking it per band per tick would make the
+  // world clock scale with parties times holdings.
+  const watched = holdingList(S)
+    .map(({ id, loc }) => ({ loc, strength: garrisonStrength(S, id) }))
+    .filter((w) => w.strength > 0);
+
   for (const p of S.parties) {
     // A hideout is a place, not a patrol.
     if (PARTY_TIERS[p.kind]?.static) continue;
+
+    // Somebody else's ground, held by people who can hold it. A band that would
+    // otherwise be hunting the company gives the place a wide berth instead,
+    // which is what a garrison is FOR: not winning the fight, but the fight not
+    // being offered.
+    const scaredOff = p.hostileToPlayer ? holdingDeterrent(watched, p) : null;
+    if (scaredOff) {
+      const ax = p.x - scaredOff.loc.x, az = p.z - scaredOff.loc.z;
+      const ad = Math.hypot(ax, az) || 1;
+      const step = Math.min(HOLDING_WATCH - ad + 8, p.speed * 1.6 * hours);
+      if (step > 0) {
+        p.x += (ax / ad) * step;
+        p.z += (az / ad) * step;
+        p.heading = Math.atan2(ax, az);
+        p.chasing = false;
+        p.target = null;
+        continue;
+      }
+    }
 
     const intent = partyIntent(S, p, squad);
     p.chasing = intent === 'chase';
@@ -2494,9 +2549,124 @@ export function seizeLocation(S, locId) {
 export function loseHolding(S, locId) {
   const l = locById(locId);
   if (!isHolding(S, locId)) return false;
+  // Anyone stationed there is not standing on the ground any more. They come
+  // back to the company rather than vanishing with the holding — losing a place
+  // should cost you the place, not quietly delete four of your people.
+  for (const s of garrisonOf(S, locId)) s.garrison = null;
   delete S.holdings[locId];
   pushLog(S, `${l?.name || locId} has been lost.`, 'bad');
   return true;
+}
+
+// --------------------------------------------------------------------------
+// Garrisons
+//
+// Somewhere to put people, and the reason to hold ground rather than collect
+// it. A holding used to defend itself with one upgrade that slowed a number
+// down; the only real defence was to be standing in it on the day, and if you
+// were somewhere else it fell whatever you had built. Leaving soldiers behind
+// makes a domain something you invest in and something raiders read from a
+// distance.
+// --------------------------------------------------------------------------
+
+export const garrisonOf = (S, locId) =>
+  living(S).filter((s) => s.garrison === locId);
+
+/**
+ * How hard this place is to take.
+ *
+ * The soldiers standing in it, plus what has been built around them. Deliberately
+ * the same shape as the company's own power in estimateFight() — accuracy and
+ * staying power, weighted by rank — so a garrison and a raiding party can be
+ * compared without a second balance model that would drift away from the first.
+ *
+ * Defence Works multiplies rather than adds: wire and firing positions are worth
+ * a great deal to somebody and nothing at all to an empty building.
+ */
+export function garrisonStrength(S, locId) {
+  const h = S.holdings?.[locId];
+  if (!h) return 0;
+  const mods = companyMods(S.roster);
+  let power = 0;
+  for (const s of garrisonOf(S, locId)) {
+    if (!deployable(s)) continue;              // the infirmary is not the wall
+    const e = effective(s, mods);
+    power += (e.accuracy * 1.35 + e.maxHp / 130) * (1 + s.rank * 0.22);
+  }
+  const works = h.upgrades?.works || 0;
+  // Militia turn out for a defended place. They are not much on their own and
+  // are worth having behind a revetment, which is why they scale with works.
+  const militia = works * 0.55;
+  return (power + militia) * (1 + works * 0.22);
+}
+
+/**
+ * What turns up when a holding's pressure boils over.
+ *
+ * Scaled to the region and to how far the campaign has come, so a place in the
+ * Kettle is worried by looters and one in the Littoral is worried by something
+ * organised, and so a domain held for a hundred days is not still being probed
+ * by the same four men. Expressed on the same scale as garrisonStrength().
+ */
+function assaultStrength(S, loc) {
+  const danger = REGIONS[loc.region]?.danger ?? 1;
+  // A flag of your own attracts a serious answer; a liege sends people to help.
+  const politics = S.ownFaction ? 1.45 : (S.allegiance ? 0.8 : 1);
+  return (4.5 + danger * 2.2 + S.day * 0.018) * politics;
+}
+
+/**
+ * The chance a holding's garrison turns an assault away on its own.
+ *
+ * Exposed so the holdings screen can answer the only question the player
+ * actually has — "is four enough?" — with the same number the simulation will
+ * roll against, rather than a description they have to guess from.
+ */
+export function assaultOdds(S, locId) {
+  const loc = locById(locId);
+  if (!loc || !isHolding(S, locId)) return 0;
+  const defence = garrisonStrength(S, locId);
+  if (defence <= 0) return 0;
+  return clamp(defence / (defence + assaultStrength(S, loc)), 0, 0.95);
+}
+
+/** Re-exported so the interface can grey out anyone in the infirmary. */
+export const deployableSoldier = (s) => deployable(s);
+
+/** Hurt somebody who was defending a holding, without killing them. */
+function woundGarrison(S, s, r) {
+  // Stabilised: they held the ground, or were carried off it by their own
+  // people. Losing a place costs you the place and the money in it, which is
+  // the same bargain the rest of the game makes about defeat — it takes your
+  // things, not the people you have spent thirty days getting attached to.
+  resolveCasualty(r, s, { stabilised: true, hasMedic: hasMedic(S) });
+}
+
+/** Post a soldier to a holding. */
+export function stationSoldier(S, locId, soldierId) {
+  if (!isHolding(S, locId)) return { ok: false, why: 'That is not yours to garrison' };
+  const s = S.roster.find((x) => x.id === soldierId);
+  if (!s || s.status === STATUS.DEAD) return { ok: false, why: 'Nobody by that name' };
+  if (s.isCommander) return { ok: false, why: 'You do not garrison yourself' };
+  if (s.garrison === locId) return { ok: false, why: 'Already posted there' };
+  // The company still has to be able to fight. A domain defended by everybody
+  // is a company that cannot take a contract, and the wages still come out.
+  if (ready(S).length <= 1 && deployable(s)) {
+    return { ok: false, why: 'Somebody has to be able to take the field' };
+  }
+  s.garrison = locId;
+  pushLog(S, `${s.name} is posted to ${locName(locId)}.`);
+  return { ok: true };
+}
+
+/** Bring a soldier back onto the truck. */
+export function recallSoldier(S, soldierId) {
+  const s = S.roster.find((x) => x.id === soldierId);
+  if (!s || !s.garrison) return { ok: false, why: 'Nobody by that name is posted' };
+  const from = s.garrison;
+  s.garrison = null;
+  pushLog(S, `${s.name} rejoins the company from ${locName(from)}.`);
+  return { ok: true };
 }
 
 export function upgradeCost(S, locId, key) {
@@ -2689,7 +2859,13 @@ function tickHoldingThreat(S, r) {
     // A flag of your own invites everyone to take it down; a liege's protection
     // takes some of the weight off.
     const politics = S.ownFaction ? 1.7 : (S.allegiance ? 0.75 : 1);
-    const rate = 0.10 * (1 - works * 0.25) * politics;
+    // Soldiers standing in the place are the main thing that stops trouble
+    // starting. Deterrence saturates — the first few make an enormous
+    // difference to whether a band of looters fancies it, and the twentieth
+    // changes nothing, because past a point nobody weak was coming anyway.
+    const g = garrisonStrength(S, id);
+    const deterrence = 1 / (1 + g * 0.22);
+    const rate = 0.10 * (1 - works * 0.25) * politics * deterrence;
     h.threat = clamp((h.threat || 0) + rate, 0, 1.4);
 
     if (h.threat >= 1 && !S.contracts.some((c) => c.retake === id)) {
@@ -2709,10 +2885,32 @@ function tickHoldingThreat(S, r) {
       });
       pushLog(S, `${loc.name} is about to be attacked.`, 'bad');
     }
-    // Left too long and it falls.
+    // Left too long and somebody comes for it. What happens then is the whole
+    // point of a garrison: an empty holding simply falls, as it always did,
+    // while a defended one fights for itself and can hold without you.
     if (h.threat >= 1.4) {
-      loseHolding(S, id);
-      S.contracts = S.contracts.filter((c) => c.retake !== id);
+      const column = assaultStrength(S, loc);
+      const defence = garrisonStrength(S, id);
+      const odds = clamp(defence / (defence + column), 0, 0.95);
+      if (defence > 0 && r() < odds) {
+        // Held — at a price. A defence that costs nothing would make a garrison
+        // strictly better than being there yourself, and the retake contract
+        // pointless.
+        h.threat = 0.55;
+        const hurt = garrisonOf(S, id).filter(deployable);
+        const casualties = Math.max(1, Math.round(hurt.length * range(r, 0.2, 0.5)));
+        for (const s of hurt.slice(0, casualties)) woundGarrison(S, s, r);
+        pushLog(S, `${loc.name} held. ${casualties} of the garrison hurt doing it.`, 'good');
+        S.contracts = S.contracts.filter((c) => c.retake !== id);
+      } else {
+        // Overrun. The garrison is hurt and comes off the ground with the rest
+        // of what you had there; loseHolding() hands them back to the company.
+        for (const s of garrisonOf(S, id).filter(deployable)) {
+          if (r() < 0.6) woundGarrison(S, s, r);
+        }
+        loseHolding(S, id);
+        S.contracts = S.contracts.filter((c) => c.retake !== id);
+      }
     }
   }
 }

@@ -198,8 +198,23 @@ test('parties move independently on the strategic map', async ({ page }) => {
   await newCampaign(page);
   const before = await page.evaluate(() =>
     window.KR.campaign.parties.map((p) => ({ id: p.id, x: p.x, z: p.z })));
+  // Drive it in slices, clearing anything that interrupts.
+  //
+  // The Reach runs on its own clock now and hostile bands actively close on the
+  // company, so a band can reach it inside these two seconds and open an
+  // encounter — which pauses the map, which freezes the parties this test is
+  // watching. That reads as "parties do not move" when what actually happened
+  // is that one of them arrived.
   await page.keyboard.down('w');
-  await page.waitForTimeout(2000);
+  for (let i = 0; i < 8; i++) {
+    await page.waitForTimeout(250);
+    await page.evaluate(() => {
+      if (document.getElementById('overlay').classList.contains('hidden')) return;
+      const el = document.querySelector('#modal [data-x="avoid"]')
+        || document.querySelector('#modal [data-x="close"]');
+      el?.click();
+    });
+  }
   await page.keyboard.up('w');
   const after = await page.evaluate(() =>
     window.KR.campaign.parties.map((p) => ({ id: p.id, x: p.x, z: p.z })));
