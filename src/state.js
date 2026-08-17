@@ -3263,6 +3263,29 @@ export function payday(S, r) {
     pushLog(S, 'The company went hungry.', 'bad');
   }
 
+  // Fed is not the same as looked after.
+  //
+  // Food was a switch: rations or no rations, minus seven either way. So a
+  // company living on ration packs with no medical stock and nothing to drink
+  // was in exactly the same spirits as one that was properly provisioned, and
+  // the only supply decision worth making was "do not hit zero". Carrying more
+  // than the bare minimum is worth something, which gives the stores screen a
+  // reason to exist beyond selling.
+  //
+  // Small on purpose. This is a nudge on top of pay and food, not a substitute
+  // for them — a company that has not been paid does not cheer up because
+  // somebody found the water.
+  if ((S.rations || 0) > 0) {
+    const kept = [(S.medical || 0) > 0, (S.cargo?.water || 0) > 0,
+      (S.cargo?.medical_stock || 0) > 0].filter(Boolean).length;
+    if (kept) {
+      drift += Math.min(2.5, kept * 1.1);
+      if (kept >= 2 && (S.morale ?? 70) < 55 && r() < 0.12) {
+        pushLog(S, 'Hot food, clean water and a medic. The mood picks up.', 'good');
+      }
+    }
+  }
+
   // A big company on nothing in particular grumbles; a small tight one does not.
   const n = living(S).length;
   if (n > 8) drift -= (n - 8) * 0.4;
