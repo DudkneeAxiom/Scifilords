@@ -1294,3 +1294,36 @@ export const MISSION_TYPES = {
     objectiveText: 'Break the hostile party',
   },
 };
+
+/**
+ * What a flag of your own actually lets you decide.
+ *
+ * Declaring a faction used to change one multiplier — everybody wanted your
+ * ground harder — and nothing else. You were a company with a banner rather
+ * than a power with a policy. These are the standing decisions a power makes,
+ * and each one is a genuine trade rather than an upgrade: every gain is paid
+ * for somewhere the player will feel it.
+ *
+ * Deliberately few. Three real choices a player can hold in their head beat a
+ * dozen sliders nobody reads, and each of these pulls on a system that already
+ * exists — income, manpower, and who is willing to shoot at you.
+ */
+export const POLICIES = {
+  levy: {
+    id: 'levy', name: 'War Levy',
+    desc: 'Take a harder cut from every place you hold.',
+    effect: '+35% income from holdings, and they resent you for it',
+  },
+  conscription: {
+    id: 'conscription', name: 'Conscription',
+    desc: 'Your holdings put people forward whether they want to or not.',
+    effect: 'Garrisons refill faster; the towns have fewer left to sell you',
+  },
+  tolls: {
+    id: 'tolls', name: 'Road Tolls',
+    desc: 'Charge for the roads your writ runs along.',
+    effect: 'Credits per holding each day; both powers like you less',
+  },
+};
+
+export const POLICY_LIST = Object.keys(POLICIES);

@@ -8,7 +8,7 @@ import {
   LOCATIONS, MISSION_TYPES, FACTIONS, REGION, REGIONS, WEAPONS, KIT, ROLES, GOODS, GOODS_LIST,
   HOLDING_UPGRADES, UPGRADE_LIST, HOLDING_YIELD, TROOP_PATHS, RANKS, PARTY_TIERS, PARTY_TIER_LIST, renownTier,
   ARMOUR, ARMOUR_LIST, ORIGINS, originForLocation, CREEDS, REGARD_TIERS, FAVOURS,
-  FIRST_NAMES, LAST_NAMES,
+  FIRST_NAMES, LAST_NAMES, POLICIES, POLICY_LIST,
 } from './data.js';
 import {
   startingCompany, makeSoldier, dayTick, STATUS, deployable, addXp, maxHpOf,
@@ -53,6 +53,8 @@ export function newCampaign(seed = Math.floor(Math.random() * 1e9)) {
     // The people who lead the factions' columns. They outlive their parties:
     // beat one and they turn up again with a new command.
     lords: [],          // { id, name, faction, defeats, wins, captured, freeDay }
+    // Standing decisions, available once you carry your own flag.
+    policies: {},       // policyId -> true
     renown: 0,          // how seriously the continent takes Bracket
     allegiance: null,   // faction id if the player has taken a commission
     ownFaction: null,   // { id, name, colour, declaredDay } once declared
@@ -1721,7 +1723,12 @@ function tickManpower(S, r) {
     // A barracks is somewhere to put people you have raised, so your own ground
     // refills faster. Everywhere else recovers at its own pace.
     const barracks = S.holdings?.[l.id]?.upgrades?.barracks || 0;
-    S.manpower[l.id] = Math.min(cap, have + 1 + barracks * 0.5);
+    // Conscription takes people off your own ground faster than they can be
+    // replaced: the garrisons fill and the hiring board empties, which is the
+    // whole trade. Only on ground you hold — you cannot conscript somebody
+    // else's town.
+    const conscript = hasPolicy(S, 'conscription') && isHolding(S, l.id) ? -0.6 : 0;
+    S.manpower[l.id] = Math.max(0, Math.min(cap, have + 1 + barracks * 0.5 + conscript));
   }
 }
 
@@ -3029,7 +3036,11 @@ export function garrisonStrength(S, locId) {
   // Militia turn out for a defended place. They are not much on their own and
   // are worth having behind a revetment, which is why they scale with works.
   const militia = works * 0.55;
-  return (power + militia) * (1 + works * 0.22);
+  // Conscripts stand on the wall alongside the garrison. They are not soldiers
+  // and it shows, but a defended place with conscription is meaningfully harder
+  // to take — which is what the policy is bought for.
+  const levies = hasPolicy(S, 'conscription') ? 1.6 : 0;
+  return (power + militia + levies) * (1 + works * 0.22);
 }
 
 /**
@@ -3497,6 +3508,32 @@ function tickWar(S, r) {
  * collectHoldings() runs on the day tick, factored out so it can be shown
  * rather than only applied.
  */
+export const hasPolicy = (S, id) => !!S.policies?.[id];
+
+/**
+ * Enact or repeal a standing decision.
+ *
+ * Only with a flag of your own: these are the acts of a power, and a company
+ * for hire levying taxes on other people's towns would simply be robbing them,
+ * which the game already has a verb for.
+ */
+export function setPolicy(S, id, on) {
+  if (!POLICIES[id]) return { ok: false, why: 'No such policy' };
+  if (!S.ownFaction) return { ok: false, why: 'You would need a flag of your own first' };
+  S.policies = S.policies || {};
+  if (on) S.policies[id] = true; else delete S.policies[id];
+  pushLog(S, on ? `${POLICIES[id].name} is in force across Bracket ground.`
+    : `${POLICIES[id].name} has been lifted.`, on ? 'world' : 'good');
+  // Charging strangers to use the roads is noticed by the powers whose traffic
+  // it is, once, when you start doing it.
+  if (on && id === 'tolls') {
+    for (const f of Dip.MAJOR_FACTIONS) {
+      if (S.rep[f] != null) S.rep[f] -= 4;
+    }
+  }
+  return { ok: true };
+}
+
 export function realmSummary(S) {
   const rows = holdingList(S).map(({ id, loc, h }) => {
     const base = HOLDING_YIELD[loc.kind] || HOLDING_YIELD.outpost;
@@ -3544,9 +3581,17 @@ function collectHoldings(S) {
     // Workshops fabricate; depots make the place worth more.
     const work = h.upgrades.workshop || 0;
     if (work) goods.machine_parts = (goods.machine_parts || 0) + work * 2;
-    credits = Math.round(credits * (1 + (h.upgrades.depot || 0) * 0.15));
+    credits = Math.round(credits * (1 + (h.upgrades.depot || 0) * 0.15)
+      * (hasPolicy(S, 'levy') ? 1.35 : 1));
+    // A toll gate on every road your writ runs along.
+    if (hasPolicy(S, 'tolls')) credits += 18;
 
     S.credits += credits;
+    // Both of these are paid for by the people being taxed, every day, not once
+    // when the decision is made. A policy whose cost lands only at the moment
+    // you enact it is a one-off fee rather than a standing choice.
+    if (hasPolicy(S, 'levy')) changeRelation(S, id, -0.5);
+    if (hasPolicy(S, 'tolls')) changeRelation(S, id, -0.2);
     for (const [g, n] of Object.entries(goods)) {
       if (cargoUsed(S) + (GOODS[g]?.bulk || 1) * n > CARGO_CAPACITY + depotCapacity(S)) continue;
       S.cargo[g] = (S.cargo[g] || 0) + n;

@@ -10,6 +10,7 @@ import * as Models from './models.js';
 import {
   ROLES, RANKS, COMMANDER_RANKS, WEAPONS, KIT, GOODS, GOODS_LIST, FACTIONS, LOCATIONS,
   MISSION_TYPES, HOLDING_UPGRADES, UPGRADE_LIST, PARTY_TIERS, ARMOUR, SLOTS,
+  POLICIES, POLICY_LIST,
 } from './data.js';
 import {
   portrait, label, rankOf, roleOf, weaponOf, effective, STATUS, woundInfo,
@@ -998,7 +999,25 @@ export function diplomacyPanel(S, cbs) {
       <div class="prose">You are sworn to <span class="hl">${esc(FACTIONS[S.allegiance].name)}</span>
       since day ${S.allegianceDay}. Their wars are yours.</div>
       <button class="btn btn-warn" data-x="break">BREAK YOUR OATH</button>
-      <div class="dip-why">Oath-breaking costs renown and makes a permanent enemy.</div>` : ''}`;
+      <div class="dip-why">Oath-breaking costs renown and makes a permanent enemy.</div>` : ''}
+
+    ${S.ownFaction ? `<div class="section-title">STANDING DECISIONS</div>
+      <div class="prose dim">Every one of these is paid for by somebody, every day.
+        They can be lifted as easily as they were made — what they cost you in
+        the meantime cannot.</div>
+      ${POLICY_LIST.map((id) => {
+    const pol = POLICIES[id];
+    const on = State.hasPolicy(S, id);
+    return `<div class="pol-row ${on ? 'on' : ''}">
+      <div class="pol-main">
+        <div class="pol-name">${esc(pol.name)}${on ? ' <i>IN FORCE</i>' : ''}</div>
+        <div class="pol-desc">${esc(pol.desc)}</div>
+        <div class="pol-eff">${esc(pol.effect)}</div>
+      </div>
+      <button class="btn ${on ? 'btn-warn' : ''}" data-policy="${id}" data-on="${on ? '0' : '1'}">
+        ${on ? 'LIFT' : 'ENACT'}</button>
+    </div>`;
+  }).join('')}` : ''}`;
 
   modal({
     title: 'DIPLOMACY',
@@ -1011,6 +1030,13 @@ export function diplomacyPanel(S, cbs) {
   });
 
   const again = () => diplomacyPanel(S, cbs);
+  for (const el of document.querySelectorAll('#modal [data-policy]')) {
+    el.onclick = () => {
+      const res = State.setPolicy(S, el.dataset.policy, el.dataset.on === '1');
+      if (res.ok) { Audio.uiSelect(); diplomacyPanel(S, cbs); }
+      else { Audio.uiDeny(); toastModal(res.why); }
+    };
+  }
   for (const el of document.querySelectorAll('#modal [data-tribute]')) {
     el.onclick = () => {
       if (Dip.payTribute(S, el.dataset.tribute)) {
