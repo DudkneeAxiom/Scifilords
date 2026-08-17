@@ -350,10 +350,30 @@ Open, in rough priority order:
    map is lively, not a permanent chase, but the soak fails above 60% and that
    threshold is a guess.
 
-1. **Combat lethality is untuned and deliberately so.** Time-to-die in the open
-   measured 2.2s, 5.6s and 8.2s across *identical* runs against a documented
-   ~12s target. Too noisy to retune from single samples. If you touch it,
-   measure across many runs first.
+1. ~~**Combat lethality is untuned and deliberately so.**~~ Done — but the fix
+   was mostly to the measurement, and the story matters if you ever touch
+   either again. `tools/balance.mjs` was random twice over: it booted one
+   random campaign per run (the seed decides the roster's rolled stats and
+   every trial layout), and the mission's own rAF loop ran a wall-clock number
+   of live frames before each measurement began. Three 60-trial runs with no
+   code change between them gave close-range medians of 7.4s, 11.7s and 15.2s
+   — every prior number from this probe, including the table under item 2, is
+   a draw from that lottery, not a measurement. The probe now cycles twelve
+   fixed seeds, freezes the mission before measuring, and raises the garrison
+   at the player (the sendHunting shape) so it measures the shooter rather
+   than the awareness roll; two consecutive runs now agree bit for bit.
+
+   Measured that way, the curve was flat: 12m gave the ~12s of life the code
+   comment promised at rifle range, because the aim-scatter model's flat 0.9
+   term propped up the bottom of the curve. The flat term is gone and the
+   range slope is 0.20 (`aiShoot`, src/mission.js): at 360 trials, 12m is
+   80% down with a 4.3s median, 22m is 28% down at 13.1s, 34m is 39% at
+   12.3s. Close range kills before you can argue with it; the documented
+   twelve seconds now lives at rifle range, which is where "long enough to
+   read the fight and break contact" was always meant to apply. One honest
+   caveat: 34m measures slightly deadlier than 22m — that is terrain, not the
+   model; 34m off an objective is open perimeter while 22m sits inside the
+   obstacle field.
 2. ~~**Enemies are fully accurate the instant they acquire a target.**~~ Done.
    `aiShoot()` widens the first rounds of an engagement by `RANGE_IN_WIDE` and
    converges over `RANGE_IN` seconds of holding the same target; losing sight
@@ -365,19 +385,10 @@ Open, in rough priority order:
    **`RANGE_IN_WIDE` is now measured rather than argued.** It was set to 2.5 on
    principle because twelve-trial medians came out *non-monotonic* across
    values — 2.0 gave 7.4s, 2.5 gave 3.3s, 3.0 gave 22.55s — which is noise, not
-   a curve. At sixty trials per range the picture is stable and `tools/
-   balance.mjs` passes its own criterion for the first time:
-
-   | range | incapacitated | median time to down |
-   |-------|---------------|---------------------|
-   | 12m   | 53/60         | 7.4s                |
-   | 22m   | 16/60         | 11.8s               |
-   | 34m   | 23/60         | 12.0s               |
-
-   Close range kills, distance buys you time to do something about it, and the
-   probe's verdict went from "range does not change the outcome enough to
-   matter" to "range is the whole game". Keep the sample size if you retune:
-   twelve trials cannot distinguish any of these values from any other.
+   a curve. (A table of sixty-trial medians used to sit here as proof the
+   probe finally passed. It was recorded before the probe was seeded and
+   deterministic, so it was one draw from the seed lottery — see item 1 for
+   what replaced it. The ranging-in mechanism itself is real and stays.)
 3. **Mission stages are a scaffold, not a design system.** `buildStages()` in
    `src/mission.js` generates two generic kinds (sweep, hold) from the site
    geometry for open-field contracts above 26 strength. The natural next step is

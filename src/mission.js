@@ -3326,15 +3326,19 @@ export class Mission {
     if (e.ammo <= 0) { this.tryReload(e); return; }
 
     // 3. Aim scatter, in metres at the target, growing steeply with range.
-    // The coefficient is tuned by measurement, not by feel: it is what puts a
-    // stationary player in the open at roughly twelve seconds of life against a
-    // six-man garrison, which is long enough to read the situation and break
-    // contact, and short enough that standing still is never the answer.
+    // Tuned by measurement (tools/balance.mjs, now seeded and deterministic —
+    // trust no number from before that). The whole term is the range slope:
+    // the old flat 0.9 gave point-blank fire nearly a metre of scatter for
+    // free, which is why twelve metres measured the same twelve seconds of
+    // life the design wanted at twenty — the curve read flat because its
+    // bottom was propped up. Reaction time, ranging-in and burst rests still
+    // gate how FAST that accuracy lands, so a knife-range ambush opens with a
+    // pause, not an instant kill; it just no longer misses once it starts.
     //
     // Deadeye flattens the range term; being suppressed inflates the whole
     // thing, which is why pinning a position before crossing it works.
-    const rangeK = 0.17 * (1 - (e.eff?.rangeAcc || 0));
-    const spread = (1 - e.acc) * (0.9 + d * rangeK)
+    const rangeK = 0.20 * (1 - (e.eff?.rangeAcc || 0));
+    const spread = (1 - e.acc) * (d * rangeK)
       * (1 + settle * (RANGE_IN_WIDE - 1))
       * this.coverPenalty(e, t) / this.suppressionPenalty(e);
     // Aim at the middle of whatever is actually showing, not at a fixed chest

@@ -12,7 +12,7 @@
 // the distribution, which is the only form of this claim worth believing.
 import { chromium } from 'file:///C:/Users/xxwjs/SciFiLords/node_modules/playwright/index.mjs';
 
-const TRIALS = Number(process.argv[2] || 6);
+const TRIALS = Number(process.argv[2] || 10);   // per seed, per range
 const CAP = 45;   // seconds of standing in the open before we call it survivable
 // One number cannot describe this. Standing 10m from a garrison and standing
 // 32m from it are different games, and the interesting property is the shape of
@@ -20,6 +20,16 @@ const CAP = 45;   // seconds of standing in the open before we call it survivabl
 // tries it twice, and long range should give you time to read the fight and
 // break contact.
 const RANGES = [12, 22, 34];
+// Fixed seeds, cycled — not one random campaign per run.
+//
+// A campaign seed decides the starting roster's rolled stats and every trial
+// layout, so a whole batch on one seed measures THAT SEED precisely and the
+// game loosely: three 60-trial runs on three random seeds gave close-range
+// medians of 7.4s, 11.7s and 15.2s with no code change between them, and the
+// probe's verdict swung from pass to fail on which campaign it happened to
+// boot. Cycling a fixed set averages over the scenario variation and makes the
+// number comparable between commits, which is the entire point of a probe.
+const SEEDS = [1117, 2903, 4421, 6373, 8081, 9973, 1201, 3251, 5407, 7013, 8419, 9601];
 
 const browser = await chromium.launch({
   args: ['--use-gl=swiftshader', '--enable-unsafe-swiftshader', '--no-sandbox'],
@@ -45,6 +55,11 @@ await page.evaluate(() => {
 const byRange = new Map();
 for (const RANGE of RANGES) {
 const results = [];
+for (const SEED of SEEDS) {
+await page.evaluate((seed) => {
+  const { State } = window.KR.dev;
+  window.KR.campaign = State.newCampaign(seed);
+}, SEED);
 for (let i = 0; i < TRIALS; i++) {
   await page.evaluate(async () => {
     const { Mission } = await import('/src/mission.js');
@@ -65,6 +80,12 @@ for (let i = 0; i < TRIALS; i++) {
       onHud: () => {}, onToast: () => {}, onIntro: () => {}, onEnd: () => {},
     });
     await G.mission.start();
+    // Freeze it in the same evaluate that made it. Between start() resolving
+    // and the measurement taking over, the mission's own rAF loop runs a
+    // wall-clock-dependent number of live frames — which was the last source
+    // of nondeterminism in a probe that is otherwise seeded end to end: the
+    // same seed produced medians of 7.0s and 10.1s on consecutive runs.
+    G.mission.paused = true;
   });
   await page.waitForFunction(() => window.KR.mission?.player, null, { timeout: 40000 });
 
@@ -81,6 +102,19 @@ for (let i = 0; i < TRIALS; i++) {
     const o = m.level.objectivePoint;
     m.player.x = o.x + 6; m.player.z = o.z + range;
     m.squad.forEach((s, k) => { s.x = o.x + 4 + k * 2; s.z = o.z + range + 3; });
+    // Raise the whole garrison at the player's position, the same shape
+    // sendHunting() uses. Without this the number measured is the awareness
+    // roll, not the shooter: a placement that happens to be masked from every
+    // patrol route survives the full cap untouched with nine hostiles standing
+    // — which is where the 40s outliers and the 22m/34m inversion came from.
+    // Hunters still have to walk into a real sightline before they may shoot,
+    // so cover on the approach stays honest; they just never fail to look.
+    for (const e of m.entities) {
+      if (e.side === 'enemy' && !e.dead) {
+        e.state = 'hunt'; e.alert = 1;
+        e.lastSeen = { x: m.player.x, z: m.player.z };
+      }
+    }
     const startHp = m.player.hp;
 
     let t = 0;
@@ -105,33 +139,42 @@ for (let i = 0; i < TRIALS; i++) {
       squadUp: m.squad.filter((e) => !e.down && !e.dead).length,
     };
   }, { cap: CAP, range: RANGE });
-  results.push(r);
-  console.log(`  ${String(RANGE).padStart(2)}m trial ${String(i + 1).padStart(2)}: `
+  results.push({ ...r, seed: SEED });
+  console.log(`  ${String(RANGE).padStart(2)}m seed ${SEED} trial ${String(i + 1).padStart(2)}: `
     + (r.down ? `down after ${r.seconds}s` : (r.over ? `mission ended at ${r.seconds}s on ${r.endHp} HP` : `survived ${CAP}s with ${r.endHp} HP`))
     + `  (${r.enemies} hostiles up, nearest ${r.range}m)`);
 }
+}
 
+const med = (xs) => {
+  if (!xs.length) return null;
+  const t = [...xs].sort((a, b) => a - b);
+  return +(t.length % 2 ? t[(t.length - 1) / 2]
+    : (t[t.length / 2 - 1] + t[t.length / 2]) / 2).toFixed(1);
+};
 const downs = results.filter((r) => r.down);
 const times = downs.map((r) => r.seconds).sort((a, b) => a - b);
-const median = times.length
-  ? (times.length % 2 ? times[(times.length - 1) / 2]
-    : (times[times.length / 2 - 1] + times[times.length / 2]) / 2)
-  : null;
 const survivors = results.filter((r) => !r.down && !r.over);
 const resolved = results.filter((r) => r.down || !r.over);
 byRange.set(RANGE, {
-  downs: downs.length, resolved: resolved.length, median,
+  downs: downs.length, resolved: resolved.length, median: med(times),
   lo: times[0] ?? null, hi: times[times.length - 1] ?? null,
   hp: survivors.length ? survivors.map((r) => r.endHp) : [],
+  // Per-seed medians, so the spread the seed alone contributes stays visible —
+  // it is the reason this probe cycles seeds at all.
+  bySeed: SEEDS.map((s) => med(results
+    .filter((r) => r.seed === s && r.down).map((r) => r.seconds))),
 });
 }
 
-console.log(`\nStanding still in the open, ${TRIALS} trials at each range:\n`);
+const N = SEEDS.length * TRIALS;
+console.log(`\nStanding still in the open, ${TRIALS} trials x ${SEEDS.length} seeds at each range:\n`);
 console.log('  range   incapacitated   time to down        survivors left on');
 for (const [range, s] of byRange) {
-  console.log(`  ${String(range).padStart(3)}m   ${String(s.downs).padStart(2)}/${TRIALS}`
+  console.log(`  ${String(range).padStart(3)}m   ${String(s.downs).padStart(2)}/${N}`
     + `           ${(s.median === null ? '—' : `median ${s.median}s (${s.lo}-${s.hi}s)`).padEnd(20)}`
     + ` ${s.hp.length ? `${Math.min(...s.hp)}-${Math.max(...s.hp)} HP` : '—'}`);
+  console.log(`         per-seed medians: ${s.bySeed.map((m) => (m === null ? '—' : m + 's')).join('  ')}`);
 }
 
 console.log(`\nconsole errors: ${errors.length}`);

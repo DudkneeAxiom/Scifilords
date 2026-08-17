@@ -2710,13 +2710,20 @@ test('formations are genuinely different shapes', async ({ page }) => {
     });
     await G.mission.start();
     const m = G.mission;
-    m.paused = false; m.hadLock = true;
+    // Paused until the measurement takes over. Between this evaluate and the
+    // next, the mission's rAF loop runs a wall-clock number of LIVE frames —
+    // and this scenario opens with hostiles in range, so those frames are a
+    // real firefight. It was survivable noise while point-blank fire was
+    // forgiving; with the aim model retuned it downed a squaddie before the
+    // first measure, and a soldier on the ground cannot walk into formation.
+    m.paused = true; m.hadLock = true;
     if (m.intro) { m.intro.active = false; m.time = m.intro.graceUntil + 0.1; }
   });
   await page.waitForFunction(() => window.KR.mission?.player, null, { timeout: 40000 });
 
   const r = await page.evaluate(() => {
     const m = window.KR.mission;
+    m.paused = false;
     const measure = (f) => {
       m.setFormation(f);
       // Push the hostiles away rather than killing them: clearing the field
@@ -4017,8 +4024,18 @@ test('the squad can be ordered into cover, and out of it again', async ({ page }
       return (c.hi - c.lo) < 1.2;
     }).length;
 
+    // Release is a test of the ORDER, not of nerve under fire — a soldier who
+    // keeps their head down while somebody is actively shooting at them is
+    // being sensible, not disobedient, and with the aim model retuned the
+    // threat now suppresses hard enough that two seconds was no longer time
+    // to stand. Silence the threat, then wait on the state: everyone still on
+    // their feet is up, or the cap says they never would be.
+    threat.hp = 0; threat.dead = true;
     m.setSquadOrder('follow');
-    for (let i = 0; i < 120; i++) m.step(0.016);
+    for (let i = 0; i < 600; i++) {
+      m.step(0.016);
+      if (m.squad.every((s) => s.down || (s.tuck || 0) < 0.4)) break;
+    }
     return {
       n: m.squad.length, ordered, shielded, down, shorter,
       onWheel: m.ORDERS.some((o) => o.id === 'cover'),
