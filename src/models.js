@@ -805,7 +805,17 @@ export function makePreview(width = 320, height = 460) {
     render,
     dispose() {
       cancelAnimationFrame(raf);
-      renderer.dispose();
+      // releaseRenderer, not renderer.dispose().
+      //
+      // dispose() frees what three.js allocated and leaves the WebGL context
+      // with the browser, which keeps about sixteen. A new preview is built
+      // every time the character, loadout or equipment screen opens, so a
+      // player who visits their kit a dozen times exhausts them — and the
+      // browser then reclaims the OLDEST live context, which is the world map.
+      // That is the black map with a company you can still drive: the canvas is
+      // dead while the campaign underneath it runs perfectly well, and it comes
+      // back after a deployment only because that rebuilds the map from scratch.
+      releaseRenderer(renderer);
       el.remove();
     },
   };

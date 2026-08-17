@@ -423,13 +423,14 @@ const UIesc = (s) => String(s).replace(/[&<>"]/g, (ch) => (
 // Encounters on the road
 // --------------------------------------------------------------------------
 
-function handleEncounter(party) {
+function handleEncounter(party, opts = {}) {
   // Never let a road encounter overwrite a panel the player is already using —
   // it would silently replace the deployment picker or a settlement screen.
   if (UI.modalOpen()) return;
   const S = G.campaign;
   G.world?.setPaused(true);
   UI.encounterPanel(S, party, {
+    cornered: !!opts.cornered,
     onClose: () => G.world?.setPaused(false),
     // Buy your way past. The band takes the money and moves off the road.
     onToll: (p) => {
@@ -458,6 +459,19 @@ function handleEncounter(party) {
     },
     onAvoid: () => {
       UI.closeModal();
+      // Breaking contact is attempted, not granted.
+      //
+      // This used to always work, so a fight was never forced: you could meet
+      // anything at all, decline, and drive off. That made losing a battle
+      // something the player had to opt into, and the capture rules for losing
+      // one almost unreachable.
+      if (party.hostileToPlayer && Math.random() > State.escapeChance(S, party)) {
+        State.advanceTime(S, 0.4);
+        UI.toast('RUN DOWN', `${party.name} is faster than you are`, 'bad');
+        // Straight back into it, with the option to run now spent.
+        setTimeout(() => handleEncounter(party, { cornered: true }), 260);
+        return;
+      }
       G.world?.setPaused(false);
       // Back off a little so the same party does not immediately re-trigger.
       const dx = S.pos.x - party.x, dz = S.pos.z - party.z;

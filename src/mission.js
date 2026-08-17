@@ -389,6 +389,33 @@ export class Mission {
     this.markMesh.visible = true;
   }
 
+  /**
+   * A ring on the ground under everybody on your side.
+   *
+   * Both sides wear the kit of a faction and both are lit by the same dim
+   * afternoon, so at fifty metres through dust a Bracket rifleman and a Trust
+   * one are the same shape and very nearly the same colour — which makes
+   * identifying friend from foe a matter of squinting rather than of playing.
+   * The signal has to be something the enemy NEVER has, so it is read at a
+   * glance and never has to be second-guessed.
+   *
+   * A ground ring rather than a floating marker: it sits under the soldier, so
+   * it does not obscure the body, does not clutter the sky, and reads at the
+   * shallow angle this camera actually looks along.
+   */
+  makeFriendRing() {
+    const ring = new THREE.Mesh(
+      new THREE.RingGeometry(0.42, 0.58, 16),
+      new THREE.MeshBasicMaterial({
+        color: 0x63d0f0, transparent: true, opacity: 0.55,
+        side: THREE.DoubleSide, depthWrite: false,
+      }),
+    );
+    ring.rotation.x = -Math.PI / 2;
+    ring.renderOrder = 2;
+    return ring;
+  }
+
   makeMarker(color, scale = 1) {
     const g = new THREE.Group();
     const ring = new THREE.Mesh(
@@ -3928,6 +3955,17 @@ export class Mission {
         + (e.isPlayer ? -this.crouch * 0.42 : 0);
       e.char.group.position.set(e.x, y + stance, e.z);
       e.char.group.rotation.y = e.yaw;
+
+      // Mark your own. Built lazily so nothing is allocated for the forty
+      // hostiles who will never need one.
+      if (e.side === 'player' && !e.isPlayer && !e.friendRing) {
+        e.friendRing = this.makeFriendRing();
+        this.scene.add(e.friendRing);
+      }
+      if (e.friendRing) {
+        e.friendRing.visible = !e.dead;
+        e.friendRing.position.set(e.x, y + (e.elev || 0) + 0.06, e.z);
+      }
       const aiming = !!(e.target && !e.down && !e.dead) || (e.isPlayer && this.aiming);
 
       // Animation level of detail. A soldier eighty metres away in fog does not

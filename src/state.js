@@ -1107,6 +1107,29 @@ function moveParties(S, hours, r) {
   }
 }
 
+/**
+ * Can the company break contact with this band?
+ *
+ * Withdrawing used to be free and certain: the panel always offered it, it
+ * always worked, and so a fight was never actually forced on the player. You
+ * could meet anything, decline, and drive away — which meant losing a battle
+ * was something you had to opt into, and the capture rules that exist for
+ * losing one could essentially never fire.
+ *
+ * Now it is contested by the same numbers as a pursuit on the open map: your
+ * pace against theirs, over the ground you are standing on. A lean company
+ * outruns looters; a full truck being chased by a fast column does not.
+ */
+export function escapeChance(S, party) {
+  const mine = partySpeed(S).speed * travelFactor(S.pos.x, S.pos.z);
+  // What they can do when they actually want you, not their patrol amble.
+  const theirs = Math.max(party.speed || 20, PURSUIT_SPEED)
+    * travelFactor(party.x ?? S.pos.x, party.z ?? S.pos.z);
+  // Never certain in either direction. Getting away should always be possible
+  // and never something you can count on without the speed to back it.
+  return clamp(0.15 + (mine / (mine + theirs)) * 1.1 - 0.25, 0.1, 0.92);
+}
+
 /** Parties close enough to interact with right now. */
 export function nearbyParties(S, radius = 34) {
   return S.parties.filter((p) => Math.hypot(p.x - S.pos.x, p.z - S.pos.z) < radius);

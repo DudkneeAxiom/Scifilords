@@ -2235,7 +2235,19 @@ export function encounterPanel(S, party, cbs) {
     const toll = State.tollOf(S, party);
     options.push(`<button class="btn" data-x="toll" ${S.credits < toll ? 'disabled' : ''}
       title="They will let you past for ${toll}">PAY THEM OFF (${toll})</button>`);
-    options.push(`<button class="btn" data-x="avoid">WITHDRAW</button>`);
+    // Only if you still have the legs for it. Once they have run you down the
+    // choice is what KIND of fight you have, not whether you have one — an
+    // escape button that always works means a battle can never be forced, and
+    // a battle that can never be forced means the rules for losing one are
+    // unreachable.
+    if (!cbs.cornered) {
+      // Say how likely it is, because the player is choosing between a fight
+      // they can see the odds of and a run they cannot.
+      const esc0 = Math.round(State.escapeChance(S, party) * 100);
+      options.push(`<button class="btn" data-x="avoid"
+        title="Roughly ${esc0} in 100 of breaking contact. They are not obliged to let you.">
+        WITHDRAW (${esc0}%)</button>`);
+    }
   } else if (party.faction && (party.kind || '').startsWith('patrol')) {
     // A patrol that wants to look in the truck.
     options.push(`<button class="btn" data-x="inspect">STAND AND BE SEARCHED</button>`);
