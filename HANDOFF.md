@@ -1,7 +1,20 @@
 # Handoff
 
-Written at commit `217c178`, **96/96 acceptance tests passing**, working tree
+Written at commit `c68d52a`, **96/96 acceptance tests passing**, working tree
 clean and pushed to <https://github.com/DudkneeAxiom/Scifilords>.
+
+The last long session was almost entirely strategic-layer work, aimed at making
+the Reach behave the way the games this is modelled on do. What went in, roughly
+in order: relief on the mission ground with collision that follows it; a
+ranging-in delay so enemies are not perfectly accurate the instant they see you;
+pursuit, so bands chase the company and a settlement is a haven; garrisons; a
+world clock that runs whether or not the player moves; a war that moves the map
+with marching columns you can intercept; named lords who lead those columns and
+outlive them; contested manpower between the player, faction musters and
+raiders; terrain and roads that decide travel speed; click-to-chase and a camera
+that leaves the company; a realm screen; kingdom policies; vassals holding
+fiefs; morale reaching the field; and prisoners who escape if you cannot guard
+them. Each has a probe in `tools/` named after it.
 
 This is the note I would want if I were picking the project up cold. It is not a
 feature list — `README.md` is that. It is the things that are easy to get wrong
@@ -313,6 +326,17 @@ change every seeded campaign in the game.
 ## Where the work stopped
 
 Open, in rough priority order:
+
+0. **The soak does not go through the map loop, and that is the biggest hole in
+   the test estate.** `tools/soak.mjs` drives `State.advanceTime()` directly, so
+   it never touches `worldmap.js` at all. Everything added to the strategic
+   layer that lives in the map's update — pursuit pacing, the continuous clock,
+   click-to-chase, the camera, terrain travel, and the contested withdrawal —
+   has only ever been checked by short targeted probes. A soak that plays
+   through `WorldMap.update()` for a few hundred simulated days would exercise
+   all of it together, and would very likely have caught the "withdraw always
+   works, so a fight can never be forced, so the capture rules are unreachable"
+   hole long before a player found it.
 
 1. **Combat lethality is untuned and deliberately so.** Time-to-die in the open
    measured 2.2s, 5.6s and 8.2s across *identical* runs against a documented
