@@ -537,13 +537,117 @@ export function unhorseLord(S, r, party, { byPlayer }) {
   // outcome and so it is the less likely one.
   if (byPlayer && r() < 0.35) {
     lord.captured = true;
-    lord.freeDay = S.day + irange(r, 20, 45);
-    pushLog(S, `${lord.name} was taken alive.`, 'good');
+    lord.heldByPlayer = true;
+    lord.tookDay = S.day;
+    // No automatic release date. A lord you are holding is leverage, and what
+    // happens to them is the player's decision — see ransomLord/releaseLord.
+    // They may still get out on their own; see tickHeldLords.
+    lord.freeDay = 0;
+    pushLog(S, `${lord.name} was taken alive. Their people will want them back.`, 'good');
   } else {
     lord.freeDay = S.day + irange(r, 6, 16);
     pushLog(S, `${lord.name} got away.`, byPlayer ? 'bad' : 'info');
   }
   return lord;
+}
+
+/**
+ * What is left of a column after somebody breaks it.
+ *
+ * A destroyed party used to simply vanish from the list, so the war consumed
+ * armies and produced nothing — the roads were exactly as dangerous the day
+ * after a battle as the day before, and a faction offensive that got wrecked
+ * left no trace on the country it was wrecked in. Survivors go to ground and
+ * turn up as stragglers: weak, hostile to everybody, and somebody else's
+ * problem now.
+ *
+ * Deliberately not certain and deliberately small. Every broken column
+ * spawning a band would fill the map with debris faster than anyone could
+ * clear it, and the trimming in maintainParties() would then quietly delete
+ * the things the player was travelling toward.
+ */
+function scatterSurvivors(S, r, party) {
+  if ((party.strength || 0) < 6) return null;      // too few to bother going to ground
+  if (r() > 0.4) return null;
+  const band = spawnParty(S, r, 'strays', party.home || 'grellan');
+  band.x = party.x + range(r, -40, 40);
+  band.z = party.z + range(r, -40, 40);
+  band.strength = Math.max(2, Math.round(party.strength * range(r, 0.15, 0.3)));
+  band.name = 'Stragglers';
+  // They have no side any more. Whoever they were this morning, tonight they
+  // are on the road with weapons and nothing to eat.
+  band.faction = 'raider';
+  band.baseHostile = true;
+  band.hostileToPlayer = true;
+  band.lordId = null;
+  return band;
+}
+
+/** Lords the company is currently holding. */
+export const heldLords = (S) => (S.lords || []).filter((l) => l.captured && l.heldByPlayer);
+
+/**
+ * What their people will pay to get them back.
+ *
+ * Scaled by what the lord is actually worth to them — somebody who has won on
+ * the road repeatedly is a commander they want, and somebody the player has
+ * broken three times is not. It is deliberately far more than a soldier's
+ * ransom: this is the one thing on the map that pays for a hard fight.
+ */
+export function lordRansom(S, lord) {
+  const standing = 1 + lord.wins * 0.35 - Math.min(0.5, lord.defeats * 0.12);
+  return Math.round(900 * Math.max(0.5, standing));
+}
+
+/** Take their money. Their faction pays, and remembers being made to. */
+export function ransomLord(S, id) {
+  const lord = lordById(S, id);
+  if (!lord || !lord.captured || !lord.heldByPlayer) return { ok: false, why: 'Not yours to sell' };
+  const paid = lordRansom(S, lord);
+  S.credits += paid;
+  lord.captured = false;
+  lord.heldByPlayer = false;
+  // Back in the field shortly, and sore about it.
+  lord.freeDay = S.day + 8;
+  if (S.rep[lord.faction] != null) S.rep[lord.faction] -= 6;
+  pushLog(S, `${lord.name} was ransomed back to `
+    + `${FACTIONS[lord.faction]?.name || lord.faction} for ${paid} credits.`, 'good');
+  return { ok: true, paid };
+}
+
+/** Let them go. Costs the money, buys the goodwill. */
+export function releaseLord(S, id) {
+  const lord = lordById(S, id);
+  if (!lord || !lord.captured || !lord.heldByPlayer) return { ok: false, why: 'Not yours to release' };
+  lord.captured = false;
+  lord.heldByPlayer = false;
+  lord.freeDay = S.day + 4;
+  if (S.rep[lord.faction] != null) S.rep[lord.faction] += 8;
+  S.morale = clamp((S.morale ?? 70) + 2, 0, 100);
+  pushLog(S, `${lord.name} was released without terms. `
+    + `${FACTIONS[lord.faction]?.name || lord.faction} will hear of it.`, 'good');
+  return { ok: true };
+}
+
+/**
+ * Captivity is not a locked box.
+ *
+ * A prisoner nobody has to make a decision about is just a number on a screen,
+ * so holding one has to cost something — the longer they sit, the better their
+ * chance of walking out, which is the pressure that turns "I have a hostage"
+ * into "I should do something about my hostage".
+ */
+function tickHeldLords(S, r) {
+  for (const l of heldLords(S)) {
+    const held = S.day - (l.tookDay || S.day);
+    if (held < 6) continue;
+    if (r() < 0.035 + held * 0.004) {
+      l.captured = false;
+      l.heldByPlayer = false;
+      l.freeDay = S.day + 3;
+      pushLog(S, `${l.name} is gone. Somebody left a door unlocked.`, 'bad');
+    }
+  }
 }
 
 function spawnParty(S, r, kind, nearId) {
@@ -710,12 +814,17 @@ function onNewDay(S, r) {
   tickRaids(S, rng((S.seed ^ 0x6c33) + S.day * 6113));
   // Captivity ends. A lord held indefinitely is a lord removed from the game,
   // and the point of taking one is that they come back knowing who took them.
+  //
+  // Only for lords the PLAYER is not holding: those are a decision the player
+  // owns, and releasing them on a timer behind their back would take the
+  // hostage — and the choice — straight back off them again.
   for (const l of S.lords || []) {
-    if (l.captured && S.day >= (l.freeDay || 0)) {
+    if (l.captured && !l.heldByPlayer && S.day >= (l.freeDay || 0)) {
       l.captured = false;
       pushLog(S, `${l.name} has been ransomed home.`, 'info');
     }
   }
+  tickHeldLords(S, rng((S.seed ^ 0x3d71) + S.day * 7717));
   // A summons outlives its column if the column was broken on the road rather
   // than arriving. The call still went out and you still did not answer it, but
   // the contract has to go or it sits on the board forever pointing at an army
@@ -3288,6 +3397,8 @@ function tickPartyBattles(S, r) {
       unhorseLord(S, r, lose, { byPlayer: false });
       const winner = lordOfParty(S, win);
       if (winner) winner.wins++;
+      // And what is left of them takes to the road.
+      scatterSurvivors(S, r, lose);
       // Winning costs. A band that fights its way across the map arrives
       // somewhere worth fighting, rather than snowballing to infinity.
       win.strength = Math.max(1, Math.round(win.strength * range(r, 0.55, 0.85)));

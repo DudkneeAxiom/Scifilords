@@ -2681,6 +2681,12 @@ test('formations are genuinely different shapes', async ({ page }) => {
     const { Mission } = await import('/src/mission.js');
     const UI = await import('/src/ui.js');
     const G = window.KR;
+    // Pinned scenario. newCampaign() picks its seed at random, and that seed
+    // decides BOTH the ground this squad forms up on and how fast each of them
+    // walks — so on some rolls a soldier is still working around an obstacle
+    // when the measurement is taken and the shape comes out wrong. This test
+    // failed roughly one full run in five for exactly that reason.
+    G.campaign = window.KR.dev.State.newCampaign(20250817);
     const S = G.campaign;
     S.renown = 4000;
     G.mission?.dispose();
@@ -2712,7 +2718,23 @@ test('formations are genuinely different shapes', async ({ page }) => {
       for (const e of m.entities) {
         if (e.side === 'enemy') { e.x = 900; e.z = 900; e.target = null; e.state = 'guard'; }
       }
-      for (let i = 0; i < 60 * 14; i++) m.step(1 / 60);
+      // Step until the shape has SETTLED, not for a fixed fourteen seconds.
+      //
+      // A fixed count measures whatever it happens to find, and if one soldier
+      // is still walking round an obstacle the frontage comes out wide — which
+      // is how this reported a wedge broader than a line and failed about one
+      // run in five. Waiting on the state rather than the clock is the rule
+      // here; the cap only stops a genuinely stuck squad hanging the run.
+      let calm = 0;
+      for (let i = 0; i < 60 * 30 && calm < 45; i++) {
+        const before = m.squad.map((x) => ({ x: x.x, z: x.z }));
+        m.step(1 / 60);
+        let moved = 0;
+        m.squad.forEach((x, k) => {
+          moved = Math.max(moved, Math.hypot(x.x - before[k].x, x.z - before[k].z));
+        });
+        calm = moved < 0.004 ? calm + 1 : 0;
+      }
       const p2 = m.player;
       const c = Math.cos(-p2.yaw); const s = Math.sin(-p2.yaw);
       const rel = m.squad.filter((x) => !x.dead).map((x) => {

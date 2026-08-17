@@ -640,6 +640,29 @@ export function rosterPanel(S, cbs) {
         <button class="btn" data-release="${p.id}">RELEASE</button>
       </div>`).join('')}</div>` : ''}
 
+    ${(() => {
+    // Captured commanders, kept apart from the ordinary prisoner list. They are
+    // not troops — you cannot press one into the company — and what they are
+    // worth is an order of magnitude different, so mixing them in would make
+    // the expensive decision look like the cheap one.
+    const held = State.heldLords(S);
+    if (!held.length) return '';
+    return `<div class="section-title">HELD COMMANDERS</div>
+      <div class="prose dim">Their people will pay to have them back, and resent
+        being made to. Letting one go buys more goodwill than it costs. Either
+        way, decide before they decide for you.</div>
+      <div class="pris-list">${held.map((l) => `<div class="pris">
+        <div class="pris-who">
+          <div class="pris-name">${esc(l.name)}</div>
+          <div class="pris-meta">${esc(FACTIONS[l.faction]?.short || l.faction)}
+            &middot; held ${S.day - (l.tookDay ?? S.day)} day(s)
+            ${l.defeats ? `&middot; beaten ${l.defeats}x` : ''}</div>
+        </div>
+        <button class="btn" data-lransom="${l.id}">RANSOM ${State.lordRansom(S, l)}</button>
+        <button class="btn" data-lrelease="${l.id}">RELEASE</button>
+      </div>`).join('')}</div>`;
+  })()}
+
     <div class="section-title">COMPANY</div>
     <div class="stat-row">
       <div class="s"><span class="n">${S.stats.missions}</span><span class="l">DEPLOYMENTS</span></div>
@@ -687,6 +710,18 @@ export function rosterPanel(S, cbs) {
     el.onclick = () => {
       if (State.releasePrisoner(S, el.dataset.release)) { Audio.uiMove(); again(); }
       else Audio.uiDeny();
+    };
+  }
+  for (const el of document.querySelectorAll('#modal [data-lransom]')) {
+    el.onclick = () => {
+      const res = State.ransomLord(S, el.dataset.lransom);
+      if (res.ok) { Audio.uiSelect(); again(); } else { Audio.uiDeny(); toastModal(res.why); }
+    };
+  }
+  for (const el of document.querySelectorAll('#modal [data-lrelease]')) {
+    el.onclick = () => {
+      const res = State.releaseLord(S, el.dataset.lrelease);
+      if (res.ok) { Audio.uiMove(); again(); } else { Audio.uiDeny(); toastModal(res.why); }
     };
   }
   wire({ close: onCloseWrap(onClose), loadout: cbs?.onLoadout || (() => {}) });
