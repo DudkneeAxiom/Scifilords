@@ -84,6 +84,10 @@ export function modal({ title, tag, body, foot, onClose, wide, blocking }) {
 
 export function closeModal() {
   $('overlay').classList.add('hidden');
+  // The company screens put a key handler on the window so Q and E can step
+  // between them; it has to come off with the panel, or it starts answering
+  // keys pressed at the map.
+  clearTabKeys();
   $('modal').innerHTML = '';
   const cb = modalOnClose;
   modalOnClose = null;
@@ -120,8 +124,10 @@ export function companyTabs(active, onPick) {
   if (!head || head.querySelector('.mtabs')) return;
   const strip = document.createElement('div');
   strip.className = 'mtabs';
+  // The key is printed, not merely a tooltip. A hotkey nobody can see is a
+  // hotkey nobody uses, and these screens are meant to be flicked between.
   strip.innerHTML = COMPANY_TABS.map((t) => `<button class="mtab${t.id === active ? ' on' : ''}"
-    data-tab="${t.id}" title="${t.key}">${t.name}</button>`).join('');
+    data-tab="${t.id}" title="${t.key}">${t.name}<i class="mtab-key">${t.key}</i></button>`).join('');
   head.appendChild(strip);
   for (const b of strip.querySelectorAll('.mtab')) {
     b.onclick = () => {
@@ -130,6 +136,45 @@ export function companyTabs(active, onPick) {
       onPick(b.dataset.tab);
     };
   }
+
+  // Q and E step through the screens without closing anything.
+  //
+  // Every company screen used to be reached by shutting the one you were in
+  // and pressing another letter, which is four keystrokes to compare your
+  // stores against your holdings. Stepping sideways is how this family of games
+  // has always worked, and the tab strip was already promising it by existing.
+  //
+  // Bound to the modal rather than the window, and removed with it, so it
+  // cannot leak into the map or the mission underneath.
+  // Exactly one handler, ever.
+  //
+  // Switching tabs deliberately renders the next panel straight over the
+  // current one WITHOUT going through closeModal, so a listener added per strip
+  // would accumulate one per screen visited and fire the step several times for
+  // a single keypress. Dropping the previous one first is what keeps that from
+  // happening; closeModal drops the last.
+  clearTabKeys();
+  tabKeyHandler = (e) => {
+    const k = e.key.toLowerCase();
+    if (k !== 'q' && k !== 'e') return;
+    if (e.target.matches?.('input, textarea, select')) return;
+    const i = COMPANY_TABS.findIndex((t) => t.id === active);
+    if (i < 0) return;
+    e.preventDefault();
+    const next = COMPANY_TABS[(i + (k === 'e' ? 1 : COMPANY_TABS.length - 1)) % COMPANY_TABS.length];
+    Audio.uiSelect();
+    onPick(next.id);
+  };
+  window.addEventListener('keydown', tabKeyHandler);
+}
+
+let tabKeyHandler = null;
+
+/** Take the company-screen stepping keys off the window. */
+export function clearTabKeys() {
+  if (!tabKeyHandler) return;
+  window.removeEventListener('keydown', tabKeyHandler);
+  tabKeyHandler = null;
 }
 
 // --------------------------------------------------------------------------
@@ -1314,7 +1359,38 @@ export function holdingsPanel(S, cbs) {
       : '<span class="dim">no goods — take a caravan, or buy at a market</span>'}
   </div>`;
 
-  const body = stores + (held.length ? held.map(({ id, loc, h }) => {
+  // The domain as a whole, before the detail of any one place.
+  //
+  // This screen used to open straight into a full entry per holding, so the
+  // questions a landholder actually has — what does this earn, where is it
+  // weak, does anywhere need me today — could only be answered by reading every
+  // entry and doing the arithmetic. The summary answers them first, and the
+  // roll call underneath is scannable rather than something to page through.
+  const sum = State.realmSummary(S);
+  const realm = held.length ? `
+    <div class="stat-row">
+      <div class="s"><span class="n">${sum.holdings}</span><span class="l">HELD</span></div>
+      <div class="s"><span class="n">${sum.credits}</span><span class="l">CREDITS/DAY</span></div>
+      <div class="s"><span class="n">${sum.garrison}</span><span class="l">ON GARRISON</span></div>
+      <div class="s"><span class="n">${sum.built}</span><span class="l">WORKS BUILT</span></div>
+    </div>
+    ${sum.atRisk || sum.undefended ? `<div class="prose outnumbered">
+      ${sum.atRisk ? `${sum.atRisk} under real pressure. ` : ''}
+      ${sum.undefended ? `${sum.undefended} with nobody standing in ${sum.undefended === 1 ? 'it' : 'them'}.` : ''}
+    </div>` : '<div class="prose dim">Nothing on your ground needs you today.</div>'}
+    <div class="realm-roll">${sum.rows.map((r) => `<div class="realm-row">
+      <span class="rr-name">${esc(r.name)}</span>
+      <span class="rr-cr">${r.credits}/day</span>
+      <span class="rr-gar ${r.strength > 0 ? '' : 'hurt'}">${r.garrison
+    ? `${r.garrison} posted — holds ${Math.round(r.odds * 100)}%`
+    : 'undefended'}</span>
+      <span class="rr-men">${r.manpower}/${r.manpowerCap} able</span>
+      <span class="rr-threat ${r.threat >= 0.6 ? 'hurt' : ''}">${r.threat >= 1 ? 'ATTACK DUE'
+    : r.threat > 0.6 ? 'pressure building' : 'quiet'}</span>
+    </div>`).join('')}</div>
+    <div class="section-title">EACH PLACE</div>` : '';
+
+  const body = stores + realm + (held.length ? held.map(({ id, loc, h }) => {
     const threat = Math.min(1, h.threat || 0);
     const rows = UPGRADE_LIST.map((key) => {
       const def = HOLDING_UPGRADES[key];
@@ -2551,6 +2627,8 @@ export function controlsPanel({ onClose }) {
         ${kv('W A S D', 'Steer directly')}
         ${kv('E', 'Enter a location')}
         ${kv('C / L / B', 'Roster / loadout / contract board')}
+        ${kv('V / I / K / P', 'Equipment / stores / holdings / diplomacy')}
+        ${kv('Q / E', 'Step between company screens without closing them')}
       </div>
     </div>`,
     foot: '<button class="btn" data-x="close">CLOSE</button>',

@@ -3487,6 +3487,54 @@ function tickWar(S, r) {
   }
 }
 
+/**
+ * The whole domain at a glance, without collecting anything.
+ *
+ * The holdings screen listed each place in full and totalled nothing, so the
+ * question a landholder actually has — what does this domain earn, where is it
+ * weak, is anywhere about to be attacked — could only be answered by reading
+ * every entry and doing the arithmetic yourself. This is the same maths
+ * collectHoldings() runs on the day tick, factored out so it can be shown
+ * rather than only applied.
+ */
+export function realmSummary(S) {
+  const rows = holdingList(S).map(({ id, loc, h }) => {
+    const base = HOLDING_YIELD[loc.kind] || HOLDING_YIELD.outpost;
+    const credits = Math.round(base.credits * (1 + (h.upgrades.depot || 0) * 0.15));
+    const goods = { ...base.goods };
+    const work = h.upgrades.workshop || 0;
+    if (work) goods.machine_parts = (goods.machine_parts || 0) + work * 2;
+    const built = UPGRADE_LIST.reduce((a, k) => a + (h.upgrades[k] || 0), 0);
+    const garrison = garrisonOf(S, id);
+    return {
+      id,
+      name: loc.name,
+      kind: loc.kind,
+      credits,
+      goods,
+      built,
+      threat: Math.min(1, h.threat || 0),
+      garrison: garrison.length,
+      strength: garrisonStrength(S, id),
+      odds: assaultOdds(S, id),
+      // What the place can still put forward, which is the thing that decides
+      // whether it can reinforce itself.
+      manpower: Math.floor(manpowerAt(S, id)),
+      manpowerCap: manpowerCap(loc),
+    };
+  });
+  return {
+    rows,
+    holdings: rows.length,
+    credits: rows.reduce((a, r) => a + r.credits, 0),
+    garrison: rows.reduce((a, r) => a + r.garrison, 0),
+    built: rows.reduce((a, r) => a + r.built, 0),
+    // The two numbers that decide whether you should be somewhere else today.
+    atRisk: rows.filter((r) => r.threat >= 0.6).length,
+    undefended: rows.filter((r) => r.strength <= 0).length,
+  };
+}
+
 function collectHoldings(S) {
   const notes = [];
   for (const { id, loc, h } of holdingList(S)) {

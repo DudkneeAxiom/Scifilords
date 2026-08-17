@@ -1004,3 +1004,35 @@ kbd {
 .svc-count { font-size: 15px; color: var(--bone); font-variant-numeric: tabular-nums; }
 .svc-how { font-size: 11px; color: var(--text-dim); margin-top: 7px; line-height: 1.5; }
 .svc-held { font-size: 9px; letter-spacing: 0.14em; color: var(--ochre); margin-top: 8px; }
+
+/* The realm roll call: one scannable line per holding, above the full entries.
+   Fixed columns rather than a table so a domain of one and a domain of eight
+   read the same way down the left edge. */
+.realm-roll { display: flex; flex-direction: column; gap: 3px; margin: 6px 0 4px; }
+.realm-row {
+  display: grid;
+  grid-template-columns: 1.4fr 0.7fr 1.5fr 0.9fr 1fr;
+  gap: 10px;
+  align-items: baseline;
+  padding: 4px 8px;
+  background: rgba(0, 0, 0, 0.16);
+  border-left: 2px solid #3b382e;
+  font-size: 11px;
+  color: #9a9482;
+}
+.realm-row .rr-name { color: #cbc3ac; letter-spacing: 0.04em; }
+.realm-row .rr-cr { color: #b8a06a; }
+.realm-row .hurt { color: #c86a5c; }
+
+/* The hotkey printed on each company tab. Dim enough to read as a label rather
+   than compete with the tab's own name. */
+.mtab-key {
+  font-style: normal;
+  margin-left: 6px;
+  padding: 0 3px;
+  font-size: 9px;
+  color: #6f6a5c;
+  border: 1px solid #4a4639;
+  border-radius: 2px;
+}
+.mtab.on .mtab-key { color: #b8a06a; border-color: #6b5f3f; }
