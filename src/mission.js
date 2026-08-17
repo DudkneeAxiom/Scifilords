@@ -130,9 +130,13 @@ const FORMATIONS = {
 };
 
 export class Mission {
-  constructor({ campaign, spec, squad, container, onEnd, onHud, onToast, onIntro, onWheel }) {
+  constructor({ campaign, spec, squad, container, onEnd, onHud, onToast, onIntro, onWheel,
+    onArea }) {
     this.onIntro = onIntro;
     this.onWheel = onWheel || (() => {});
+    // Town visits only: fired when the player works an area doorway, so the
+    // shell can open the right panel over the paused walk.
+    this.onArea = onArea || null;
     this.S = campaign;
     this.spec = spec;               // { type, site, contract }
     this.squadSoldiers = squad;     // persistent soldier objects, commander first
@@ -181,22 +185,29 @@ export class Mission {
     // garrison and be under fire before they had found the horizon. Now the
     // deployment opens on the site itself, sweeps back to the squad, and only
     // then hands over control — and nothing may shoot at them until it does.
-    this.intro = {
-      active: true,
-      t: 0,
-      dur: 6.0,
-      // Contact is additionally held off for a moment after control returns,
-      // so the first thing that happens is never a bullet.
-      graceUntil: 7.6,
-    };
-    this.onIntro?.({
-      site: this.level.name,
-      type: MISSION_TYPES[this.spec.type]?.name || 'Deployment',
-      objective: this.objective.text,
-      squad: [this.player, ...this.squad]
-        .filter((e) => e.soldier)
-        .map((e) => ({ name: e.soldier.name, role: ROLES[e.soldier.role].name })),
-    });
+    //
+    // Walking into a town you were invited into is not an insertion: no
+    // fly-in, no grace clock, control from the first frame.
+    if (this.spec.type === 'visit') {
+      this.intro = null;
+    } else {
+      this.intro = {
+        active: true,
+        t: 0,
+        dur: 6.0,
+        // Contact is additionally held off for a moment after control returns,
+        // so the first thing that happens is never a bullet.
+        graceUntil: 7.6,
+      };
+      this.onIntro?.({
+        site: this.level.name,
+        type: MISSION_TYPES[this.spec.type]?.name || 'Deployment',
+        objective: this.objective.text,
+        squad: [this.player, ...this.squad]
+          .filter((e) => e.soldier)
+          .map((e) => ({ name: e.soldier.name, role: ROLES[e.soldier.role].name })),
+      });
+    }
 
     this.last = performance.now();
     this.loop = this.loop.bind(this);
@@ -264,7 +275,19 @@ export class Mission {
     // added — the far half of every map was solid haze, which is why an enlarged
     // site still read as one band of scenery in brown soup.
     const far = this.level.bounds * 2.5;
-    this.scene.fog = new THREE.Fog(p.fog, this.level.bounds * 0.55, far);
+    // Aerial perspective: distance shifts HUE, not brightness. The fog keeps
+    // exactly the lightness it was authored with — lighter than the objects in
+    // it, which is what makes the silhouette look — but its tint is pulled to
+    // the site's own sky, so far scenery cools away from the warm ground
+    // instead of converging on it. Every fog was authored in the same
+    // brown-grey family as its ground, which is why "muddy at distance" was
+    // the standing complaint: ground, props and haze all met at one colour.
+    const fogHSL = {}, skyHSL = {};
+    new THREE.Color(p.fog).getHSL(fogHSL);
+    new THREE.Color(p.sky).getHSL(skyHSL);
+    const fogC = new THREE.Color().setHSL(
+      skyHSL.h, (fogHSL.s + skyHSL.s) / 2, fogHSL.l);
+    this.scene.fog = new THREE.Fog(fogC, this.level.bounds * 0.55, far);
 
     const amb = new THREE.HemisphereLight(p.amb, 0x0d0f0c, p.ambI);
     this.scene.add(amb);
@@ -844,6 +867,7 @@ export class Mission {
     else if (t === 'lair') this.buildLair();
     else if (t === 'pit') this.buildPit();
     else if (t === 'siege') this.buildSiege();
+    else if (t === 'visit') this.buildVisit();
     else this.buildDefense();
 
     this.buildStages();
@@ -931,6 +955,49 @@ export class Mission {
       const d = 10 + this.r() * 14;
       this.spawnEnemy(o.x + Math.cos(a) * d, o.z + Math.sin(a) * d, pick(this.r, roles));
     }
+  }
+
+  /**
+   * A town on foot. No enemies, no clock, no extraction: the site the company
+   * would otherwise fight over, walked as a place, with the services standing
+   * where the layout put them. Holding E at an area doorway hands its id to
+   * onArea, and the shell opens the matching panel over the paused walk;
+   * leaving is the south gate, the same way you came in.
+   */
+  buildVisit() {
+    this.objective = {
+      text: `Walking ${this.level.name}`,
+      sub: 'Hold E at a doorway to deal. The gate leads back to the road.',
+      progress: 0, need: 1, done: false, type: 'visit',
+    };
+    const services = this.spec.services || [];
+    for (const a of this.level.areas || []) {
+      // Only areas the town actually staffs — and the notable's door only
+      // when somebody is actually asking for the company.
+      if (a.service && !services.includes(a.service)) continue;
+      if (a.id === 'favour' && !this.spec.hasFavour) continue;
+      this.interactables.push({
+        kind: 'area', area: a.id, x: a.x, z: a.z, progress: 0, need: 0.8,
+        label: a.label,
+      });
+    }
+    const gate = this.level.gate || this.level.objectivePoint;
+    this.interactables.push({
+      kind: 'leave', x: gate.x, z: gate.z, progress: 0, need: 0.8,
+      label: 'Back to the road',
+    });
+    // Townsfolk, so the streets read as lived-in rather than evacuated. The
+    // worker model, unbound; they stand where the day put them.
+    const spots = [[-5, 3], [6, 1], [-11, -4], [10, -7], [2, 12], [-3, -9]];
+    spots.forEach(([x, z], i) => {
+      const e = this.spawnEntity({
+        id: `tf_${i}`, side: 'civil', faction: null, x, z,
+        yaw: this.r() * Math.PI * 2, hp: 40, weapon: null,
+        model: 'soldier_prisoner', speed: 3.0, name: 'Townsfolk',
+      });
+      e.released = true;
+      e.townsfolk = true;
+    });
   }
 
   buildSabotage() {
@@ -2661,6 +2728,19 @@ export class Mission {
       this.scene.remove(it.mesh);
       Audio.uiSelect();
       this.onToast('CACHE RECOVERED', 'Salvage secured', 'good');
+      return;
+    }
+    if (it.kind === 'area') {
+      // Not `done` — a market is not used up by shopping at it. Progress
+      // resets so walking off and coming back starts the hold-E fresh.
+      it.progress = 0;
+      Audio.uiSelect();
+      this.onArea?.(it.area);
+      return;
+    }
+    if (it.kind === 'leave') {
+      it.done = true;
+      this.endMission(true, 'left');
     }
   }
 

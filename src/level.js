@@ -56,7 +56,7 @@ export function heightAt(x, z) {
 // elevation. Kept beside the function so the two cannot drift apart.
 export const RELIEF = 6.0;
 
-function buildGround(size, colorTop, colorLow) {
+function buildGround(size, colorTop, colorLow, colorAcc) {
   // Enough segments that the swells read as ground and not as facets. The
   // pan is now more than twice as wide, so the old grid gave a 5m triangle.
   const seg = 150;
@@ -66,6 +66,17 @@ function buildGround(size, colorTop, colorLow) {
   const colors = new Float32Array(pos.count * 3);
   const cTop = new THREE.Color(colorTop);
   const cLow = new THREE.Color(colorLow);
+  // The second country. Height-lerping two shades of one hue gave the floor a
+  // single colour at two brightnesses, which is most of why a site read as one
+  // brown carpet — the same uniform-olive failure the world map had before its
+  // moisture field. Each palette names an accent (scrub, rust, stained gravel
+  // — whatever that site's OTHER material is) and a slow patch field decides
+  // which country each stretch of ground belongs to.
+  const cAcc = new THREE.Color(colorAcc ?? colorTop);
+  // Bare rock where the ground stands up, for the world map's reason: a slope
+  // that catches its own colour describes a shape instead of being a darker
+  // smear, and it breaks the carpet exactly where the relief is.
+  const cRock = new THREE.Color(0x6e6a60);
   const c = new THREE.Color();
   for (let i = 0; i < pos.count; i++) {
     const x = pos.getX(i), z = pos.getZ(i);
@@ -79,6 +90,15 @@ function buildGround(size, colorTop, colorLow) {
     // full brightness and every hollow at black.
     const e = (y + RELIEF) / (RELIEF * 2);
     c.copy(cLow).lerp(cTop, Math.min(1, Math.max(0, e * 0.7 + n * 0.4)));
+    // Accent patches tens of metres across with soft edges — big enough to
+    // read as country from eye level, never per-vertex speckle.
+    const patch = (Math.sin(x * 0.021 + 1.7) * Math.cos(z * 0.017 - 0.6) + 1) * 0.5;
+    const pt = Math.min(1, Math.max(0, (patch - 0.5) / 0.25));
+    c.lerp(cAcc, pt * 0.55);
+    const gx = (heightAt(x + 4, z) - heightAt(x - 4, z)) / 8;
+    const gz = (heightAt(x, z + 4) - heightAt(x, z - 4)) / 8;
+    const slope = Math.min(1, Math.hypot(gx, gz) * 2.2);
+    c.lerp(cRock, slope * 0.5);
     colors[i * 3] = c.r; colors[i * 3 + 1] = c.g; colors[i * 3 + 2] = c.b;
   }
   geo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
@@ -547,7 +567,7 @@ function siteGrellan(b) {
   return {
     name: 'GRELLAN ARRAY',
     // Grellan sits under a dirty overcast — cold haze, weak ochre sun.
-    palette: { fog: 0x4a4a44, ground: 0x4c4a3c, groundLow: 0x2a2a22, sky: 0x3e4044, sun: 0xd8bd8a, sunI: 3.0, amb: 0x5a6470, ambI: 1.9 },
+    palette: { fog: 0x4a4a44, ground: 0x4c4a3c, groundLow: 0x2a2a22, acc: 0x46543e, sky: 0x3e4044, sun: 0xd8bd8a, sunI: 3.0, amb: 0x5a6470, ambI: 1.9 },
     playerSpawn: { x: 0, z: 44, ry: 0 },
     extraction: { x: 0, z: 46 },
     enemyFaction: 'raider',
@@ -600,7 +620,7 @@ function siteRampart(b) {
   return {
     name: 'RAMPART 12',
     // Rampart is a night-into-dawn raid: blue, cold, the sun barely up.
-    palette: { fog: 0x2e3440, ground: 0x35372f, groundLow: 0x1c1e1a, sky: 0x252b36, sun: 0x9aa8c4, sunI: 2.2, amb: 0x4a5670, ambI: 2.1 },
+    palette: { fog: 0x2e3440, ground: 0x35372f, groundLow: 0x1c1e1a, acc: 0x2c3e38, sky: 0x252b36, sun: 0x9aa8c4, sunI: 2.2, amb: 0x4a5670, ambI: 2.1 },
     playerSpawn: { x: 0, z: 40, ry: 0 },
     extraction: { x: -40, z: -6 },   // out the west gap, not back the way in
     enemyFaction: 'trust',
@@ -648,7 +668,7 @@ function sitePerran(b) {
   return {
     name: 'PERRAN RECLAIMER',
     // Perran is late afternoon, dust in the air, everything gone amber.
-    palette: { fog: 0x5c4c34, ground: 0x54492e, groundLow: 0x2e2818, sky: 0x4e4030, sun: 0xf0c078, sunI: 3.2, amb: 0x6a5c48, ambI: 1.8 },
+    palette: { fog: 0x5c4c34, ground: 0x54492e, groundLow: 0x2e2818, acc: 0x5e3a28, sky: 0x4e4030, sun: 0xf0c078, sunI: 3.2, amb: 0x6a5c48, ambI: 1.8 },
     playerSpawn: { x: 0, z: 6, ry: 0 },
     extraction: { x: 0, z: 6 },     // you are already where you must stay
     enemyFaction: 'trust',
@@ -682,7 +702,7 @@ function siteRoadside(b) {
 
   return {
     name: 'ROADSIDE — THE REACH',
-    palette: { fog: 0x4e4a3c, ground: 0x494330, groundLow: 0x28251a, sky: 0x44443a, sun: 0xdcb878, sunI: 2.8, amb: 0x5a6070, ambI: 1.9 },
+    palette: { fog: 0x4e4a3c, ground: 0x494330, groundLow: 0x28251a, acc: 0x525a32, sky: 0x44443a, sun: 0xdcb878, sunI: 2.8, amb: 0x5a6070, ambI: 1.9 },
     playerSpawn: { x: 0, z: 32, ry: 0 },
     extraction: { x: 0, z: 34 },
     enemyFaction: 'raider',
@@ -730,7 +750,7 @@ function siteDepot(b) {
 
   return {
     name: 'SUPPLY DEPOT',
-    palette: { fog: 0x3e4448, ground: 0x40423a, groundLow: 0x232520, sky: 0x363c42, sun: 0xc8bc98, sunI: 2.6, amb: 0x525c68, ambI: 1.9 },
+    palette: { fog: 0x3e4448, ground: 0x40423a, groundLow: 0x232520, acc: 0x3a444e, sky: 0x363c42, sun: 0xc8bc98, sunI: 2.6, amb: 0x525c68, ambI: 1.9 },
     playerSpawn: { x: 0, z: 44, ry: 0 },
     extraction: { x: -38, z: 30 },
     enemyFaction: 'trust',
@@ -823,13 +843,28 @@ function siteSettlement(b) {
     name: 'THE TOWN',
     // Lived-in: warmer light, dust in the air, smoke from something burning.
     palette: {
-      fog: 0x55483a, ground: 0x5a5142, groundLow: 0x312b22,
+      fog: 0x55483a, ground: 0x5a5142, groundLow: 0x312b22, acc: 0x565c38,
       sky: 0x4a4038, sun: 0xf0c88c, sunI: 3.2, amb: 0x6a6a74, ambI: 2.0,
     },
     playerSpawn: { x: 0, z: 42, ry: 0 },
     extraction: { x: 0, z: 45 },
     enemyFaction: 'syndic',
     objectivePoint: { x: 0, z: -2 },
+    // Where things are in town, for the walking visit. Each anchor sits on
+    // open street beside its structure — the market among the stalls, the
+    // board at the square's south edge where the traffic passes, hiring and
+    // the infirmary at the mouths of the east and west lanes, the notable's
+    // door in the north row. The gate is the south checkpoint, which is also
+    // how you leave. A layout that declares no areas cannot be walked; add
+    // these to its builder to open it up.
+    areas: [
+      { id: 'market', x: -6, z: 1, service: 'market', label: 'The market' },
+      { id: 'board', x: 0, z: 8.5, service: 'contracts', label: 'The posting board' },
+      { id: 'recruit', x: 12, z: -2, service: 'recruit', label: 'The hiring row' },
+      { id: 'medical', x: -12, z: -2, service: 'medical', label: 'The infirmary' },
+      { id: 'favour', x: 0, z: -12, label: 'A door with a name on it' },
+    ],
+    gate: { x: 0, z: 20 },
     garrison: [[-6, 4], [6, 3], [0, -10], [-12, -6], [12, -5], [0, 14], [-16, 2], [16, 1]],
     patrols: [
       [[-13, 14], [-13, -14], [13, -14], [13, 14], [-13, 14]],
@@ -903,7 +938,7 @@ function siteWorks(b) {
     name: 'THE WORKS',
     // Under the plant's own light: sodium glare, chemical haze, no sky to speak of.
     palette: {
-      fog: 0x46443a, ground: 0x4e4a3e, groundLow: 0x282721,
+      fog: 0x46443a, ground: 0x4e4a3e, groundLow: 0x282721, acc: 0x545830,
       sky: 0x3a3c3e, sun: 0xe8b070, sunI: 2.9, amb: 0x5e6a78, ambI: 2.1,
     },
     playerSpawn: { x: 0, z: 42, ry: 0 },
@@ -994,7 +1029,7 @@ function siteFort(b) {
   return {
     name: 'THE WORKS GATE',
     palette: {
-      fog: 0x48453c, ground: 0x55503f, groundLow: 0x2b2820,
+      fog: 0x48453c, ground: 0x55503f, groundLow: 0x2b2820, acc: 0x4a5642,
       sky: 0x3f4142, sun: 0xe8c088, sunI: 2.9, amb: 0x64707e, ambI: 2.0,
     },
     playerSpawn: { x: 0, z: 34, ry: 0 },
@@ -1065,7 +1100,8 @@ export function build(siteId, seed, override = {}) {
   }
 
   const group = new THREE.Group();
-  const ground = buildGround(BOUND * 4.2, meta.palette.ground, meta.palette.groundLow);
+  const ground = buildGround(BOUND * 4.2, meta.palette.ground, meta.palette.groundLow,
+    meta.palette.acc);
   group.add(ground);
 
   // Scenery is baked into one mesh per model rather than placed as a clone
@@ -1099,6 +1135,10 @@ export function build(siteId, seed, override = {}) {
     // site played the same regardless of what had been authored for it.
     garrison: meta.garrison || null,
     patrols: meta.patrols || null,
+    // Same lesson as the two lines above: this return is a whitelist, and a
+    // meta field that is not named here silently never reaches the mission.
+    areas: meta.areas || null,
+    gate: meta.gate || null,
     bounds: BOUND,
   };
 }

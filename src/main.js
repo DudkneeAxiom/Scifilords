@@ -332,8 +332,10 @@ function enterLocation() {
   const openMenu = () => {
     UI.settlementMenu(S, loc, {
       canSeize: seizable,
+      canWalk: !!loc.services.length && (loc.layout || 'settlement') === 'settlement',
       onClose: leave,
       onVerb: (verb) => {
+        if (verb === 'walk') { G.visiting = false; UI.closeModal(); startVisit(loc); return; }
         if (verb === 'deploy') { G.visiting = false; UI.closeModal(); openDeploy(specFor(loc, c)); return; }
         if (verb === 'seize') { G.visiting = false; Audio.uiSelect(); startSeizure(loc); return; }
         if (verb === 'raid') { G.visiting = false; UI.closeModal(); startRaid(loc); return; }
@@ -418,6 +420,68 @@ function enterLocation() {
 
 const UIesc = (s) => String(s).replace(/[&<>"]/g, (ch) => (
   { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[ch]));
+
+// --------------------------------------------------------------------------
+// Walking a town
+// --------------------------------------------------------------------------
+
+/**
+ * The settlement on foot — the site the company would otherwise fight over,
+ * walked as a place. Launched from the settlement menu; areas hand back their
+ * id and the matching panel opens over the paused walk; the south gate ends
+ * it and puts the company back on the map.
+ */
+function startVisit(loc) {
+  const S = G.campaign;
+  const spec = {
+    type: 'visit', site: loc.id, layout: loc.layout || 'settlement',
+    siteName: loc.name, services: loc.services,
+    hasFavour: !!State.favourAt(S, loc.id), locId: loc.id,
+  };
+  // The commander walks alone. A squad in tow turns every lane into a
+  // pathing exercise, and nobody brings four riflemen to buy rations.
+  startMission(spec, [State.commander(S)]);
+}
+
+function handleTownArea(spec, area) {
+  const S = G.campaign;
+  const loc = State.locById(spec.locId);
+  const m = G.mission;
+  if (!m || m.over) return;
+  m.paused = true;
+  if (document.pointerLockElement) document.exitPointerLock();
+  const back = () => { if (G.mission && !G.mission.over) G.mission.paused = false; };
+
+  if (area === 'market') {
+    UI.inventoryPanel(S, { onClose: back, onLoadout: () => openLoadout() });
+  } else if (area === 'board') {
+    const openBoardHere = () => UI.contractPanel(S, {
+      onAccept: (id) => { State.acceptContract(S, id); openBoardHere(); },
+      onClose: back,
+    });
+    openBoardHere();
+  } else if (area === 'recruit' || area === 'medical') {
+    // The services panel, without onRaid/onPit — the panel hides those
+    // buttons when the callbacks are absent, and robbing a town mid-stroll
+    // is a decision for the map, not for a doorway.
+    const openHere = () => UI.settlementPanel(S, loc, {
+      onRefresh: () => openHere(),
+      onBoard: () => UI.contractPanel(S, {
+        onAccept: (id) => { State.acceptContract(S, id); openHere(); },
+        onClose: () => openHere(),
+      }),
+      onTrade: () => UI.inventoryPanel(S, {
+        onClose: () => openHere(), onLoadout: () => openLoadout(),
+      }),
+      onClose: back,
+    });
+    openHere();
+  } else if (area === 'favour') {
+    UI.favourPanel(S, loc, { onClose: back, onDone: back });
+  } else {
+    back();
+  }
+}
 
 // --------------------------------------------------------------------------
 // Encounters on the road
@@ -667,6 +731,7 @@ async function startMission(spec, squad) {
     onToast: (t, b, tone) => UI.toast(t, b, tone),
     onIntro: (info) => UI.missionIntro(info, 6.0),
     onWheel: (w) => UI.renderCommandWheel(w),
+    onArea: (area) => handleTownArea(spec, area),
     onEnd: (result) => endMission(spec, result),
   });
   await G.mission.start();
@@ -676,6 +741,10 @@ async function startMission(spec, squad) {
 
 function endMission(spec, result) {
   const S = G.campaign;
+  // A walk is not a deployment: nothing happened that the campaign needs to
+  // be told about, and an after-action report for a shopping trip would be
+  // absurd. Straight back to the map.
+  if (spec.type === 'visit') { toWorld(false); return; }
   const notes = State.applyMissionResult(S, result);
   State.save(S);
 

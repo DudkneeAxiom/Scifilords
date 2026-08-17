@@ -1817,6 +1817,12 @@ test('going unpaid and unfed costs morale, and people eventually leave', async (
   await newCampaign(page);
   const r = await page.evaluate(() => {
     const { State } = window.KR.dev;
+    // Pinned, like its sibling below and for the sibling's reason: the seed
+    // decides the roster and every desertion roll comes off the campaign's
+    // own streams, so an unpinned run occasionally starves for forty days
+    // without anybody quite walking — a rare full-suite failure with nothing
+    // wrong in the game.
+    window.KR.campaign = State.newCampaign(31415);
     const S = window.KR.campaign;
     S.credits = 0;
     S.rations = 0;
@@ -4532,4 +4538,80 @@ test('the stage suits the contract: a second charge, another pen', async ({ page
   expect(r.extra.spawned, 'the far pen held nobody').toBe(4);
   expect(r.freedExtra, 'the extra held person could not be cut loose').toBe(true);
   expect(r.stageAfter, 'freeing them did not move the chain on').toBeGreaterThan(0);
+});
+
+test('a town can be walked, and the walk is not a deployment', async ({ page }) => {
+  test.setTimeout(120000);
+  await boot(page);
+  await newCampaign(page);
+
+  // Stand the company in a full-service settlement-layout town and go in
+  // through the real door: E opens the menu, the menu offers the walk.
+  await page.evaluate(() => {
+    const { DATA } = window.KR.dev;
+    const S = window.KR.campaign;
+    const town = DATA.LOCATIONS.find((l) => l.layout === 'settlement'
+      && l.services.includes('market') && l.services.includes('recruit'));
+    window.KR.world.stopTravel();
+    S.pos.x = town.x; S.pos.z = town.z;
+    window.__town = town.id;
+    window.__testSite = [town.x, town.z];
+  });
+  await enterLocation(page, '#modal [data-verb="walk"]');
+  await page.click('#modal [data-verb="walk"]');
+
+  await page.waitForFunction(() => window.KR.mission?.player
+    && window.KR.mission.spec.type === 'visit', null, { timeout: 40000 });
+
+  const walk = await page.evaluate(() => {
+    const m = window.KR.mission;
+    return {
+      // Invited in: no insertion cinematic, nothing hostile, people present.
+      intro: !!m.intro,
+      hostiles: m.entities.filter((e) => e.side === 'enemy').length,
+      townsfolk: m.entities.filter((e) => e.townsfolk).length,
+      areas: m.interactables.filter((i) => i.kind === 'area').map((i) => i.area),
+      gate: m.interactables.filter((i) => i.kind === 'leave').length,
+      missionsBefore: window.KR.campaign.stats.missions,
+    };
+  });
+  expect(walk.intro, 'a town visit played the assault cinematic').toBe(false);
+  expect(walk.hostiles).toBe(0);
+  expect(walk.townsfolk).toBeGreaterThan(2);
+  expect(walk.areas).toContain('market');
+  expect(walk.areas).toContain('recruit');
+  expect(walk.gate).toBe(1);
+
+  // Stand at the market and hold E: the trade panel must open over the
+  // paused walk, and closing it must hand the street back.
+  await page.evaluate(() => {
+    const m = window.KR.mission;
+    const a = m.interactables.find((i) => i.kind === 'area' && i.area === 'market');
+    m.player.x = a.x; m.player.z = a.z;
+  });
+  await page.keyboard.down('e');
+  await page.waitForFunction(() => window.KR.dev.UI.modalOpen(), null, { timeout: 8000 });
+  await page.keyboard.up('e');
+  expect(await page.evaluate(() => window.KR.mission.paused),
+    'the walk ran on underneath the market panel').toBe(true);
+  await page.click('#modal [data-x="close"]');
+  await page.waitForFunction(() => !window.KR.mission.paused, null, { timeout: 5000 });
+
+  // Leave by the gate: back on the map, and the campaign never heard about a
+  // "deployment" — a walk must not count as one or pay like one.
+  await page.evaluate(() => {
+    const m = window.KR.mission;
+    const g = m.interactables.find((i) => i.kind === 'leave');
+    m.player.x = g.x; m.player.z = g.z;
+  });
+  await page.keyboard.down('e');
+  await page.waitForFunction(() => !window.KR.mission && window.KR.world,
+    null, { timeout: 10000 });
+  await page.keyboard.up('e');
+  const after = await page.evaluate(() => ({
+    missions: window.KR.campaign.stats.missions,
+    atTown: window.KR.dev.State.locationAt(window.KR.campaign, 38)?.id,
+  }));
+  expect(after.missions, 'a walk was booked as a deployment').toBe(walk.missionsBefore);
+  expect(after.atTown).toBe(await page.evaluate(() => window.__town));
 });

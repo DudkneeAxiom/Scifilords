@@ -1,7 +1,7 @@
 # Handoff
 
-Current as of the contract-stages round (the commit carrying this file),
-**98/98 acceptance tests passing**. Pushed history lives at
+Current as of the town-walk round (the commit carrying this file),
+**99/99 acceptance tests passing**. Pushed history lives at
 <https://github.com/DudkneeAxiom/Scifilords>; push only when asked.
 
 The last long session was almost entirely strategic-layer work, aimed at making
@@ -27,7 +27,7 @@ here, and the reasons behind decisions that look arbitrary from the outside.
 
 ```bash
 npm run serve                 # static server on 8124; PLAY.cmd on Windows
-node tools/snaptest.mjs       # the 98 acceptance tests against a COPY of the tree
+node tools/snaptest.mjs       # the 99 acceptance tests against a COPY of the tree
 npx playwright test           # the same, against the live tree
 node tools/soak.mjs 500 40    # 500 campaign days, 40 deployments, unattended
 node tools/mapsoak.mjs 240    # 240 days played through WorldMap.update()
@@ -408,9 +408,25 @@ Open, in rough priority order:
    If you add a stage kind whose completion an always-running per-type
    updater might re-trigger, this is the shape to check for. The acceptance
    test "the stage suits the contract" holds the regression.
-4. **The palette runs muddy at distance.** `nearGround()` now dresses the
-   spawn surroundings that `outskirts()` starts 26m outside of, so the bare
-   insertion point is dealt with; the colour problem is not.
+4. ~~**The palette runs muddy at distance.**~~ Done, by the world map's own
+   playbook. The mud had two causes. The mission floor height-lerped two
+   shades of ONE hue, so the whole ground was a single colour at two
+   brightnesses — every palette now names an `acc` (the site's second
+   material: sage on the Array, rust on the Reclaimer, worn green verges in
+   the Town) and `buildGround()` lays it in as soft patches tens of metres
+   wide, with steep ground going bare rock. And every fog was authored in the
+   same brown-grey family as its ground, so ground, props and haze met at one
+   colour at range — the fog now keeps its authored LIGHTNESS (lighter than
+   the objects in it, which is the silhouette look) but takes its HUE from
+   the site's sky, so distance cools away from the warm ground instead of
+   converging on it. If you retune either, shoot all eight sites, not one:
+   the accents are authored per palette and a change that flatters the
+   Reclaimer can mud the Town.
+
+   Found while shooting: `tools/shots.mjs`'s site-from-above frame had been
+   silently photographing the chase camera — the mission loop re-renders
+   every frame, overwriting any staged camera before the screenshot. If you
+   stage a camera for a screenshot, `cancelAnimationFrame(m.raf)` first.
 5. ~~**Flat sites**~~ — done, see the constraint above.
 6. ~~**Characters do not follow the slope they stand on.**~~ Done.
    `syncVisuals()` samples the gradient across a stance width, projects it into
@@ -457,6 +473,21 @@ Open, in rough priority order:
    closes on a player standing there while hunting nothing. Assert on
    `p.chasing`, which is the intent itself.
 8. No audio mixing, no key rebinding.
+9. **The town walk is a v1.** Settlements can be visited on foot (the `visit`
+   mission type: settlement menu → "Walk the streets" — the real site, no
+   garrison, townsfolk standing about, hold-E doorways for market / board /
+   hiring / infirmary / the notable's door, the south checkpoint to leave).
+   Three deliberate limits worth knowing before extending it. Only
+   `settlement`-layout towns offer the walk — a layout opts in by declaring
+   `areas` and a `gate` in its builder meta, and `build()`'s return is a
+   WHITELIST, so a new meta field must also be added there or it silently
+   never arrives (that is how garrisons were lost once). Townsfolk are
+   scenery: they stand where placed, and nothing happens if you shoot one —
+   the town does not react, which is the first thing to fix if the walk grows
+   teeth. And a walk deliberately books no deployment: `endMission` in
+   main.js returns straight to the map for `visit` specs, skipping
+   applyMissionResult — anything added to the walk that SHOULD reach the
+   campaign has to go through its own door, not that one.
 
 ---
 

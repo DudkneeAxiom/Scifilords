@@ -2076,6 +2076,10 @@ export function settlementMenu(S, loc, cbs) {
     else if (prog.ready) verb('favour', `Report to ${esc(fav.who)}`, 'They are waiting', 'major');
     else verb('favour', `Call on ${esc(fav.who)}`, esc(prog.note));
   }
+  // On foot, Mount-and-Blade style: the same town the company would fight
+  // over, walked as a place, with the services standing where the layout put
+  // them. Only offered where the layout has authored streets to walk.
+  if (cbs.canWalk) verb('walk', 'Walk the streets', 'See the place on foot; deal where people stand');
   if (has('market')) verb('market', 'Walk down to the market', 'Buy, sell, and fit the truck out');
   if (has('recruit')) verb('recruit', 'Ask who is looking for work', 'Hire from what the town offers');
   if (has('market')) verb('pit', 'Take a turn in the pit',

@@ -183,6 +183,11 @@ await page.evaluate(() => { window.KR.mission.closeWheel(false); });
 // The whole site from above, to judge the new scale.
 await page.evaluate(() => {
   const m = window.KR.mission;
+  // The loop re-renders with the chase camera every frame, so a staged shot
+  // was silently overwritten before the screenshot — this frame has been
+  // photographing the player's shoulder for as long as it has existed. Kill
+  // the loop (it is the last shot; nothing needs it back) and render by hand.
+  cancelAnimationFrame(m.raf);
   m.camera.position.set(0, 190, 130);
   m.camera.lookAt(0, 0, 0);
   m.renderer.render(m.scene, m.camera);
