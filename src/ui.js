@@ -2462,6 +2462,12 @@ export function encounterPanel(S, party, cbs) {
       ${party.cargo ? '<div class="prose dim">They are hauling cargo.</div>' : ''}`,
     foot: options.join(''),
     onClose: cbs.onClose,
+    // A hostile encounter has to be answered. Escape used to dismiss it like
+    // any other panel, which was a third way past the contested withdrawal:
+    // no roll, no toll, no fight — just close the box and drive on. Friendly
+    // meetings stay dismissable, because for them Escape and MOVE ON are the
+    // same thing.
+    blocking: hostile,
   });
   wire({
     fight: () => cbs.onFight(party),
@@ -2587,9 +2593,15 @@ export function afterAction(S, result, notes, { onClose }) {
     </div>` : ''}
     <div class="stat-row" style="justify-content:center">
       <div class="s"><span class="n">${result.kills}</span><span class="l">HOSTILES DOWN</span></div>
+      ${/* An auto-resolve has no round or kit count — the fight happened off
+           screen, and zeros here would be numbers pretending to be facts. It
+           used to read these unconditionally, which threw mid-template and cost
+           the player the entire report for every SEND THEM IN. */''}
+      ${result.stats ? `
       <div class="s"><span class="n">${result.stats.shotsFired}</span><span class="l">ROUNDS FIRED</span></div>
-      <div class="s"><span class="n">${result.stats.medkitsUsed}</span><span class="l">KITS USED</span></div>
-      <div class="s"><span class="n">${result.recruits.length}</span><span class="l">RECRUITED</span></div>
+      <div class="s"><span class="n">${result.stats.medkitsUsed}</span><span class="l">KITS USED</span></div>` : ''}
+      ${result.recruits ? `
+      <div class="s"><span class="n">${result.recruits.length}</span><span class="l">RECRUITED</span></div>` : ''}
     </div>
     <div class="section-title">CONSEQUENCES</div>
     ${notes.length ? notes.map((n) => `<div class="note ${n.tone}">${esc(n.text)}</div>`).join('')

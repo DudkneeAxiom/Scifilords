@@ -1,7 +1,8 @@
 # Handoff
 
-Written at commit `c68d52a`, **96/96 acceptance tests passing**, working tree
-clean and pushed to <https://github.com/DudkneeAxiom/Scifilords>.
+Current as of the map-soak round (the commit carrying this file), **97/97
+acceptance tests passing**. Pushed history lives at
+<https://github.com/DudkneeAxiom/Scifilords>; push only when asked.
 
 The last long session was almost entirely strategic-layer work, aimed at making
 the Reach behave the way the games this is modelled on do. What went in, roughly
@@ -26,9 +27,10 @@ here, and the reasons behind decisions that look arbitrary from the outside.
 
 ```bash
 npm run serve                 # static server on 8124; PLAY.cmd on Windows
-node tools/snaptest.mjs       # the 96 acceptance tests against a COPY of the tree
+node tools/snaptest.mjs       # the 97 acceptance tests against a COPY of the tree
 npx playwright test           # the same, against the live tree
 node tools/soak.mjs 500 40    # 500 campaign days, 40 deployments, unattended
+node tools/mapsoak.mjs 240    # 240 days played through WorldMap.update()
 node tools/shots.mjs          # photograph 20 screens into qa-shots/
 ```
 
@@ -327,16 +329,26 @@ change every seeded campaign in the game.
 
 Open, in rough priority order:
 
-0. **The soak does not go through the map loop, and that is the biggest hole in
-   the test estate.** `tools/soak.mjs` drives `State.advanceTime()` directly, so
-   it never touches `worldmap.js` at all. Everything added to the strategic
-   layer that lives in the map's update — pursuit pacing, the continuous clock,
-   click-to-chase, the camera, terrain travel, and the contested withdrawal —
-   has only ever been checked by short targeted probes. A soak that plays
-   through `WorldMap.update()` for a few hundred simulated days would exercise
-   all of it together, and would very likely have caught the "withdraw always
-   works, so a fight can never be forced, so the capture rules are unreachable"
-   hole long before a player found it.
+0. ~~**The soak does not go through the map loop.**~~ Done: `tools/mapsoak.mjs`
+   plays a few hundred days through `WorldMap.update()` — real encounter panels
+   answered by clicking their buttons, real settlement visits through the
+   E-key path, click-to-chase against live quarry, withdrawal preferred
+   whenever it is offered. The trick that makes it fast: `setSpeed(0)` halts
+   the map's own clock (a legitimate game state the resume guard leaves alone,
+   unlike `paused`) and the soak calls `update(0.2)` by hand — the exact tick
+   the real loop produces under fast-forward — so nothing double-ticks and the
+   rAF loop keeps rendering and running the camera underneath. It found three
+   holes on its first runs, all in the panel wiring rather than the map
+   itself: `afterAction` threw mid-template on every SEND THEM IN (autoresolve
+   results carry no `stats`/`recruits`, and the player lost the entire report);
+   Escape dismissed a hostile encounter (no roll, no toll, no fight); and
+   ENGAGE-then-cancel exited a cornered encounter for free. All three are
+   fixed, the soak now rattles both closed doors on purpose every run, and the
+   acceptance test "a cornered encounter cannot be escaped, cancelled, or
+   clicked away" pins the whole chain. One reading to keep an eye on rather
+   than a bug: hostile pursuit was live ~17-19% of ticks in short runs — the
+   map is lively, not a permanent chase, but the soak fails above 60% and that
+   threshold is a guess.
 
 1. **Combat lethality is untuned and deliberately so.** Time-to-die in the open
    measured 2.2s, 5.6s and 8.2s across *identical* runs against a documented

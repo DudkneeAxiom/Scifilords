@@ -4326,3 +4326,86 @@ test('heavy contracts run in stages, and the ground grows with the fight', async
   expect(r.afterPrimary.extract, 'extraction armed without the stages being done').toBe(false);
   expect(r.finished, 'the stage chain could not be completed').toBe(true);
 });
+
+test('a cornered encounter cannot be escaped, cancelled, or clicked away', async ({ page }) => {
+  test.setTimeout(120000);
+  await boot(page);
+  await newCampaign(page);
+
+  // Corner the company: an empty patch of road, a hostile band walking into
+  // range through the real approach check, and a withdrawal roll rigged to
+  // fail. Everything after that is the real panel stack — encounter,
+  // WITHDRAW, run down, cornered, ENGAGE, deploy picker, CANCEL — because the
+  // holes this guards against all lived in the wiring between panels, not in
+  // any one of them.
+  await page.evaluate(async () => {
+    const { HALF } = await import('/src/region.js');
+    const { DATA } = window.KR.dev;
+    const S = window.KR.campaign;
+    const W = window.KR.world;
+    W.setSpeed(0);                  // the test drives update() itself
+    S.credits = 50000;              // the toll stays a real way out
+    // Somewhere no location suppresses encounters.
+    let spot = null;
+    for (let x = -HALF + 500; x < HALF && !spot; x += 611) {
+      for (let z = -HALF + 500; z < HALF && !spot; z += 611) {
+        if (!DATA.LOCATIONS.some((l) => Math.hypot(l.x - x, l.z - z) < 400)) spot = { x, z };
+      }
+    }
+    W.stopTravel();
+    S.pos.x = spot.x; S.pos.z = spot.z;
+    const party = {
+      id: 'corner_test', kind: 'looters', name: 'Corner Test', strength: 5,
+      tier: 1, quality: 0.6, faction: 'raider', speed: 40, hostileToPlayer: true,
+      // Outside encounter range, so crossing into it is an APPROACH — the only
+      // thing checkProximity fires on.
+      x: spot.x + 60, z: spot.z,
+    };
+    S.parties.push(party);
+    W.update(0.2);
+    party.x = spot.x + 10;
+    window.__mr = Math.random;
+    Math.random = () => 0.999;      // every withdrawal roll fails
+    W.update(0.2);
+  });
+  await page.waitForSelector('#modal [data-x="avoid"]', { timeout: 5000 });
+
+  // A hostile panel must refuse Escape — dismissing it is a free pass around
+  // the contested withdrawal: no roll, no toll, no fight.
+  expect(await page.evaluate(() => window.KR.dev.UI.modalBlocking())).toBe(true);
+  await page.keyboard.press('Escape');
+  await page.waitForTimeout(200);
+  expect(await page.evaluate(() => window.KR.dev.UI.modalOpen()),
+    'a hostile encounter was dismissed with Escape').toBe(true);
+
+  // A failed withdrawal comes back cornered: same band, no WITHDRAW offered.
+  await page.click('#modal [data-x="avoid"]');
+  await page.waitForFunction(() => {
+    const open = !document.getElementById('overlay').classList.contains('hidden');
+    return open && document.querySelector('#modal [data-x="fight"]')
+      && !document.querySelector('#modal [data-x="avoid"]');
+  }, null, { timeout: 5000 });
+  await page.evaluate(() => { Math.random = window.__mr; });
+
+  // ENGAGE then cancel is not a way out either: the picker hands straight
+  // back to the cornered panel with the world still held.
+  await page.click('#modal [data-x="fight"]');
+  await page.waitForSelector('#modal [data-x="cancel"]', { timeout: 5000 });
+  await page.click('#modal [data-x="cancel"]');
+  await page.waitForFunction(() => document.querySelector('#modal [data-x="fight"]')
+    && !document.querySelector('#modal [data-x="avoid"]'), null, { timeout: 5000 });
+  expect(await page.evaluate(() => window.KR.world.paused),
+    'the world ran on behind a cornered encounter').toBe(true);
+
+  // The toll is still real, still works, and takes the band off the road.
+  await page.click('#modal [data-x="toll"]');
+  await page.waitForFunction(
+    () => document.getElementById('overlay').classList.contains('hidden'),
+    null, { timeout: 5000 });
+  const after = await page.evaluate(() => ({
+    paused: window.KR.world.paused,
+    gone: !window.KR.campaign.parties.some((p) => p.id === 'corner_test'),
+  }));
+  expect(after.gone, 'paying the toll did not move them off the road').toBe(true);
+  expect(after.paused, 'the Reach stayed paused after the toll').toBe(false);
+});

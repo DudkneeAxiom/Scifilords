@@ -510,7 +510,12 @@ function handleEncounter(party, opts = {}) {
         // One way in. You cannot bring the company.
         squadCap: lair ? 4 : undefined,
         party,
-      });
+      // Once run down, backing out of the deploy picker is not a way out.
+      // Withdrawal was made contested precisely so a fight could be forced,
+      // and ENGAGE-then-cancel was a free exit around the whole rule —
+      // cancelling returns to the cornered encounter, where the outs are the
+      // ones the panel offers.
+      }, opts.cornered ? () => handleEncounter(party, { cornered: true }) : null);
     },
     onTalk: () => {
       UI.closeModal();
@@ -628,12 +633,19 @@ function startSeizure(loc) {
   openDeploy(specFor(loc, offer));
 }
 
-function openDeploy(spec) {
+function openDeploy(spec, onCancel) {
   const S = G.campaign;
   G.world?.setPaused(true);
+  // closeModal() fires onClose on EVERY close, including the one on the way
+  // into a launched mission — the flag is what tells a cancel from a deploy.
+  let launched = false;
   UI.deployPanel(S, spec, {
-    onClose: () => G.world?.setPaused(false),
+    onClose: () => {
+      if (!launched && onCancel) { onCancel(); return; }
+      G.world?.setPaused(false);
+    },
     onDeploy: (squad) => {
+      launched = true;
       UI.closeModal();
       startMission(spec, squad);
     },
