@@ -2868,5 +2868,11 @@ export function battlePanel(S, info, cbs) {
       <button class="btn" data-x="close">LEAVE THEM TO IT</button>`,
     onClose: cbs.onClose,
   });
-  wire({ joina: () => cbs.onJoin('a'), joinb: () => cbs.onJoin('b') });
+  wire({
+    joina: () => cbs.onJoin('a'),
+    joinb: () => cbs.onJoin('b'),
+    // The soak found this missing: an unwired close is a panel the player
+    // cannot leave except by Escape, which reads as a hang.
+    close: onCloseWrap(cbs.onClose),
+  });
 }

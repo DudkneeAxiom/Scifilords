@@ -145,10 +145,20 @@ const chunk = (maxTicks) => page.evaluate(({ maxTicks }) => {
         for (const k of T.steerKeys) W.keys.add(k);
         T.steerLeft = 30;
       } else {
-        // Open ground, off the roads: terrain travel decided by the click.
-        const a = (T.step * 2.399) % (Math.PI * 2);
-        const r = 0.15 + ((T.step * 7919) % 100) / 145;
-        W.setDestination(Math.cos(a) * T.HALF * r, Math.sin(a) * T.HALF * r);
+        // What a player does when an amber ring blinks on the horizon: go and
+        // look. Falls back to open-ground terrain travel when the map is
+        // quiet.
+        const ev = (S.mapBattles || []).find((e) => !W.battleSeen?.has(e.id))
+          || (S.mapEvents || []).find((e) => !W.eventSeen?.has(e.id))
+          || (S.mapSites || []).find((e) => e.loot && !W.eventSeen?.has(e.id));
+        if (ev) {
+          W.setDestination(ev.x, ev.z);
+          out.events.push('signal:steer');
+        } else {
+          const a = (T.step * 2.399) % (Math.PI * 2);
+          const r = 0.15 + ((T.step * 7919) % 100) / 145;
+          W.setDestination(Math.cos(a) * T.HALF * r, Math.sin(a) * T.HALF * r);
+        }
       }
     }
 
@@ -271,6 +281,24 @@ async function settleModals() {
         await page.waitForTimeout(120);
       }
       await page.click('#modal [data-x="close"]');
+      continue;
+    }
+    // The living-world panels: a battle is watched (joining launches a
+    // mission, outside this soak's remit), a signal is answered, a field is
+    // picked over. All counted — the soak is how the event rhythm is read.
+    if (has('joina')) {
+      stats.battlesSeen = (stats.battlesSeen || 0) + 1;
+      await page.click('#modal [data-x="close"]');
+      continue;
+    }
+    if (has('go')) {
+      stats.signalsAnswered = (stats.signalsAnswered || 0) + 1;
+      await page.click('#modal [data-x="go"]');
+      continue;
+    }
+    if (has('take')) {
+      stats.fieldsLooted = (stats.fieldsLooted || 0) + 1;
+      await page.click('#modal [data-x="take"]');
       continue;
     }
     if (has('fight')) {
@@ -403,6 +431,8 @@ console.log(`  withdrawal: ${stats.withdrawAttempts} attempted, ${escapes} got a
   + ` ${stats.cornered} run down -> sends=${stats.sends} tolls=${stats.tolls}`);
 console.log(`  back doors: Escape blocked ${stats.escBlocked}/${stats.escTried},`
   + ` deploy-cancel returned to the encounter ${stats.cancelReturned}/${stats.cancelTried}`);
+console.log(`  world: battles seen=${stats.battlesSeen || 0}`
+  + ` signals answered=${stats.signalsAnswered || 0} fields looted=${stats.fieldsLooted || 0}`);
 console.log(`  chases: ${stats.chaseStarts} started, ${stats.chaseCaught} ended in an encounter,`
   + ` ${stats.chaseAbandoned} abandoned; hostile pursuit live ${chasedPct}% of ticks`);
 

@@ -1175,8 +1175,11 @@ export class WorldMap {
       ...(S.mapSites || []).filter((s) => s.loot).map((s) => ({ ...s, _t: 'site' })),
     ];
     for (const ev of arrivables) {
-      if (this.eventSeen.has(ev.id) || loc) break;
-      if (Math.hypot(ev.x - S.pos.x, ev.z - S.pos.z) > 34) continue;
+      // continue, not break: one already-answered signal must not shadow
+      // every other arrival for as long as it lives.
+      if (loc) break;
+      if (this.eventSeen.has(ev.id)) continue;
+      if (Math.hypot(ev.x - S.pos.x, ev.z - S.pos.z) > 42) continue;
       this.eventSeen.add(ev.id);
       this.stopTravel();
       Audio.uiAlert();
@@ -1188,8 +1191,9 @@ export class WorldMap {
     // auto-joined. Once seen it does not renag; the rings stay on the map.
     this.battleSeen = this.battleSeen || new Set();
     for (const btl of S.mapBattles || []) {
-      if (this.battleSeen.has(btl.id) || loc) break;
-      if (Math.hypot(btl.x - S.pos.x, btl.z - S.pos.z) > 46) continue;
+      if (loc) break;
+      if (this.battleSeen.has(btl.id)) continue;
+      if (Math.hypot(btl.x - S.pos.x, btl.z - S.pos.z) > 70) continue;
       this.battleSeen.add(btl.id);
       this.stopTravel();
       Audio.uiAlert();
