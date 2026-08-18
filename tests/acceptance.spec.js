@@ -6928,3 +6928,113 @@ test('steel arrives at the apex: swings, guards, spears, and the boot', async ({
   expect(r.staSpent).toBe(true);
   expect(r.staBack).toBe(true);
 });
+
+test('five on five: steel pairs off, keeps its feet, and one side breaks', async ({ page }) => {
+  test.setTimeout(150000);
+  await boot(page);
+  await newCampaign(page);
+  await page.evaluate(async () => {
+    const { Mission } = await import('/src/mission.js');
+    const UI = await import('/src/ui.js');
+    const G = window.KR;
+    const S = G.campaign;
+    for (const s of S.roster) s.weapon = 'sword';
+    G.mission?.dispose();
+    G.world?.dispose(); G.world = null;
+    document.getElementById('viewport').innerHTML = '';
+    UI.show('hud');
+    G.mission = new Mission({
+      campaign: S,
+      spec: { type: 'skirmish', site: 'roadside', layout: 'roadside',
+        enemyFaction: 'raider', party: { strength: 5, quality: 0.9 }, allies: 2 },
+      squad: S.roster.slice(0, 4),
+      container: document.getElementById('viewport'),
+      onHud: () => {}, onToast: () => {}, onIntro: () => {}, onWheel: () => {}, onEnd: () => {},
+    });
+    await G.mission.start();
+    G.mission.paused = true;
+  });
+  await page.waitForFunction(() => window.KR.mission?.player, null, { timeout: 40000 });
+  const r = await page.evaluate(async () => {
+    const { WEAPONS } = await import('/src/data.js');
+    const m = window.KR.mission;
+    const p = m.player;
+    // Stage: five swords a side, twelve metres apart, on open ground.
+    // The commander sits it out on a hill — this is the AI's exam.
+    const mine = m.entities.filter((e) => e.side === 'player' && !e.isPlayer && !e.dead).slice(0, 5);
+    const foes = m.entities.filter((e) => e.side === 'enemy' && !e.dead).slice(0, 5);
+    // Everyone else off the field.
+    for (const e of m.entities) {
+      if (e === p || mine.includes(e) || foes.includes(e)) continue;
+      e.dead = true; e.hp = 0;
+    }
+    m.skirmishTotal = 0;                     // no reinforcement stream
+    p.x = 120; p.z = 120;                    // out of sight, out of the fight
+    const cx = 0, cz = 0;
+    mine.forEach((e, i) => {
+      e.weapon = WEAPONS.sword; e.x = cx - 8 + i * 4; e.z = cz - 6;
+      e.order = 'charge'; e.arriving = 0; e.suppression = 0; e.hp = e.maxHp = 100;
+    });
+    foes.forEach((e, i) => {
+      e.weapon = WEAPONS.sword; e.x = cx - 8 + i * 4; e.z = cz + 6;
+      e.state = 'hunt'; e.alert = 1; e.lastSeen = { x: cx, z: cz - 6 };
+      e.arriving = 0; e.suppression = 0; e.hp = e.maxHp = 100; e.sight = 60;
+    });
+    // Run the sim by hand: 90 seconds at 30Hz, sampling the shape of the
+    // fight as it goes. step() gates on paused, so unpause and starve the
+    // rAF loop with a stub — the bound original is ours alone to drive.
+    m.paused = false;
+    const realStep = m.step.bind(m);
+    m.step = () => {};
+    let maxClaims = 0, minSameSideGap = Infinity, swings = 0;
+    let steps = 0, resolved = null;
+    const alive = (list) => list.filter((e) => !e.dead && !e.down).length;
+    for (; steps < 2700; steps++) {
+      realStep(1 / 30);
+      if (steps % 20 === 0) {
+        // Pairing discipline only means something while there is a line to
+        // pair against — five men on the last survivor is correct, not a
+        // dogpile.
+        if (alive(foes) >= 3) {
+          for (const f of foes) {
+            if (f.dead) continue;
+            let n = 0;
+            for (const e2 of mine) {
+              if (!e2.dead && (e2.target === f || e2.forceTarget === f)) n++;
+            }
+            maxClaims = Math.max(maxClaims, n);
+          }
+        }
+        for (let i = 0; i < mine.length; i++) {
+          for (let j = i + 1; j < mine.length; j++) {
+            const a = mine[i], b = mine[j];
+            if (a.dead || b.dead || a.down || b.down) continue;
+            minSameSideGap = Math.min(minSameSideGap,
+              Math.hypot(a.x - b.x, a.z - b.z));
+          }
+        }
+        for (const e2 of [...mine, ...foes]) if (e2.swing) swings++;
+      }
+      if (alive(mine) === 0 || alive(foes) === 0) {
+        resolved = alive(foes) === 0 ? 'mine' : 'foes';
+        break;
+      }
+    }
+    const hurtMine = mine.some((e) => e.hp < 100 || e.dead || e.down);
+    const hurtFoes = foes.some((e) => e.hp < 100 || e.dead || e.down);
+    return {
+      resolved, seconds: Math.round(steps / 30), maxClaims,
+      minSameSideGap: Number(minSameSideGap.toFixed(2)),
+      swingsSeen: swings, hurtMine, hurtFoes,
+    };
+  });
+  // One side actually breaks, inside a minute and a half of sim time.
+  expect(r.resolved).not.toBe(null);
+  // The line takes the line: never the whole squad stacked onto one body.
+  expect(r.maxClaims).toBeLessThanOrEqual(3);
+  // Nobody fights from inside a squadmate.
+  expect(r.minSameSideGap).toBeGreaterThan(0.6);
+  // It was a melee, not a staring contest.
+  expect(r.swingsSeen).toBeGreaterThan(5);
+  expect(r.hurtMine || r.hurtFoes).toBe(true);
+});

@@ -3013,6 +3013,8 @@ export class Mission {
     if (dmg > 0) {
       const hy = Level.heightAt(best.x, best.z) + 1.2 + (best.elev || 0);
       this.applyDamage(best, dmg, e, { x: best.x, y: hy, z: best.z });
+      // Connecting has weight the hand can feel.
+      if (e.isPlayer) this.shake = Math.max(this.shake || 0, 0.22);
     } else {
       best.char.flinch();
     }
@@ -4289,17 +4291,52 @@ export class Mission {
     // Nobody sees anybody while the company is still arriving.
     if (this.inserting) return null;
     const hostileSide = e.side === 'enemy' ? 'player' : 'enemy';
-    let best = null, bd = e.sight;
+    // Steel pairs off. A gunline concentrating fire is doctrine; five
+    // swords stacking onto one man while his four friends swing freely is
+    // how a melee AI loses 5v5 every time. Each already-claimed opponent
+    // reads as several metres further away, so the line spreads across
+    // the line it is fighting — a dogpile only happens when numbers mean
+    // there is nobody left unclaimed.
+    const melee = !!e.weapon?.melee;
+    let best = null, bs = Infinity;
     for (const o of this.entities) {
       if (o.dead || o.side !== hostileSide || o.follower) continue;
-      if (o.down && !o.isPlayer) continue;      // don't keep shooting the downed
+      if (o.down && !o.isPlayer) continue;      // don't keep hitting the downed
       const d = Math.hypot(o.x - e.x, o.z - e.z);
-      if (d > bd) continue;
+      if (d > e.sight) continue;
       if (!Level.hasLOS(this.level.obstacles, e.x, e.z, o.x, o.z,
         EYE + (e.elev || 0), EYE + (o.elev || 0))) continue;
-      best = o; bd = d;
+      let score = d;
+      if (melee) {
+        let claims = 0;
+        for (const c of this.entities) {
+          if (c !== e && !c.dead && c.side === e.side && c.target === o) claims++;
+        }
+        score += claims * 6;
+      }
+      if (score < bs) { bs = score; best = o; }
     }
     return best;
+  }
+
+  /**
+   * The rhythm of a fight: step in to swing, step off while the arm
+   * rests. Engaged melee soldiers hold the reach edge on cooldown and
+   * press inside it when ready, with a slight personal drift so two men
+   * on one opponent take different shoulders instead of the same pixel.
+   */
+  meleeSpacing(e, t) {
+    const reach = (e.weapon.reach || 2) + 0.3;
+    const want = e.cooldown > 0.25 ? reach * 1.05 : reach * 0.55;
+    const dx = e.x - t.x, dz = e.z - t.z;
+    const d = Math.max(0.001, Math.hypot(dx, dz));
+    // A stable per-body drift angle off the id, so the spread is calm.
+    let h = 0;
+    const id = String(e.id);
+    for (let i = 0; i < id.length; i++) h = (h * 31 + id.charCodeAt(i)) | 0;
+    const drift = ((Math.abs(h) % 7) - 3) * 0.16;
+    const a = Math.atan2(dx, dz) + drift;
+    return { x: t.x + Math.sin(a) * want, z: t.z + Math.cos(a) * want };
   }
 
   updateEnemy(dt, e) {
@@ -4381,6 +4418,23 @@ export class Mission {
         }
       }
 
+      if (w.melee) {
+        // Steel has no standoff band: close hard, then fight at the reach
+        // edge with the in-out rhythm the spacing helper carries.
+        const reach = (w.reach || 2) + 0.3;
+        if (d > reach * 2.2) {
+          this.moveToward(dt, e, t.x, t.z, e.speed * (0.7 + e.aggression * 0.4));
+        } else {
+          const sp = this.meleeSpacing(e, t);
+          if (Math.hypot(sp.x - e.x, sp.z - e.z) > 0.5) {
+            this.moveToward(dt, e, sp.x, sp.z, e.speed * 0.8);
+          } else {
+            e.moveSpeed = 0;
+          }
+        }
+        this.aiShoot(dt, e, t, d);
+        return;
+      }
       const idealMin = w.range * 0.35, idealMax = w.range * 0.8;
       if (e.coverPos && Math.hypot(e.coverPos.x - e.x, e.coverPos.z - e.z) > 1.2) {
         this.moveToward(dt, e, e.coverPos.x, e.coverPos.z, e.speed);
@@ -4435,21 +4489,49 @@ export class Mission {
     // routing one is how you finish a fight.
     if (e.order === 'charge') {
       let prey = null, pd = Infinity;
+      const claimed = (q) => {
+        let n = 0;
+        for (const c of this.entities) {
+          if (c !== e && !c.dead && c.side === e.side && (c.forceTarget === q || c.target === q)) n++;
+        }
+        return n;
+      };
       for (const q of this.entities) {
         if (q.side !== 'enemy' || q.dead) continue;
         const d = Math.hypot(q.x - e.x, q.z - e.z);
-        if (d < pd) { pd = d; prey = q; }
+        // Chargers pair off the same way acquire does — the line takes the
+        // line, not five men onto the nearest body.
+        const score = e.weapon?.melee ? d + claimed(q) * 6 : d;
+        if (score < pd) { pd = score; prey = q; }
       }
       if (prey) {
         e.forceTarget = prey;
-        if (pd > 6) {
+        const d = Math.hypot(prey.x - e.x, prey.z - e.z);
+        if (e.weapon?.melee) {
+          const reach = (e.weapon.reach || 2) + 0.3;
+          if (d > reach * 2.2) {
+            this.moveToward(dt, e, prey.x, prey.z, e.speed * 1.3);
+            this.faceMotion(e, dt);
+          } else {
+            const sp = this.meleeSpacing(e, prey);
+            if (Math.hypot(sp.x - e.x, sp.z - e.z) > 0.5) {
+              this.moveToward(dt, e, sp.x, sp.z, e.speed * 0.85);
+            } else {
+              e.moveSpeed = 0;
+            }
+            e.yaw = approachAngle(e.yaw, Math.atan2(prey.x - e.x, prey.z - e.z), dt * 8);
+          }
+          this.aiShoot(dt, e, prey, d);
+          return;
+        }
+        if (d > 6) {
           this.moveToward(dt, e, prey.x, prey.z, e.speed * 1.3);
           this.faceMotion(e, dt);
         } else {
           e.moveSpeed = 0;
           e.yaw = approachAngle(e.yaw, Math.atan2(prey.x - e.x, prey.z - e.z), dt * 8);
         }
-        if (pd < 40) this.aiShoot(dt, e, prey, pd);
+        if (d < 40) this.aiShoot(dt, e, prey, d);
         return;
       }
       // Nothing left to run down: form back up.
@@ -5333,6 +5415,16 @@ export class Mission {
       : { side: 1.05, up: 2.02, back: 4.60, fov: 60 };
     // Crouching drops the eye line; a jump carries the camera with the body.
     want.up += -this.crouch * 0.62 + this.airY;
+    // A swing reads on the camera: the eye pulls back and widens through
+    // the arc, so your own steel is visible leaving and landing instead of
+    // happening under the lens.
+    const sw = this.player?.swing;
+    if (sw && this.player.weapon?.melee) {
+      const bell = Math.sin(Math.min(1, sw.t / sw.dur) * Math.PI);
+      want.back += bell * 0.85;
+      want.fov += bell * 5;
+      want.up += bell * 0.12;
+    }
     // The shoulder offset is signed, so swapping mirrors the whole rig — the
     // camera, the aim origin beside the head, and the body's occlusion.
     want.side *= this.shoulder;
