@@ -295,6 +295,11 @@ function enterLocation() {
     for (const d of State.arrivalFavours(S, loc.id)) {
       UI.toast('DELIVERED', `${d.who} paid ${d.pay}`, 'good');
     }
+    // So does a companion's errand, if this is where it was going — or the
+    // crates it needed are finally aboard.
+    for (const e of State.completeErrandsAt(S, loc.id)) {
+      UI.toast('A DEBT SETTLED', `${e.name} will not forget this`, 'good');
+    }
   }
 
   if (!loc.services.length) {

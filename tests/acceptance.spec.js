@@ -6435,3 +6435,62 @@ test('small work in three new shapes: crates out, debts in, locals drilled', asy
   expect(r.lorded).toBe(true);
   expect(r.regardUp).toBe(2);
 });
+
+test('the truck is a small room: bonds lift, feuds grind, errands settle', async ({ page }) => {
+  await boot(page);
+  await newCampaign(page);
+  const r = await page.evaluate(() => {
+    const { State, makeRng } = window.KR.dev;
+    const S = window.KR.campaign;
+    S.credits = 20000;
+    // Two halves of a bond (Perrin/Jorsa) and two halves of a feud (Okkam/Vex).
+    for (const id of ['perrin', 'jorsa', 'okkam', 'vex']) State.hireCompanion(S, id);
+    const reg = (id) => State.companionSoldier(S, id).regard || 0;
+    const before = { perrin: reg('perrin'), jorsa: reg('jorsa'), okkam: reg('okkam'), vex: reg('vex') };
+    for (let d = 0; d < 60; d++) State.tickRapport(S, makeRng(700 + d));
+    const drift = {
+      bond: (reg('perrin') - before.perrin) + (reg('jorsa') - before.jorsa),
+      clash: (reg('okkam') - before.okkam) + (reg('vex') - before.vex),
+    };
+    const pairs = State.activeRapport(S).map((p) => p.kind).sort();
+
+    // Trust crosses the line, and Jorsa brings her one piece of unfinished
+    // business. A word errand settles by standing in the right town.
+    State.companionSoldier(S, 'jorsa').regard = 30;
+    State.maybeErrands(S, makeRng(11));
+    const offered = S.errands?.jorsa;
+    const regBefore = State.companionSoldier(S, 'jorsa').regard;
+    const settled = offered ? State.completeErrandsAt(S, offered.to) : [];
+    const regAfter = State.companionSoldier(S, 'jorsa').regard;
+    // Once, ever: the ask does not respawn.
+    State.maybeErrands(S, makeRng(12));
+    const again = !!S.errands?.jorsa;
+
+    // A goods errand waits for the crates, then settles anywhere with a roof.
+    State.hireCompanion(S, 'brik');
+    State.companionSoldier(S, 'brik').regard = 30;
+    State.maybeErrands(S, makeRng(13));
+    const brikAsk = S.errands?.brik;
+    const empty = State.completeErrandsAt(S, 'span');
+    S.cargo = S.cargo || {};
+    S.cargo[brikAsk.good] = brikAsk.qty + 1;
+    const done = State.completeErrandsAt(S, 'span');
+    return {
+      drift, pairs,
+      offered: offered?.kind, settledCount: settled.length, regGain: regAfter - regBefore, again,
+      brikKind: brikAsk?.kind, emptyCount: empty.length, doneCount: done.length,
+      leftover: S.cargo[brikAsk.good],
+    };
+  });
+  expect(r.pairs).toEqual(['bond', 'clash']);
+  expect(r.drift.bond).toBeGreaterThan(0);
+  expect(r.drift.clash).toBeLessThan(0);
+  expect(r.offered).toBe('word');
+  expect(r.settledCount).toBe(1);
+  expect(r.regGain).toBe(25);
+  expect(r.again).toBe(false);
+  expect(r.brikKind).toBe('goods');
+  expect(r.emptyCount).toBe(0);
+  expect(r.doneCount).toBe(1);
+  expect(r.leftover).toBe(1);
+});

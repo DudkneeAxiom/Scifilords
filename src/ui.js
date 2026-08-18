@@ -10,7 +10,7 @@ import * as Models from './models.js';
 import {
   ROLES, RANKS, COMMANDER_RANKS, WEAPONS, KIT, GOODS, GOODS_LIST, FACTIONS, LOCATIONS,
   MISSION_TYPES, HOLDING_UPGRADES, UPGRADE_LIST, PARTY_TIERS, ARMOUR, SLOTS,
-  POLICIES, POLICY_LIST, COMPANIONS, OFFICERS,
+  POLICIES, POLICY_LIST, COMPANIONS, OFFICERS, RAPPORT,
 } from './data.js';
 import {
   portrait, label, rankOf, roleOf, weaponOf, effective, STATUS, woundInfo,
@@ -736,9 +736,9 @@ export function rosterPanel(S, cbs) {
   const dead = State.fallen(S);
   const body = `
     <div class="section-title">ACTIVE PERSONNEL — ${live.length}</div>
-    <div class="roster-grid">${live.map((s) => solRow(s)).join('')}</div>
+    <div class="roster-grid">${live.map((s) => solRow(s, S)).join('')}</div>
     ${dead.length ? `<div class="section-title">KILLED IN ACTION — ${dead.length}</div>
-      <div class="roster-grid">${dead.map((s) => solRow(s)).join('')}</div>` : ''}
+      <div class="roster-grid">${dead.map((s) => solRow(s, S)).join('')}</div>` : ''}
     ${(S.prisoners || []).length ? `<div class="section-title">PRISONERS — ${S.prisoners.length}</div>
       <div class="prose dim" style="margin-bottom:6px">
         Press them into the company and they serve resentfully — it costs morale,
@@ -1944,7 +1944,7 @@ export function loadoutPanel(S, cbs, selectedId = null) {
   wire({ close: onCloseWrap(cbs.onClose) });
 }
 
-function solRow(s) {
+function solRow(s, S = null) {
   const r = roleOf(s), rk = rankOf(s);
   const w = woundInfo(s);
   const cls = [
@@ -1969,7 +1969,27 @@ function solRow(s) {
     if (!s.companion) return '';
     const oid = s.compId || COMPANIONS.find((c) => c.name === s.name)?.id;
     const off = oid && OFFICERS[oid];
-    return off ? `<div class="sol-officer">${esc(off.title)} — ${esc(off.gift)}</div>` : '';
+    let out = off ? `<div class="sol-officer">${esc(off.title)} — ${esc(off.gift)}</div>` : '';
+    // The web: who in this truck they ride well with, and who they don't.
+    if (oid && S) {
+      const rap = RAPPORT.filter((p) => (p.a === oid || p.b === oid)
+        && State.hasOfficer(S, p.a) && State.hasOfficer(S, p.b))
+        .map((p) => {
+          const other = COMPANIONS.find((c) => c.id === (p.a === oid ? p.b : p.a));
+          const first = other ? other.name.split(' ')[0] : '?';
+          return p.kind === 'bond'
+            ? `<span class="good">rides well with ${esc(first)}</span>`
+            : `<span class="bad">bad blood with ${esc(first)}</span>`;
+        });
+      if (rap.length) out += `<div class="sol-hist">${rap.join(' · ')}</div>`;
+      const err = S.errands?.[oid];
+      if (err) {
+        out += `<div class="sol-hist">Asked for something: ${err.kind === 'word'
+          ? `word carried to ${esc(State.locName(err.to))}`
+          : `${err.qty} ${esc(GOODS[err.good].name.toLowerCase())} found`}</div>`;
+      }
+    }
+    return out;
   })()}
       ${perks.length ? `<div class="sol-perks">${perks.map((p) => `<span>${esc(p)}</span>`).join('')}</div>` : ''}
       <div class="sol-hist">${esc(s.joinedHow)}, day ${s.joinedDay}${w ? ` — ${esc(w.name)}, ${w.days}d` : ''}</div>

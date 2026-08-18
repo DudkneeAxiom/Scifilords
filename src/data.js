@@ -1511,3 +1511,74 @@ export const OFFICERS = {
   okkam: { title: 'BASE OF FIRE',
     gift: 'Squad fire pins harder — Okkam holds the gun that holds the ground.' },
 };
+
+/**
+ * What the companions think of EACH OTHER.
+ *
+ * M&B's companions came with grudges and friendships baked in, and hiring
+ * both halves of a feud was a decision you paid for. Same here: a bond pair
+ * riding in one truck keeps each other's regard climbing; a clash pair
+ * grinds each other down until one of them starts talking about leaving —
+ * which the existing resentment machinery is already listening for.
+ */
+export const RAPPORT = [
+  {
+    a: 'perrin', b: 'jorsa', kind: 'bond',
+    line: 'Perrin calls a bearing, Jorsa answers with a shot. Neither has needed a second sentence in weeks.',
+  },
+  {
+    a: 'senna', b: 'okkam', kind: 'bond',
+    line: 'Okkam holds the ground Senna works on. She has stopped checking whether it is held.',
+  },
+  {
+    a: 'brik', b: 'vex', kind: 'bond',
+    line: 'Brik and Vex have both been on every wrong side of both powers. They compare notes like old classmates.',
+  },
+  {
+    a: 'okkam', b: 'vex', kind: 'clash',
+    line: 'Okkam does not drink with deserters. Vex says a man who never moves has deserted standing up.',
+  },
+  {
+    a: 'jorsa', b: 'brik', kind: 'clash',
+    line: 'Jorsa ran overwatch for Trust survey. Brik opened doors for the unions the surveys got broken. They remember.',
+  },
+];
+
+/**
+ * Each companion carries one piece of unfinished business, and brings it to
+ * you once they trust the company — a word that needs carrying, or kit that
+ * needs finding. Small asks, personal stakes: the M&B companion quest at
+ * the scale this game tells stories.
+ */
+export const ERRANDS = {
+  jorsa: {
+    kind: 'word',
+    ask: 'Jorsa wants word carried to %TOWN%: the survey team she ran cover for has family there who think she is dead.',
+    done: 'The word is delivered. Jorsa cleans her rifle for an hour and says nothing, which is how she says it.',
+  },
+  brik: {
+    kind: 'goods', good: 'machine_parts', qty: 4,
+    ask: 'Brik wants four crates of machine parts — the union hall that trained him is rebuilding its shop floor.',
+    done: 'The parts went out on a night wagon. Brik came back lighter than he left.',
+  },
+  senna: {
+    kind: 'goods', good: 'medical_stock', qty: 5,
+    ask: 'Senna asks for five crates of medical stock for the hab quarter she kept alive. It is short again.',
+    done: 'The stock reached the quarter. Senna reads the thank-you twice a night when she thinks no one sees.',
+  },
+  okkam: {
+    kind: 'goods', good: 'fuel_cells', qty: 3,
+    ask: 'Okkam wants three fuel cells sent down the Scour road. His crew winters on a generator that is dying.',
+    done: 'The cells went south. Okkam nodded once, which from Okkam is a speech.',
+  },
+  perrin: {
+    kind: 'word',
+    ask: 'Perrin wants word taken to %TOWN%: the relay operator who taught him is still listening on a dead band.',
+    done: 'The old operator wrote the reply in code. Perrin has not stopped grinning.',
+  },
+  vex: {
+    kind: 'word',
+    ask: 'Vex wants word passed at %TOWN%, to a name he will only write down. A debt from one of the desertions.',
+    done: 'Whatever the word settled, Vex sleeps facing the door now instead of the window.',
+  },
+};

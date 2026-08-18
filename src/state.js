@@ -8,7 +8,7 @@ import {
   LOCATIONS, MISSION_TYPES, FACTIONS, REGION, REGIONS, WEAPONS, KIT, ROLES, GOODS, GOODS_LIST,
   HOLDING_UPGRADES, UPGRADE_LIST, HOLDING_YIELD, TROOP_PATHS, RANKS, PARTY_TIERS, PARTY_TIER_LIST, renownTier,
   ARMOUR, ARMOUR_LIST, ORIGINS, originForLocation, CREEDS, REGARD_TIERS, FAVOURS,
-  FIRST_NAMES, LAST_NAMES, POLICIES, POLICY_LIST, COMPANIONS, OFFICERS,
+  FIRST_NAMES, LAST_NAMES, POLICIES, POLICY_LIST, COMPANIONS, OFFICERS, RAPPORT, ERRANDS,
 } from './data.js';
 import {
   startingCompany, makeSoldier, dayTick, STATUS, deployable, addXp, maxHpOf,
@@ -1006,6 +1006,10 @@ function onNewDay(S, r) {
 
   tickResentment(S, r);
   tickFavours(S, r);
+  // The truck's own weather: bonds, feuds, and personal asks. Own streams —
+  // see the note above about the shared day-tick rng.
+  tickRapport(S, rng((S.seed ^ 0x4a9d) + S.day * 1249));
+  maybeErrands(S, rng((S.seed ^ 0x1c57) + S.day * 2083));
   tickGrudge(S);
   maybeSpawnLair(S, r);
   tickLairs(S, r);
@@ -5048,4 +5052,100 @@ export function hasOfficer(S, compId) {
  */
 export function intelRange(S) {
   return hasOfficer(S, 'perrin') ? 220 : 80;
+}
+
+/** The living roster soldier behind a companion id, if they are with you. */
+export function companionSoldier(S, compId) {
+  return (S.roster || []).find((s) => s.companion && s.status !== STATUS.DEAD
+    && (s.compId ? s.compId === compId
+      : COMPANIONS.find((c) => c.name === s.name)?.id === compId)) || null;
+}
+
+/** Rapport pairs where BOTH halves are currently riding in the truck. */
+export function activeRapport(S) {
+  return RAPPORT.filter((p) => hasOfficer(S, p.a) && hasOfficer(S, p.b));
+}
+
+/**
+ * The truck is a small room. Bond pairs keep each other steady; clash pairs
+ * grind. The numbers go through the same regard the resentment machinery
+ * already watches, so a feud left to fester ends the way feuds end — with
+ * somebody's kit by the door.
+ */
+export function tickRapport(S, r) {
+  for (const p of activeRapport(S)) {
+    const sa = companionSoldier(S, p.a), sb = companionSoldier(S, p.b);
+    if (!sa || !sb) continue;
+    if (p.kind === 'bond') {
+      if (r() < 0.3) {
+        sa.regard = clamp((sa.regard || 0) + 1, -100, 100);
+        sb.regard = clamp((sb.regard || 0) + 1, -100, 100);
+      }
+      if (r() < 0.06) pushLog(S, p.line, 'world');
+    } else {
+      if (r() < 0.3) {
+        sa.regard = clamp((sa.regard || 0) - 1, -100, 100);
+        sb.regard = clamp((sb.regard || 0) - 1, -100, 100);
+      }
+      if (r() < 0.09) pushLog(S, p.line, 'bad');
+    }
+  }
+}
+
+// --------------------------------------------------------------------------
+// Companion errands: the unfinished business they bring to you
+// --------------------------------------------------------------------------
+
+const errandText = (e, key) => (ERRANDS[e.compId]?.[key] || '')
+  .replace(/%TOWN%/g, e.to ? locName(e.to) : '');
+
+/**
+ * Once a companion trusts the company, they ask it for one thing. Word
+ * errands need an arrival; goods errands need the crates in the truck when
+ * you next stand somewhere civilised. One each, ever — it is personal, and
+ * personal things do not respawn.
+ */
+export function maybeErrands(S, r) {
+  S.errands = S.errands || {};
+  S.errandsDone = S.errandsDone || {};
+  for (const c of COMPANIONS) {
+    if (S.errands[c.id] || S.errandsDone[c.id] || !ERRANDS[c.id]) continue;
+    const s = companionSoldier(S, c.id);
+    if (!s || (s.regard || 0) < 20) continue;
+    const tpl = ERRANDS[c.id];
+    const e = { compId: c.id, kind: tpl.kind };
+    if (tpl.kind === 'word') {
+      const towns = LOCATIONS.filter((l) => l.kind === 'settlement' && l.services?.length);
+      if (!towns.length) continue;
+      e.to = pick(r, towns).id;
+    } else {
+      e.good = tpl.good;
+      e.qty = tpl.qty;
+    }
+    S.errands[c.id] = e;
+    pushLog(S, errandText(e, 'ask'), 'world');
+  }
+}
+
+/**
+ * Errands settle on arrival, same hook as deliveries: a word errand at its
+ * town, a goods errand anywhere with a roof once the crates are aboard.
+ */
+export function completeErrandsAt(S, locId) {
+  const out = [];
+  for (const [compId, e] of Object.entries(S.errands || {})) {
+    if (e.kind === 'word' && e.to !== locId) continue;
+    if (e.kind === 'goods') {
+      if (((S.cargo || {})[e.good] || 0) < e.qty) continue;
+      S.cargo[e.good] -= e.qty;
+    }
+    const s = companionSoldier(S, compId);
+    if (s) s.regard = clamp((s.regard || 0) + 25, -100, 100);
+    S.renown = (S.renown || 0) + 10;
+    S.errandsDone[compId] = true;
+    delete S.errands[compId];
+    pushLog(S, errandText(e, 'done'), 'good');
+    out.push({ compId, name: s?.name || compId });
+  }
+  return out;
 }
