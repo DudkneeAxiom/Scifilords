@@ -6494,3 +6494,40 @@ test('the truck is a small room: bonds lift, feuds grind, errands settle', async
   expect(r.doneCount).toBe(1);
   expect(r.leftover).toBe(1);
 });
+
+test('an army marches on more than ration blocks', async ({ page }) => {
+  await boot(page);
+  await newCampaign(page);
+  const r = await page.evaluate(() => {
+    const { State, DATA } = window.KR.dev;
+    const S = window.KR.campaign;
+    // The new groceries are real goods with real prices.
+    const town = DATA.LOCATIONS.find((l) => l.trade?.sell?.includes('dried_catch'));
+    const priced = State.priceAt(S, town.id, 'dried_catch');
+    S.credits = 50000;
+    S.rations = 200;
+    // A varied larder: the company eats it, and the mood shows it.
+    S.cargo = S.cargo || {};
+    S.cargo.dried_catch = 5; S.cargo.vat_greens = 5; S.cargo.still_spirits = 5;
+    const stock0 = S.cargo.dried_catch + S.cargo.vat_greens + S.cargo.still_spirits;
+    S.morale = 30;
+    for (let d = 0; d < 6; d++) State.advanceTime(S, 24);
+    const variedGain = S.morale - 30;
+    const eaten = stock0 - (S.cargo.dried_catch + S.cargo.vat_greens + S.cargo.still_spirits);
+    const plainReset = S.plainDays;
+    // Then a long stretch of stamped protein and nothing else.
+    S.cargo.dried_catch = 0; S.cargo.vat_greens = 0; S.cargo.still_spirits = 0;
+    for (let d = 0; d < 12; d++) State.advanceTime(S, 24);
+    const plainDays = S.plainDays;
+    S.morale = 30;
+    for (let d = 0; d < 6; d++) State.advanceTime(S, 24);
+    const plainGain = S.morale - 30;
+    return { priced, variedGain, eaten, plainReset, plainDays, plainGain };
+  });
+  expect(r.priced).toBeGreaterThan(0);
+  expect(r.eaten).toBeGreaterThanOrEqual(2);
+  expect(r.plainReset).toBe(0);
+  expect(r.plainDays).toBeGreaterThanOrEqual(11);
+  // Same six days, same wages, same water: the plate is the difference.
+  expect(r.variedGain).toBeGreaterThan(r.plainGain + 10);
+});

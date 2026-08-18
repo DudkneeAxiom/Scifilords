@@ -129,7 +129,7 @@ export const LOCATIONS = [
     // Which deployment templates this place can host, and the layout used.
     missions: ['defense', 'recovery'],
     layout: 'settlement',
-    trade: { sell: ['machine_parts', 'fuel_cells'], buy: ['water', 'rations', 'salvage'] },
+    trade: { sell: ['machine_parts', 'fuel_cells'], buy: ['water', 'rations', 'salvage', 'dried_catch'] },
     contacts: [
       {
         name: 'Quartermaster Idren Solk',
@@ -160,7 +160,7 @@ export const LOCATIONS = [
     services: ['recruit', 'medical', 'market', 'contracts', 'trade'],
     missions: ['defense', 'sabotage'],
     layout: 'reclaimer',
-    trade: { sell: ['water', 'filter_stacks'], buy: ['machine_parts', 'medical_stock', 'optics'] },
+    trade: { sell: ['water', 'filter_stacks', 'dried_catch'], buy: ['machine_parts', 'medical_stock', 'optics'] },
     contacts: [
       {
         name: 'Syndic Marath Oyle',
@@ -292,7 +292,7 @@ export const LOCATIONS = [
     services: ['recruit', 'market', 'contracts', 'trade'],
     missions: ['defense', 'skirmish'],
     layout: 'settlement',
-    trade: { sell: ['fuel_cells', 'rations', 'medical_stock'], buy: ['salvage', 'optics', 'filter_stacks'] },
+    trade: { sell: ['fuel_cells', 'rations', 'medical_stock', 'vat_greens'], buy: ['salvage', 'optics', 'filter_stacks'] },
     contacts: [
       {
         name: 'Wren Dallowe',
@@ -393,7 +393,7 @@ export const LOCATIONS = [
     detail: 'A working town that took the charter because the alternative was worse, and says so nightly.',
     services: ['recruit', 'market', 'contracts', 'trade'],
     missions: ['defense', 'skirmish'], layout: 'settlement',
-    trade: { sell: ['rations', 'fuel_cells'], buy: ['medical_stock', 'optics', 'salvage'] },
+    trade: { sell: ['rations', 'fuel_cells', 'still_spirits'], buy: ['medical_stock', 'optics', 'salvage'] },
     contacts: [{
       name: 'Reeve Ottol Grange', role: 'Market reeve',
       trait: 'Keeps two sets of books and shows you the wrong one.',
@@ -813,6 +813,22 @@ export const GOODS = {
   salvage: {
     id: 'salvage', name: 'Salvage Alloy', abbr: 'ALY', base: 90, bulk: 4,
     desc: 'Cut and bundled structural metal. Bulky, always sellable, never lucrative.',
+  },
+  // Food that is not a ration block. Nobody NEEDS any of these — the blocks
+  // keep a company alive — but a company that eats the same stamped protein
+  // for a month starts saying so, and a truck that smells of fried catch does
+  // not. The M&B food-variety morale rule, in Reach groceries.
+  dried_catch: {
+    id: 'dried_catch', name: 'Dried Catch', abbr: 'FSH', base: 70, bulk: 1, food: true,
+    desc: 'Basin fish, split and air-dried on the littoral racks. Travels forever.',
+  },
+  vat_greens: {
+    id: 'vat_greens', name: 'Vat Greens', abbr: 'GRN', base: 60, bulk: 1, food: true,
+    desc: 'Hab-grown leaf out of the hydro stacks. The colour alone lifts a mess tent.',
+  },
+  still_spirits: {
+    id: 'still_spirits', name: 'Still Spirits', abbr: 'SPT', base: 110, bulk: 1, food: true,
+    desc: 'Basin liquor of no fixed recipe. Officially discouraged on every charter.',
   },
 };
 

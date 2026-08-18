@@ -4052,6 +4052,32 @@ export function payday(S, r) {
         pushLog(S, 'Hot food, clean water and a medic. The mood picks up.', 'good');
       }
     }
+    // What is actually on the plate. Ration blocks keep a company alive;
+    // catch, greens and a bottle keep it a company. Each distinct food good
+    // aboard lifts the day, and the company EATS them — one unit of one kind
+    // every couple of days, so variety is a running cost, not a checkbox.
+    // The other edge: a month of nothing but stamped protein, and the truck
+    // starts saying so out loud.
+    const carriedFoods = GOODS_LIST.filter((id) => GOODS[id].food && (S.cargo?.[id] || 0) > 0);
+    if (carriedFoods.length) {
+      drift += Math.min(3, carriedFoods.length * 1.0);
+      S.plainDays = 0;
+      if (S.day % 2 === 0) {
+        const eat = carriedFoods[S.day % carriedFoods.length];
+        S.cargo[eat] -= 1;
+        if (S.cargo[eat] <= 0 && r() < 0.5) {
+          pushLog(S, `The last of the ${GOODS[eat].name.toLowerCase()} went round the fire tonight.`);
+        }
+      }
+    } else {
+      S.plainDays = (S.plainDays || 0) + 1;
+      if (S.plainDays > 10) {
+        drift -= 1.5;
+        if (r() < 0.1) {
+          pushLog(S, `Ration blocks again. Day ${S.plainDays} of ration blocks.`, 'bad');
+        }
+      }
+    }
   }
 
   // A big company on nothing in particular grumbles; a small tight one does not.
