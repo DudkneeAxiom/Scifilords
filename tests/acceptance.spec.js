@@ -4372,7 +4372,11 @@ test('a cornered encounter cannot be escaped, cancelled, or clicked away', async
     let spot = null;
     for (let x = -HALF + 500; x < HALF && !spot; x += 611) {
       for (let z = -HALF + 500; z < HALF && !spot; z += 611) {
-        if (!DATA.LOCATIONS.some((l) => Math.hypot(l.x - x, l.z - z) < 400)) spot = { x, z };
+        // Inside the rim fence: the corners of the old scan are mountains now,
+      // and a party clamped to the region cannot approach a player teleported
+      // beyond it.
+      if (Math.hypot(x, z) < HALF * 0.7
+        && !DATA.LOCATIONS.some((l) => Math.hypot(l.x - x, l.z - z) < 400)) spot = { x, z };
       }
     }
     W.stopTravel();
