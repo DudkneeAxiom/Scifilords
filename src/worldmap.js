@@ -16,7 +16,7 @@ import { clamp, lerp, rng, range, pick } from './util.js';
 // The ground lives in its own module so the simulation can read it too. It used
 // to be defined here, which meant state.js — imported by this file — could not
 // see the terrain its parties were walking across without a cycle.
-import { regionHeight, regionMoisture, travelFactor, ROADS, HALF } from './region.js';
+import { regionHeight, regionMoisture, travelFactor, clampToRegion, ROADS, HALF } from './region.js';
 
 export { regionHeight, regionMoisture };
 // Fast-forward. Four is about the most you can run the map at before you drive
@@ -136,6 +136,7 @@ export class WorldMap {
     this.sun = sun;
 
     this.buildTerrain();
+    this.buildBackdrop();
     this.buildTerritory();
     this.buildRoads();
     this.buildLocations();
@@ -162,8 +163,13 @@ export class WorldMap {
     // Finer than it was: the terrain now carries features down to ~170 units,
     // and at 210 segments those fell below the sample spacing and turned to
     // noise. 288 puts roughly five samples across the smallest landform.
-    const seg = 288;
-    const geo = new THREE.PlaneGeometry(REGION.size * 1.6, REGION.size * 1.6, seg, seg);
+    // The mesh runs far past the crest, because the world has to CONTINUE
+    // over it: outer steppe and further ranges dissolving into haze, not a
+    // wall with nothing behind it. The extra ground is cheap — it is the
+    // same vertex budget spent wider — and it is the difference between "the
+    // map ends here" and "the Reach ends here".
+    const seg = 336;
+    const geo = new THREE.PlaneGeometry(REGION.size * 2.4, REGION.size * 2.4, seg, seg);
     geo.rotateX(-Math.PI / 2);
     const pos = geo.attributes.position;
     const colors = new Float32Array(pos.count * 3);
@@ -287,6 +293,44 @@ export class WorldMap {
       place(Models.get(isRock ? pick(r, ['rock_0', 'rock_2']) : 'dead_tree'),
         x, z, isRock ? range(r, 2.5, 6) : range(r, 1.2, 2.4));
     }
+  }
+
+  /**
+   * The world beyond the Reach, in silhouette.
+   *
+   * Colossal structures on the outer steppe, past the rim, past the clamp:
+   * dead dishes, a cooling stack, an antenna field, one half-buried hulk.
+   * None of it is reachable and none of it needs collision — it exists so
+   * that from anywhere inside the basin, looking outward shows a world that
+   * keeps going, with places in it nobody is taking you. They are also the
+   * region's compass: "the twin dishes" ARE north the way a mountain is,
+   * which is navigation no UI marker provides.
+   */
+  buildBackdrop() {
+    const put = (model, x, z, s, ry = 0) => {
+      const m = Models.get(model);
+      m.position.set(x, regionHeight(x, z) - s * 0.3, z);
+      m.scale.setScalar(s);
+      m.rotation.y = ry;
+      m.traverse((o) => { if (o.isMesh) { o.castShadow = false; o.receiveShadow = false; } });
+      this.scene.add(m);
+    };
+    // The twin dishes, north — dead deep-signal hardware on the Sarn steppe.
+    put('radar_dish', -1250, -4550, 34, 0.6);
+    put('radar_dish', -650, -4780, 26, -0.4);
+    // A cooling stack cluster, southeast, past the Littoral.
+    put('fuel_tank', 3850, 3350, 42, 0.2);
+    put('fuel_tank', 4230, 3180, 34, 1.1);
+    put('fuel_tank', 4030, 3640, 30, 2.0);
+    // The antenna field, west of the Scour.
+    for (let i = 0; i < 5; i++) {
+      put('comms_mast', -4550 + (i % 3) * 260, 240 + i * 210, 16 + (i % 2) * 5, i);
+    }
+    // A half-buried hulk on the eastern steppe — nobody knows either.
+    put('container', 4650, -1450, 52, 0.5);
+    put('catwalk', 4480, -1650, 38, 0.9);
+    // An old-regime tower alone in the north-west gap.
+    put('gate_tower', -3900, -3300, 26, 0);
   }
 
   /**
@@ -856,7 +900,12 @@ export class WorldMap {
     add(el, 'pointerleave', endPan);
     add(el, 'wheel', (e) => {
       e.preventDefault();
-      this.zoom = clamp(this.zoom * (1 + Math.sign(e.deltaY) * 0.12), 0.28, 2.8);
+      // The far stop is deliberately SHORT of framing the whole region. At
+      // 2.8 the entire Reach fit on one screen — every province, every
+      // border, both fronts — and a world you can see all of at once is a
+      // board game, however good the terrain. You understand your
+      // surroundings; the rest you learn by going there.
+      this.zoom = clamp(this.zoom * (1 + Math.sign(e.deltaY) * 0.12), 0.28, 1.9);
     }, { passive: false });
     add(window, 'keydown', (e) => {
       const k = e.key.toLowerCase();
@@ -901,8 +950,7 @@ export class WorldMap {
     // otherwise the destination is overwritten again on the very next frame and
     // the click appears to do nothing at all.
     if (!keepChase) this.chaseId = null;
-    const b = HALF - 40;
-    this.S.dest = { x: clamp(x, -b, b), z: clamp(z, -b, b) };
+    this.S.dest = clampToRegion(x, z);
     this.travelling = true;
     this.destMarker.position.set(this.S.dest.x, regionHeight(this.S.dest.x, this.S.dest.z) + 1.2, this.S.dest.z);
     this.destMarker.visible = true;
@@ -965,8 +1013,13 @@ export class WorldMap {
       this.stopTravel();
       const m = Math.hypot(mx, mz);
       const step = pace * hours;
-      S.pos.x = clamp(S.pos.x + (mx / m) * step, -HALF + 40, HALF - 40);
-      S.pos.z = clamp(S.pos.z + (mz / m) * step, -HALF + 40, HALF - 40);
+      // The fence is the geography: the clamp follows the rim's own angular
+      // profile, so "as far as you can drive" and "where the mountains start"
+      // are the same place — the old rectangular clamp had corners a third
+      // again past the rim, on ground no road leads to.
+      const to = clampToRegion(S.pos.x + (mx / m) * step, S.pos.z + (mz / m) * step);
+      S.pos.x = to.x;
+      S.pos.z = to.z;
       this.playerHeading = Math.atan2(mx, mz);
       moved = step;
     } else if (this.travelling && S.dest) {
@@ -1085,8 +1138,14 @@ export class WorldMap {
     // screen at once — at close range this reads as rocks, not as a region.
     // Steep enough (~55°) that the frame is mostly ground rather than empty
     // horizon, while still oblique enough to read the terrain as terrain.
-    const dist = 1250 * this.zoom;
-    const height = 1400 * this.zoom;
+    // The camera flattens as it pulls back. Close in it stays steep so the
+    // ground under the company is readable; zoomed out it drops toward the
+    // horizon, so the frame fills with terrain LAYERS — near country sharp,
+    // the rim silhhouetted, the outer steppe dissolving in haze — instead of
+    // a top-down plate. The horizon is what sells that the world continues.
+    const flat = clamp((this.zoom - 0.9) / 1.0, 0, 1);
+    const dist = (1250 + flat * 420) * this.zoom;
+    const height = (1400 - flat * 560) * this.zoom;
     // Fixed fog distances made a zoomed-out map dissolve into flat haze.
     const eye = Math.hypot(dist, height);
     // Fog begins past the ground being looked at, not on top of it. At 0.55 the

@@ -283,6 +283,26 @@ indefinitely is a lord quietly removed from the game. Raiders are deliberately
 anonymous: a looter band is weather, and naming one would make every scrap on
 the road feel like a duel with a rival.
 
+**The rim is a band with an angular profile, not a circle — and the fence is
+the geography.** The old rim was a radial power curve: concentric (so the
+region read as a round board with a raised edge from any height), rising
+forever (no "over the crest", the world visibly ended), and it BURIED half
+the outer provinces — a dozen settlements sit at 0.56..0.84 of the region
+radius. `rimAndBeyond()` in region.js varies the rim's start, height and
+thickness by bearing, CARVES it (roads cut passes, every outer settlement
+sits in a cleared basin — both computed, so moving a town or a road moves
+its pass), and falls away into outer steppe that runs to the mesh edge.
+`clampToRegion()` follows the same angular profile and replaces the old
+rectangular clamp, whose corners reached 1.37R — inside the mountains. The
+world-map camera FLATTENS as it zooms out (horizon and terrain layers enter
+the frame) and the zoom cap is 1.9, deliberately short of framing the whole
+region: a world you can see all of at once is a board game. Backdrop
+silhouettes (buildBackdrop — the twin dishes north, the cooling stack
+southeast, the antenna field west, the hulk east) are landmarks and compass
+both; none are reachable, none have collision. If you retune the rim,
+re-run tools/terrainpace.mjs — the interior octaves are untouched, which is
+why NORM survived this round.
+
 **The ground lives in `src/region.js`, and both layers read it.** `regionHeight`
 used to be defined in `worldmap.js`, which imports `state.js` — so the
 simulation could not see the terrain its parties were walking across without an

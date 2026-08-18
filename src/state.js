@@ -15,7 +15,7 @@ import {
   effective, WOUNDS, resolveCasualty,
 } from './roster.js';
 import { companyMods } from './perks.js';
-import { travelFactor } from './region.js';
+import { travelFactor, clampToRegion } from './region.js';
 import * as Dip from './diplomacy.js';
 import { rng, pick, irange, range, clamp, uid, uidFloor, setUidFloor } from './util.js';
 
@@ -1112,8 +1112,13 @@ function moveParties(S, hours, r) {
       const speed = intent === 'chase' ? PURSUIT_SPEED : Math.max(p.speed, PURSUIT_SPEED * 0.8);
       const step = Math.min(intent === 'chase' ? sd : Infinity,
         speed * hours * travelFactor(p.x, p.z));
-      p.x += (sx / sd) * step * sign;
-      p.z += (sz / sd) * step * sign;
+      // Fleeing is the one intent that walks a straight line AWAY from
+      // something, so it is the one that can march a band up into the rim —
+      // the same fence that holds the company holds them.
+      const fled = clampToRegion(
+        p.x + (sx / sd) * step * sign, p.z + (sz / sd) * step * sign);
+      p.x = fled.x;
+      p.z = fled.z;
       p.heading = Math.atan2(sx * sign, sz * sign);
       // Their patrol route is stale once they break off; pick a fresh one when
       // they next settle rather than snapping back to where they were headed.

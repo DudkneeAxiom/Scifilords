@@ -38,11 +38,69 @@ const C3 = Math.cos(A3), S3 = Math.sin(A3);
  * same two axes does not make hills, it makes corduroy: all the ridges come out
  * parallel and the continent reads as a ploughed field seen from orbit.
  */
+const smooth01 = (t) => {
+  const u = clamp(t, 0, 1);
+  return u * u * (3 - 2 * u);
+};
+
+// Settlements in the outer provinces, precomputed for the rim carve below.
+// Only places past half-radius matter — the interior never meets the rim.
+const OUTER_TOWNS = LOCATIONS
+  .filter((l) => Math.hypot(l.x, l.z) / HALF > 0.5)
+  .map((l) => ({ x: l.x, z: l.z }));
+
+/**
+ * The highland wall, and the world beyond it.
+ *
+ * The old rim was a radial power curve: a circular wall at a fixed distance,
+ * rising forever. Three things were wrong with that. It was CONCENTRIC, so
+ * from any height the region read as a round board with a raised edge. It
+ * BURIED half the outer provinces — a dozen settlements sit at 0.56..0.84 of
+ * the region radius, inside what the curve had already made mountains. And it
+ * never came DOWN, so there was no "over the crest": the world visibly ended
+ * at a wall rather than continuing past it.
+ *
+ * Now the rim is a mountain BAND with an angular profile — its start, height
+ * and thickness all vary by bearing, so no circle is ever visible — it falls
+ * away on the far side into outer country that runs to the horizon, and it is
+ * CARVED: roads cut passes through it and every outer settlement sits in its
+ * own cleared basin. Geography does the enclosing, not geometry.
+ */
+function rimAndBeyond(x, z, d) {
+  if (d < 0.52) return 0;
+  const th = Math.atan2(z, x);
+  const start = 0.80 + 0.05 * Math.sin(th * 3 + 0.9) + 0.035 * Math.sin(th * 7 - 1.4);
+  const height = 220 * (1 + 0.45 * Math.sin(th * 2 + 2.2) * Math.sin(th * 5 - 0.7));
+  const up = smooth01((d - start) / 0.26);
+  const down = smooth01((d - start - 0.30) / 0.42);
+  let rim = (up - down * 0.74) * height;
+
+  // Passes. A road that meets the wall goes THROUGH it — a saddle, not a
+  // climb — and an outer town stands in a basin the mountains stand around.
+  // This is also what keeps every settlement in the outer provinces livable.
+  if (rim > 0) {
+    let carve = clamp(1 - roadDistance(x, z) / 210, 0, 1) * 0.78;
+    for (const t of OUTER_TOWNS) {
+      const w = clamp(1 - Math.hypot(x - t.x, z - t.z) / 320, 0, 1);
+      if (w > carve) carve = w;
+    }
+    rim *= 1 - smooth01(carve) * 0.92;
+  }
+
+  // Over the crest the world CONTINUES: a high outer steppe with its own
+  // ranges, running out to the mesh edge and into the haze. Nothing out
+  // there is reachable; all of it is the reason the Reach reads as one
+  // region of a continent rather than the whole of one.
+  const beyond = smooth01((d - 1.02) / 0.4);
+  const outer = beyond * (46
+    + Math.sin(x * 0.0041 + 2.0) * Math.cos(z * 0.0037 - 0.9) * 52
+    + Math.sin(x * 0.0016 - 0.6) * Math.cos(z * 0.0019 + 1.3) * 30);
+  return rim + outer;
+}
+
 export function regionHeight(x, z) {
   const d = Math.hypot(x, z) / HALF;
-  // The rim starts much further out on a continent — the playable interior has
-  // to be genuinely large, with the highlands only closing in at the edges.
-  const rim = Math.pow(clamp((d - 0.66) / 0.34, 0, 1), 1.7) * 240;
+  const rim = rimAndBeyond(x, z, d);
   // Continental tilt: which half of the map is high country at all.
   const swell = Math.sin(x * 0.0011 + 0.7) * Math.cos(z * 0.0013 - 0.3) * 34;
   const rx1 = x * C1 - z * S1, rz1 = x * S1 + z * C1;
@@ -54,8 +112,23 @@ export function regionHeight(x, z) {
   const broken = Math.sin(rx3 * 0.0370 + 0.3) * Math.cos(rz1 * 0.0355 - 0.8) * 7;
   const grain = Math.sin(rx2 * 0.0450 - 1.4) * Math.cos(rz3 * 0.0435 + 0.9) * 3.5;
   // Relief grows toward the rim: the pan stays walkable, the edges get savage.
-  const relief = 0.55 + d * 0.9;
+  const relief = 0.55 + Math.min(d, 1.1) * 0.9;
   return rim + swell + (ranges + hills + broken + grain) * relief;
+}
+
+/**
+ * Keep a mover inside the world that can be walked. The limit follows the
+ * rim's own angular profile — the fence IS the geography — replacing the old
+ * rectangular clamp, whose corners reached 1.37 of the region radius: deep
+ * inside the mountains, on ground no road has ever led to.
+ */
+export function clampToRegion(x, z) {
+  const d = Math.hypot(x, z) / HALF;
+  const th = Math.atan2(z, x);
+  const limit = 0.86 + 0.05 * Math.sin(th * 3 + 0.9) + 0.035 * Math.sin(th * 7 - 1.4);
+  if (d <= limit) return { x, z };
+  const k = (limit * HALF) / Math.hypot(x, z);
+  return { x: x * k, z: z * k };
 }
 
 /**
