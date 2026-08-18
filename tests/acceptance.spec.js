@@ -5058,3 +5058,123 @@ test('a summons is a battle you join in person, and winning it moves the border'
   expect(field.side).toBe(true);
   expect(field.model).toBe(true);
 });
+
+test('the pit takes a stake on the commander, and pays three to one for the card', async ({ page }) => {
+  await boot(page);
+  await newCampaign(page);
+  const r = await page.evaluate(() => {
+    const { State } = window.KR.dev;
+    const S = window.KR.campaign;
+    S.contracts.forEach((x) => { x.accepted = false; });
+    // Cleared the whole card with money riding on it.
+    S.credits = 2000;
+    State.applyMissionResult(S, {
+      success: true, type: 'pit', site: 'draypits', pitRounds: 8, wager: 500,
+      kills: 8, soldierResults: [], suppliesUsed: 0,
+    });
+    const purse8 = Math.round(8 * 90 * (1 + 8 * 0.11));
+    const afterWin = S.credits;
+    // Put down in round three with a stake on the table: the by-the-round
+    // purse still pays, the stake does not come back (it left the ledger at
+    // the door, so no deduction happens here either).
+    S.credits = 2000;
+    State.applyMissionResult(S, {
+      success: false, reason: 'pit', type: 'pit', site: 'draypits', pitRounds: 3, wager: 300,
+      kills: 3, soldierResults: [], suppliesUsed: 0,
+    });
+    const purse3 = Math.round(3 * 90 * (1 + 3 * 0.11));
+    return {
+      winDelta: afterWin - 2000, purse8,
+      loseDelta: S.credits - 2000, purse3,
+    };
+  });
+  // Purse plus the stake back at three to one.
+  expect(r.winDelta).toBe(r.purse8 + 500 * 3);
+  // Purse only — the book keeps the stake, and nothing else is touched.
+  expect(r.loseDelta).toBe(r.purse3);
+});
+
+test('the pit is an arena: clean floor, a closed bowl, and a crowd on the rim', async ({ page }) => {
+  await boot(page);
+  await newCampaign(page);
+  await page.evaluate(async () => {
+    const { Mission } = await import('/src/mission.js');
+    const UI = await import('/src/ui.js');
+    const G = window.KR;
+    const S = G.campaign;
+    G.mission?.dispose();
+    G.world?.dispose(); G.world = null;
+    document.getElementById('viewport').innerHTML = '';
+    UI.show('hud');
+    G.mission = new Mission({
+      campaign: S,
+      spec: { type: 'pit', site: 'draypits', layout: 'arena', siteName: 'Dray Pits',
+        enemyFaction: 'raider' },
+      squad: [S.roster[0]],
+      container: document.getElementById('viewport'),
+      onHud: () => {}, onToast: () => {}, onIntro: () => {}, onWheel: () => {}, onEnd: () => {},
+    });
+    await G.mission.start();
+    G.mission.paused = true;
+  });
+  await page.waitForFunction(() => window.KR.mission?.player, null, { timeout: 40000 });
+  const r = await page.evaluate(() => {
+    const m = window.KR.mission;
+    // Nothing to hide behind on the fighting floor — that is the design.
+    const floorObstacles = m.level.obstacles.filter(
+      (o) => Math.abs(o.x) < 21 && Math.abs(o.z) < 21).length;
+    // The bowl is a full circuit: wall segments on all four sides.
+    const walls = m.level.props.filter((p) => p.model === 'rampart').length;
+    // And the town is up on the rim watching.
+    const crowd = m.level.props.filter(
+      (p) => p.model.startsWith('soldier_') && p.y > 3).length;
+    return { name: m.level.name, floorObstacles, walls, crowd };
+  });
+  // The level carries the settlement's name (siteName wins over the layout's),
+  // so the arena is pinned by its structure, not its label.
+  expect(r.floorObstacles).toBe(0);
+  expect(r.walls).toBeGreaterThanOrEqual(28);
+  expect(r.crowd).toBeGreaterThanOrEqual(20);
+});
+
+test('the siege curtain cannot be walked around', async ({ page }) => {
+  await boot(page);
+  await newCampaign(page);
+  await page.evaluate(async () => {
+    const { Mission } = await import('/src/mission.js');
+    const UI = await import('/src/ui.js');
+    const G = window.KR;
+    const S = G.campaign;
+    S.renown = 4000;
+    G.mission?.dispose();
+    G.world?.dispose(); G.world = null;
+    document.getElementById('viewport').innerHTML = '';
+    UI.show('hud');
+    G.mission = new Mission({
+      campaign: S,
+      spec: { type: 'siege', site: 'fort', layout: 'fort', siteName: 'Gate',
+        enemyFaction: 'trust' },
+      squad: S.roster.slice(0, 4),
+      container: document.getElementById('viewport'),
+      onHud: () => {}, onToast: () => {}, onIntro: () => {}, onWheel: () => {}, onEnd: () => {},
+    });
+    await G.mission.start();
+    G.mission.paused = true;
+  });
+  await page.waitForFunction(() => window.KR.mission?.player, null, { timeout: 40000 });
+  const r = await page.evaluate(() => {
+    const m = window.KR.mission;
+    // The curtain's segments, along the wall line. The flanks must reach past
+    // the playable bounds on BOTH sides, or the wall is scenery you stroll
+    // around — which is exactly what it was.
+    const wall = m.level.obstacles.filter((o) => Math.abs(o.z - -14) < 3 && o.hw > 3);
+    const bounds = m.level.bounds;
+    return {
+      east: Math.max(...wall.map((o) => o.x + o.hw)),
+      west: Math.min(...wall.map((o) => o.x - o.hw)),
+      bounds,
+    };
+  });
+  expect(r.east).toBeGreaterThanOrEqual(r.bounds);
+  expect(r.west).toBeLessThanOrEqual(-r.bounds);
+});

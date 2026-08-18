@@ -1745,6 +1745,19 @@ export function applyMissionResult(S, res) {
         ? `${rounds} round(s) in the pit. Purse: ${purse} credits.`
         : 'Put down in the first round. The crowd got its money back.',
     });
+    // The stake on the commander, taken at the door and settled here. Three
+    // to one, and ONLY for clearing the whole card — the by-the-round purse
+    // above is the consolation; the wager is the tournament bet.
+    if (res.wager > 0) {
+      if (res.success) {
+        const won = res.wager * 3;
+        S.credits += won;
+        notes.push({ tone: 'good', text: `The book paid the stake: ${won} credits, three to one.` });
+        pushLog(S, `The commander cleared the card with money riding on it. ${won} credits.`, 'good');
+      } else {
+        notes.push({ tone: 'bad', text: `The stake is the book's now: ${res.wager} credits gone.` });
+      }
+    }
     // A commander who fights in front of the town is a commander people talk
     // about, and the company likes working for somebody like that.
     if (rounds >= 3) {
@@ -3700,6 +3713,11 @@ function tryCapture(S, r, attacker, defender) {
   // war go badly for the attacker without the player: tickPartyBattles() means
   // a defending patrol can break the column on the road.
   const col = spawnParty(S, r, attacker === 'trust' ? 'warband_trust' : 'warband_syndic', from.id);
+  // A siege HOST, not a patrol. Taking a town takes an army, and an army is
+  // what the player joins when they answer the summons — hundreds, fed onto
+  // the field in ranks through the mission's wave streaming. On the map it
+  // fights the same durational battles as everything else, just for longer.
+  col.strength = Math.round(col.strength * range(r, 3.2, 4.6));
   col.x = from.x + range(r, -20, 20);
   col.z = from.z + range(r, -20, 20);
   col.siegeTarget = best.id;

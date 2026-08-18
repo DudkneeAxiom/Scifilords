@@ -1074,7 +1074,11 @@ function siteFort(b) {
   // simply walk through, which quietly undid the entire point of the layout.
   // The wall sampling in the siege test ran along the rampart line and never
   // looked at the flanks.
-  for (let i = -8; i <= 8; i++) {
+  // The curtain runs PAST the playable bounds (±112) on both flanks. It used
+  // to stop at ±72, which left forty open metres either side — the player
+  // could simply walk around the "castle", and every word this layout says
+  // about walls was a lie. A wall that can be flanked on foot is scenery.
+  for (let i = -13; i <= 13; i++) {
     if (i === 0) continue;                            // the gate stands here
     b.prop('rampart', i * 9.0, WALL_Z, 0, BOX.rampart, 1);
   }
@@ -1149,6 +1153,68 @@ function siteFort(b) {
   };
 }
 
+/**
+ * THE PIT — an arena, not a battlefield.
+ *
+ * Every other site is an arrangement of cover on open ground; the pit is the
+ * opposite on purpose. A clean square floor with nothing to hide behind, a
+ * wall the fight cannot leave, and the town standing on the rim watching —
+ * because a commander who fights in front of the town is the entire point of
+ * the pit, and a paintball field of random debris said none of that.
+ */
+function siteArena(b) {
+  const R = 26;
+  // The bowl: a full circuit of wall, the corners plugged with towers. The
+  // ring is what makes it an arena — there is no third place to be. Axis-
+  // aligned segments only, because prop collision is axis-aligned.
+  for (let i = -3; i <= 3; i++) {
+    b.prop('rampart', i * 9, -R, 0, BOX.rampart, 1);
+    b.prop('rampart', i * 9, R, 0, BOX.rampart, 1);
+    b.prop('rampart', -R, i * 9, Math.PI / 2, BOX.rampart, 1);
+    b.prop('rampart', R, i * 9, Math.PI / 2, BOX.rampart, 1);
+  }
+  for (const [cx, cz] of [[-R, -R], [R, -R], [-R, R], [R, R]]) {
+    b.prop('gate_tower', cx, cz, 0, BOX.gate_tower, 1);
+  }
+  // The crowd, up on the rim. Static like every townsperson in the Reach —
+  // they are an audience, not participants, so no collision and no AI. Faces
+  // and stances vary by deterministic jitter, not rng: the same arena should
+  // photograph the same twice.
+  const faces = ['soldier_prisoner', 'soldier_scour', 'soldier_littoral',
+    'soldier_trust', 'soldier_syndic', 'soldier_bracket'];
+  const TOP = 6.2;                                   // standing on the wall
+  let k = 0;
+  for (let i = -3; i <= 3; i++) {
+    for (const [x, z] of [
+      [i * 9 + ((i * 37) % 5) - 2, -R], [i * 9 + ((i * 53) % 5) - 2, R],
+      [-R, i * 9 + ((i * 41) % 5) - 2], [R, i * 9 + ((i * 29) % 5) - 2],
+    ]) {
+      // Facing the floor, with a little lean either way so the rim reads as
+      // a crowd rather than a parade.
+      const face = Math.atan2(0 - x, 0 - z) + (((k * 7) % 3) - 1) * 0.22;
+      b.prop(faces[k % faces.length], x, z, face, null, 1, TOP);
+      k++;
+    }
+  }
+  // A clean floor is the design. Reserve the whole bowl and rim so the
+  // generic dressing passes cannot scatter crates across a fighting floor.
+  b.protect(0, 0, 44, 44);
+
+  return {
+    name: 'THE PIT',
+    palette: {
+      fog: 0x453f38, ground: 0x5a5142, groundLow: 0x2e2a22, acc: 0x6a5136,
+      sky: 0x3b3d40, sun: 0xe8b070, sunI: 3.1, amb: 0x6a6a78, ambI: 1.9,
+    },
+    playerSpawn: { x: 0, z: 14, ry: Math.PI },
+    extraction: { x: 0, z: 14 },
+    objectivePoint: { x: 0, z: 0 },
+    enemyFaction: 'raider',
+    garrison: [],
+    patrols: [],
+  };
+}
+
 // Keyed by layout, not by location: several places in the Reach share a layout
 // and every layout can host any mission template.
 const SITES = {
@@ -1160,6 +1226,7 @@ const SITES = {
   settlement: siteSettlement,
   works: siteWorks,
   fort: siteFort,
+  arena: siteArena,
 };
 
 // --------------------------------------------------------------------------
@@ -1178,6 +1245,8 @@ export function build(siteId, seed, override = {}) {
   // covers the walled town; the fade reaches the terrain outside the gate.
   const FLATTENS = {
     settlement: { x: 0, z: -6, r: 56, fade: 14 },
+    // A fighting floor is FLAT. A pit fought on a hillside is a joke.
+    arena: { x: 0, z: 0, r: 44, fade: 12 },
   };
   const fl = FLATTENS[siteId];
   FLAT = null;                                     // never inherit a pad

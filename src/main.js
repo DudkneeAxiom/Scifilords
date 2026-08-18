@@ -740,7 +740,13 @@ function specFor(loc, contract) {
     // A faction's own ground is defended by that faction; neutral sites by
     // whoever is squatting there.
     enemyFaction: loc.faction || (contract.employer === 'trust' ? 'syndic' : 'raider'),
-    ...(col ? { allies: col.strength, allyFaction: contract.employer } : {}),
+    ...(col ? {
+      allies: col.strength,
+      allyFaction: contract.employer,
+      // The town does not fall to four people and a truck: a summoned siege
+      // is defended at army scale too, streamed in through the field cap.
+      enemyArmy: Math.round(col.strength * 0.85),
+    } : {}),
     contract,
   };
 }
@@ -759,13 +765,49 @@ function specFor(loc, contract) {
 function startPit(loc) {
   const S = G.campaign;
   UI.closeModal();
-  startMission({
-    type: 'pit',
-    site: loc.id,
-    layout: loc.layout || 'settlement',
-    siteName: loc.name,
-    enemyFaction: 'raider',
-  }, [State.commander(S)]);
+  const begin = (wager) => {
+    if (wager > 0) {
+      // The stake leaves the ledger at the door. It comes back at three to
+      // one only if the whole card gets cleared — see the pit branch in
+      // applyMissionResult.
+      S.credits -= wager;
+      UI.toast('STAKED', `${wager} on the commander clearing the card`, 'warn');
+    }
+    startMission({
+      type: 'pit',
+      site: loc.id,
+      // The pit is fought in the pit — a purpose-built arena with the town
+      // on the rim — never in whatever layout the settlement happens to be.
+      layout: 'arena',
+      siteName: loc.name,
+      enemyFaction: 'raider',
+      wager,
+    }, [State.commander(S)]);
+  };
+  // The book takes stakes on the commander, Mount & Blade tournament style.
+  const stakes = [200, 500, 1000].filter((w) => (S.credits || 0) >= w);
+  UI.modal({
+    title: 'THE PIT',
+    tag: loc.name.toUpperCase(),
+    body: `<div class="prose">Nobody dies in the pit. They put you in with whoever
+      is next, the crowd bets on it, and you walk out either way.</div>
+      <div class="prose mt">The book will also take a stake on the commander clearing
+      the whole card — every round, nobody left to put in with you. It pays
+      <span class="hl">three to one</span>. Going down early keeps your money.</div>`,
+    foot: '<button class="btn btn-major" data-x="none">JUST FIGHT</button>'
+      + stakes.map((w) => `<button class="btn" data-wager="${w}">STAKE ${w}</button>`).join('')
+      + '<button class="btn" data-x="close">WALK AWAY</button>',
+    onClose: () => G.world?.setPaused(false),
+  });
+  document.querySelector('#modal [data-x="close"]').onclick = () => {
+    Audio.uiBack(); UI.closeModal(); G.world?.setPaused(false);
+  };
+  document.querySelector('#modal [data-x="none"]').onclick = () => {
+    Audio.uiSelect(); UI.closeModal(); begin(0);
+  };
+  for (const el of document.querySelectorAll('#modal [data-wager]')) {
+    el.onclick = () => { Audio.uiSelect(); UI.closeModal(); begin(Number(el.dataset.wager)); };
+  }
 }
 
 function startRaid(loc) {

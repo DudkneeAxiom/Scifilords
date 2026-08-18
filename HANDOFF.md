@@ -626,6 +626,17 @@ Open, in rough priority order:
    must be read before `S.contracts` is filtered, and `closeSummons` fires
    harmlessly afterwards (contract already gone → early return).
 
+**Stakes in the Pit** (this session). Tournament betting, M&B style. The
+   door modal in `startPit` (main.js) offers 200/500/1000 stakes filtered by
+   the ledger; the stake is deducted AT THE DOOR, carried on the result as
+   `spec.wager` → `res.wager`, and settled in the pit branch of
+   `applyMissionResult`: three-to-one, and only for `res.success` — which
+   for a pit means the whole card cleared, because `extractArmed` stays
+   false until `completeObjective()`, so walking out early cannot cash the
+   bet. Going down keeps nothing and deducts nothing further (the money
+   already left). The by-the-round purse is untouched — it is the
+   consolation; the wager is the tournament bet.
+
 ---
 
 ## The summary artifact
