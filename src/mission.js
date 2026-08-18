@@ -1527,6 +1527,8 @@ export class Mission {
         desc: 'Aimed at a body: focus fire. Aimed at ground: move up and spread.' },
       { id: 'suppress', name: 'SUPPRESS', key: 'X',
         desc: 'Pour fire into that position. Pins whoever is behind it.' },
+      { id: 'charge', name: 'CHARGE', key: 'R',
+        desc: 'Run them down. No cover, no stopping, until nothing stands.' },
       { id: 'flank', name: 'FLANK', key: 'Z',
         desc: 'Swing wide and come at it from a different angle than you are.' },
       { id: 'fallback', name: 'FALL BACK', key: 'V',
@@ -2125,7 +2127,15 @@ export class Mission {
     e.ammo--;
     e.cooldown = 60 / w.rpm;
     e.char.kick();
-    if (e.isPlayer) this.stats.shotsFired++;
+    if (e.isPlayer) {
+      this.stats.shotsFired++;
+      // The gun has weight: a small pitch kick with jitter, recovered by the
+      // camera spring, and a breath of shake. Enough to feel every round
+      // leave; never enough to fight the player's aim for them.
+      this.camPitch = clamp(this.camPitch - (0.009 + this.r() * 0.005), -0.62, 0.72);
+      this.camYaw += (this.r() - 0.5) * 0.005;
+      this.shake = Math.min(0.3, (this.shake || 0) + 0.05);
+    }
     // Per-entity round count. The mission-wide stat above is the player's only,
     // because that is what the debrief reports; the probes need to know whether
     // an individual soldier is shooting. tools/aiaudit.mjs read e.shotsFired
@@ -2320,6 +2330,21 @@ export class Mission {
     if (target.side === source.side && !source.isPlayer) return;
     if (target.side === source.side && source.isPlayer) dmg *= 0.35;
 
+    // Squads PIN, the player BREAKS. Friendly fire against an enemy who is
+    // DUG IN trades at reduced damage — suppression at full strength — so an
+    // exchange with an emplaced line is a firefight that HOLDS, and the shots
+    // that dig them out are the ones the player aims. Enemies caught moving
+    // in the open still take full damage: squads mow down a rush, they just
+    // cannot win a siege. (A flat AI-on-AI cut was tried first and failed the
+    // balance probe — it also cut the attrition on hostiles CLOSING across
+    // open ground, so more of them arrived at knife range alive.)
+    if (!source.isPlayer && source.side === 'player' && target.side === 'enemy') {
+      const cp = target.coverPos;
+      const dug = cp && Math.hypot(target.x - cp.x, target.z - cp.z) < 1.4;
+      if (dug) dmg *= 0.6;
+    }
+    if (source.side === 'enemy' && target.side === 'player' && !target.isPlayer) dmg *= 0.7;
+
     // A headshot-ish band, rewarded but not a one-shot rule.
     const headY = Level.heightAt(target.x, target.z) + 1.62;
     if (hit && Math.abs(hit.y - headY) < 0.18) dmg *= 1.85;
@@ -2330,6 +2355,13 @@ export class Mission {
     target.hp -= dmg;
     target.char.flinch();
     this.spawnImpact(hit, 'flesh');
+    // The answer to "did I hit": a tick on the reticle and a centred thock,
+    // distinct from the 3D-panned impact at the body. Point-and-click feel
+    // is mostly the QUESTION going unanswered.
+    if (source.isPlayer && target.side === 'enemy') {
+      this.hitAt = this.time;
+      Audio.impact('flesh', null);
+    }
     if (target.side === 'enemy') target.alert = 1;
 
     // Being shot at makes the AI react even if it was looking elsewhere.
@@ -3353,6 +3385,36 @@ export class Mission {
       e.yaw = approachAngle(e.yaw, Math.atan2(sp.x - e.x, sp.z - e.z), dt * 6);
       this.suppressFire(dt, e, sp);
       return;
+    }
+
+    // --- charging: run them down -------------------------------------------
+    // The Mount-and-Blade order: everyone picks the nearest living enemy and
+    // CLOSES, firing on the move, no cover, no stopping, until nothing is
+    // left standing — then hunts the next. The trade is the whole point:
+    // charging troops give up their cover discipline, so calling it against
+    // an unbroken line is how you lose a company, and calling it against a
+    // routing one is how you finish a fight.
+    if (e.order === 'charge') {
+      let prey = null, pd = Infinity;
+      for (const q of this.entities) {
+        if (q.side !== 'enemy' || q.dead) continue;
+        const d = Math.hypot(q.x - e.x, q.z - e.z);
+        if (d < pd) { pd = d; prey = q; }
+      }
+      if (prey) {
+        e.forceTarget = prey;
+        if (pd > 6) {
+          this.moveToward(dt, e, prey.x, prey.z, e.speed * 1.3);
+          this.faceMotion(e, dt);
+        } else {
+          e.moveSpeed = 0;
+          e.yaw = approachAngle(e.yaw, Math.atan2(prey.x - e.x, prey.z - e.z), dt * 8);
+        }
+        if (pd < 40) this.aiShoot(dt, e, prey, pd);
+        return;
+      }
+      // Nothing left to run down: form back up.
+      e.order = 'follow';
     }
 
     // --- flanking: run wide, then revert to attacking ----------------------
@@ -4396,6 +4458,7 @@ export class Mission {
     if (e.dead) return 'KIA';
     if (e.down) return e.stabilised ? 'STABLE' : 'DOWN';
     if (e.reloading > 0) return 'RELOAD';
+    if (e.order === 'charge') return 'CHARGING';
     if (e.order === 'suppress') return 'SUPPRESS';
     if (e.order === 'flank') return 'FLANKING';
     if (e.order === 'fallback') return 'FALLBACK';
@@ -4493,6 +4556,7 @@ export class Mission {
         && Math.hypot(e.x - p.x, e.z - p.z) < 60).length,
       compass: this.camYaw,
       hurt: this.hurtFlash || 0,
+      hit: this.hitAt != null && this.time - this.hitAt < 0.16,
       // Recent hits, as bearings relative to where the player is looking:
       // 0 is straight ahead, positive is to the right. Converted here rather
       // than in the renderer because the camera angle lives on this side.

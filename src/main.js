@@ -658,7 +658,12 @@ function handleEncounter(party, opts = {}) {
       G.world?.setPaused(false);
       result.levelName = party.name || 'THE ROAD';
       UI.afterAction(S2, result, notes, {
-        onClose: () => { G.world?.setPaused(false); State.save(S2); },
+        onClose: () => {
+          const done = () => { G.world?.setPaused(false); State.save(S2); };
+          if ((result.fieldSpoils || []).length || (result.captives || []).length) {
+            UI.spoilsPanel(S2, result, { onClose: done });
+          } else done();
+        },
       });
     },
     onFight: () => {
@@ -853,14 +858,21 @@ function endMission(spec, result) {
   UI.afterAction(S, result, notes, {
     onClose: () => {
       const wasFinale = S.finale && !S.finaleShown;
-      toWorld(false);
-      // Promotions earned on this deployment are spent before anything else.
-      resolvePerks(() => {
-        if (wasFinale) {
-          S.finaleShown = true;
-          setTimeout(() => UI.finalePanel(S, { onClose: () => {} }), 260);
-        }
-      });
+      const proceed = () => {
+        toWorld(false);
+        // Promotions earned on this deployment are spent before anything else.
+        resolvePerks(() => {
+          if (wasFinale) {
+            S.finaleShown = true;
+            setTimeout(() => UI.finalePanel(S, { onClose: () => {} }), 260);
+          }
+        });
+      };
+      // The page after the report: sort the enemy supply, decide the
+      // prisoners. Only appears when the field actually yielded something.
+      if ((result.fieldSpoils || []).length || (result.captives || []).length) {
+        UI.spoilsPanel(S, result, { onClose: () => { State.save(S); proceed(); } });
+      } else proceed();
     },
   });
 }

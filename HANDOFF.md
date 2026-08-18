@@ -558,6 +558,40 @@ Open, in rough priority order:
    to the walk that SHOULD reach the campaign has to go through its own door,
    not that one.
 
+**The combat feel pass** (this session). The complaint was "point and click,
+   and my troops line-of-sight wipe the enemy." What shipped, and the traps
+   each piece carries:
+
+   - *Squads pin, the player breaks.* In `applyDamage`, friendly-AI fire
+     against an enemy who is DUG IN — within 1.4 of their `coverPos` —
+     trades at 0.6 damage (suppression untouched); enemies caught moving in
+     the open take full damage. The conditional is the load-bearing part:
+     a flat AI-on-AI cut (0.55, then 0.7) failed `tools/balance.mjs` BOTH
+     times at ~45% far-range downs, because it also cut the attrition on
+     hostiles closing across open ground, so more of them arrived at knife
+     range alive — and the failure barely moved between 0.55 and 0.7, which
+     was the tell that magnitude was not the lever. Enemy fire into the
+     player's squad still trades flat at 0.7. Probe after the change:
+     12m median 4s at 77% down, 34m at 40% down — exactly ON the ≤40%
+     criterion, so any further lethality tweak should re-run the probe
+     first, not after.
+   - *Gun weight*: player recoil in `fire()` (camPitch kick + yaw jitter +
+     shake) and a hit-confirm (`hitAt` drives a 0.16s amber reticle flash +
+     a centred flesh impact tick). Cosmetic-only — neither touches the
+     damage model.
+   - *CHARGE on the command wheel* ('R'): every squaddie hunts the nearest
+     living enemy via `forceTarget`, runs at 1.3× firing on the move, no
+     cover discipline, reverts to `follow` when nothing is left. The wheel
+     test maps index→id generically, so a new order needs no test surgery.
+   - *The page after the fight*: `applyMissionResult` now itemises the strip
+     onto the result (`res.fieldSpoils`, `res.captives` — ids of prisoners
+     it already pushed), and `UI.spoilsPanel` (chained after `afterAction`
+     in BOTH main.js call sites — played missions and SEND THEM IN) shows
+     the haul and offers per-captive PRESS/RELEASE using the verbs that
+     already existed. The spoils branch is gated on `res.partyId`, not
+     `res.party` — a fixture with only `party` silently skips it, which is
+     exactly how the first version of its acceptance test failed.
+
 ---
 
 ## The summary artifact

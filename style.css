@@ -442,6 +442,12 @@ kbd {
 .pris-name { color: #c9c3b2; font-size: 12px; }
 .pris-meta { color: #7d7869; font-size: 9px; letter-spacing: 0.10em; }
 .pris .btn { font-size: 10px; padding: 4px 8px; }
+.pris-role { flex: 1; min-width: 0; color: #7d7869; font-size: 9px; letter-spacing: 0.10em; }
+
+/* ---- field spoils ----------------------------------------------------- */
+.spoils-grid { display: flex; flex-wrap: wrap; gap: 6px; }
+.spoils-grid .note { margin: 0; }
+.hint { margin-top: 6px; color: #7d7869; font-size: 10px; letter-spacing: 0.08em; }
 /* ---- troop advancement ------------------------------------------------ */
 .up-paths { display: flex; flex-direction: column; gap: 6px; }
 .up-path {
@@ -1051,3 +1057,6 @@ kbd {
 .pol-name i { font-style: normal; color: #b8863f; font-size: 9px; margin-left: 6px; }
 .pol-desc { color: #8d8776; font-size: 11px; margin-top: 2px; }
 .pol-eff { color: #7d7869; font-size: 10px; margin-top: 2px; }
+
+/* Hit confirmation: the reticle answers. Amber, brief, unmistakable. */
+.reticle.hit i { background: #d8a83f; box-shadow: 0 0 4px #d8a83f; }

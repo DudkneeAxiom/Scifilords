@@ -264,6 +264,7 @@ export function renderMissionHud(h) {
   const ret = $('reticle');
   ret.classList.toggle('hidden', !!h.inserting);
   ret.classList.toggle('ads', h.aiming);
+  ret.classList.toggle('hit', !!h.hit);
   $('hurt').style.opacity = String(h.hurt * 0.85);
 
   // Where the fire is coming from. One wedge per recent hit, pointing at the
@@ -2685,6 +2686,62 @@ export function afterAction(S, result, notes, { onClose }) {
     onClose,
   });
   wire({ close: onCloseWrap(onClose) });
+}
+
+/**
+ * The page after the after-action report: what came off the field, and who.
+ * Loot is already loaded on the truck (the equipment screen fits it) — this
+ * screen is where you look it over and decide what happens to the people.
+ * Pressing a prisoner here is the Mount-and-Blade move: free manpower, paid
+ * for in morale, because nobody likes serving next to somebody who was
+ * shooting at them an hour ago.
+ */
+export function spoilsPanel(S, result, { onClose }) {
+  const render = () => {
+    const spoils = result.fieldSpoils || [];
+    const capIds = new Set(result.captives || []);
+    const caps = (S.prisoners || []).filter((p) => capIds.has(p.id));
+    const counts = {};
+    for (const it of spoils) counts[it.id] = (counts[it.id] || 0) + 1;
+    const body = `
+      <div class="prose">The field is quiet. What the enemy carried is yours
+        to sort — kit goes on the truck, and the people go where you say.</div>
+      <div class="section-title">FROM THE ENEMY SUPPLY — ${spoils.length} PIECES</div>
+      ${spoils.length ? `<div class="spoils-grid">${Object.entries(counts).map(([id, n]) =>
+    `<div class="note good">${esc(id.toUpperCase())}${n > 1 ? ` ×${n}` : ''}</div>`).join('')}</div>
+      <div class="hint">Loaded on the truck. Fit it to the company from the EQUIPMENT screen.</div>`
+    : '<div class="empty">NOTHING WORTH STRIPPING</div>'}
+      <div class="section-title">PRISONERS TAKEN — ${caps.length}</div>
+      ${caps.length ? caps.map((p) => `<div class="pris">
+        <span class="pris-name">${esc(p.name)}</span>
+        <span class="pris-role">${esc(p.role || '')}${p.captiveFaction ? ` — ${esc(p.captiveFaction)}` : ''}</span>
+        <button class="btn" data-cap-press="${p.id}">PRESS</button>
+        <button class="btn" data-cap-free="${p.id}">RELEASE</button>
+      </div>`).join('')
+    : '<div class="empty">NOBODY THREW DOWN THEIR WEAPON</div>'}
+      ${caps.length ? '<div class="hint">Kept prisoners ride in the truck — ransom them at a broker, or press them later from the roster.</div>' : ''}`;
+
+    modal({
+      title: 'FIELD SPOILS',
+      tag: `DAY ${S.day}`,
+      body,
+      foot: `<span class="spacer">CREDITS ${S.credits}</span>
+        <button class="btn btn-major" data-x="close">MOVE OUT</button>`,
+      onClose,
+    });
+    wire({ close: onCloseWrap(onClose) });
+    for (const el of document.querySelectorAll('#modal [data-cap-press]')) {
+      el.onclick = () => {
+        if (State.pressPrisoner(S, el.dataset.capPress)) { Audio.uiSelect(); render(); }
+      };
+    }
+    for (const el of document.querySelectorAll('#modal [data-cap-free]')) {
+      el.onclick = () => {
+        if (State.releasePrisoner(S, el.dataset.capFree)) { Audio.uiSelect(); render(); }
+      };
+    }
+  };
+  render();
 }
 
 // --------------------------------------------------------------------------

@@ -2834,6 +2834,117 @@ test('calling a formation forms the squad up without changing their order', asyn
   expect(r.hud).toBe('SPREAD');
 });
 
+test('CHARGE sends the squad hunting and they close the distance', async ({ page }) => {
+  await boot(page);
+  await newCampaign(page);
+  await page.evaluate(async () => {
+    const { Mission } = await import('/src/mission.js');
+    const UI = await import('/src/ui.js');
+    const G = window.KR;
+    const S = G.campaign;
+    S.renown = 4000;
+    G.mission?.dispose();
+    G.world?.dispose(); G.world = null;
+    document.getElementById('viewport').innerHTML = '';
+    UI.show('hud');
+    G.mission = new Mission({
+      campaign: S,
+      spec: { type: 'skirmish', site: 'roadside', layout: 'roadside', siteName: 'C',
+        party: { id: 'c', kind: 'scrappers', name: 'C', strength: 6, tier: 2, quality: 0.6 } },
+      squad: S.roster.slice(0, 4),
+      container: document.getElementById('viewport'),
+      onHud: () => {}, onToast: () => {}, onIntro: () => {}, onWheel: () => {}, onEnd: () => {},
+    });
+    await G.mission.start();
+    const m = G.mission;
+    m.paused = false; m.hadLock = true;
+    if (m.intro) { m.intro.active = false; m.time = m.intro.graceUntil + 0.1; }
+  });
+  await page.waitForFunction(() => window.KR.mission?.player, null, { timeout: 40000 });
+
+  const dist = () => {
+    const m = window.KR.mission;
+    const foes = m.entities.filter((e) => e.side === 'enemy' && !e.dead);
+    if (!foes.length) return 0;
+    let sum = 0, n = 0;
+    for (const s of m.squad.filter((x) => !x.dead && !x.down)) {
+      let best = Infinity;
+      for (const f of foes) best = Math.min(best, Math.hypot(f.x - s.x, f.z - s.z));
+      sum += best; n++;
+    }
+    return n ? sum / n : 0;
+  };
+  const before = await page.evaluate(`(() => {
+    const m = window.KR.mission;
+    m.issueOrder('charge');
+    return {
+      orders: m.squad.filter((s) => !s.dead).map((s) => s.order),
+      status: m.actionOf(m.squad.find((s) => !s.dead && !s.down)),
+      d: (${dist.toString()})(),
+      kills: m.stats.kills || 0,
+    };
+  })()`);
+  // The order lands on everyone, and the squad panel says so in one word.
+  expect(before.orders.every((o) => o === 'charge')).toBe(true);
+  expect(before.status).toMatch(/CHARGING|RELOAD/);
+  // Let the sim run: charging troops must CLOSE, not hold their cover line.
+  await page.waitForTimeout(4500);
+  const after = await page.evaluate(`(() => {
+    const m = window.KR.mission;
+    return { d: (${dist.toString()})(), kills: m.stats.kills || 0 };
+  })()`);
+  // Either they measurably shortened the gap, or they already ran somebody
+  // down — both are what "run them down" means. Standing still is the bug.
+  expect(after.d < before.d - 2 || after.kills > before.kills).toBe(true);
+});
+
+test('the field yields itemized spoils and captives you can press or release', async ({ page }) => {
+  await boot(page);
+  await newCampaign(page);
+  const r = await page.evaluate(() => {
+    const { State } = window.KR.dev;
+    const S = window.KR.campaign;
+    S.seed = 12345;
+    const party = { id: 'tp', kind: 'scrappers', name: 'T', strength: 8, tier: 2,
+      quality: 0.6, faction: 'syndic' };
+    // The prisoner die is honest RNG, so walk the day until somebody
+    // surrenders — the itemized strip list must be there every single time.
+    let res = null, everSpoils = true;
+    for (let d = 1; d <= 16 && !(res && (res.captives || []).length); d++) {
+      S.day = d; S.stats.missions = d; S.prisoners = [];
+      res = { success: true, type: 'skirmish', partyId: 'tp', party, kills: 8,
+        soldierResults: [], suppliesUsed: 0 };
+      State.applyMissionResult(S, res);
+      if (!(res.fieldSpoils || []).length) everSpoils = false;
+    }
+    const caps = res.captives || [];
+    const inTruck = caps.every((id) => S.prisoners.some((p) => p.id === id));
+    // Management, straight off the field: press one, turn one loose.
+    const rosterBefore = S.roster.length;
+    const pressed = caps.length ? State.pressPrisoner(S, caps[0]) : null;
+    const released = caps.length > 1 ? State.releasePrisoner(S, caps[1]) : null;
+    return {
+      everSpoils,
+      itemized: (res.fieldSpoils || []).every((x) => x.kind && x.id),
+      capCount: caps.length,
+      inTruck,
+      pressed,
+      rosterGrew: S.roster.length === rosterBefore + (pressed ? 1 : 0),
+      released,
+      leftInTruck: S.prisoners.length,
+    };
+  });
+  // Every fight strips SOMETHING — that is the loot page's reason to exist.
+  expect(r.everSpoils).toBe(true);
+  expect(r.itemized).toBe(true);
+  // Within sixteen tries somebody must have thrown down their weapon.
+  expect(r.capCount).toBeGreaterThan(0);
+  expect(r.inTruck).toBe(true);
+  expect(r.pressed).toBe(true);
+  expect(r.rosterGrew).toBe(true);
+  if (r.released !== null) expect(r.released).toBe(true);
+});
+
 test('a siege wall genuinely stops you until the gate goes', async ({ page }) => {
   await boot(page);
   await newCampaign(page);

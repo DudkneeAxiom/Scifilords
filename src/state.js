@@ -1780,9 +1780,17 @@ export function applyMissionResult(S, res) {
       // Stripped off the bodies: weapons and armour, scaled to how many fell.
       const sr = rng((S.seed + S.day * 977 + S.stats.missions * 13) | 0);
       const strip = Math.max(1, Math.round((party?.strength || 4) * 0.16));
+      res.fieldSpoils = res.fieldSpoils || [];
       for (let i = 0; i < strip; i++) {
-        if (sr() < 0.45) addSpoils(S, 'armoury', pick(sr, ['rifle', 'smg', 'shotgun', 'dmr']));
-        else addSpoils(S, 'armourPool', pick(sr, ARMOUR_LIST));
+        if (sr() < 0.45) {
+          const w = pick(sr, ['rifle', 'smg', 'shotgun', 'dmr']);
+          addSpoils(S, 'armoury', w);
+          res.fieldSpoils.push({ kind: 'weapon', id: w });
+        } else {
+          const a = pick(sr, ARMOUR_LIST);
+          addSpoils(S, 'armourPool', a);
+          res.fieldSpoils.push({ kind: 'armour', id: a });
+        }
       }
       notes.push({
         tone: 'good',
@@ -1792,14 +1800,17 @@ export function applyMissionResult(S, res) {
       // Survivors who threw down their weapons.
       if (spoils.prisoners > 0) {
         const pr = rng((S.seed + S.day * 61 + S.stats.missions) | 0);
+        res.captives = res.captives || [];
         for (let i = 0; i < spoils.prisoners; i++) {
           const captiveOf = party?.faction || null;
-          S.prisoners.push(Object.assign(makeSoldier(pr, {
+          const cap = Object.assign(makeSoldier(pr, {
             role: pick(pr, ['rifleman', 'rifleman', 'breacher', 'marksman']),
             how: `Taken prisoner on the road, day ${S.day}`,
             day: S.day,
             avoid: S.roster.map((x) => x.name),
-          }), { captiveFaction: captiveOf }));
+          }), { captiveFaction: captiveOf });
+          S.prisoners.push(cap);
+          res.captives.push(cap.id);
         }
         notes.push({
           tone: 'good',
