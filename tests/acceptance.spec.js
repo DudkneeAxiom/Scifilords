@@ -5299,6 +5299,25 @@ test('the tactical camera commands the squad, and the commander is a unit too', 
     const after = m.playerAuto
       ? Math.hypot(m.playerAuto.x - p.x, m.playerAuto.z - p.z)
       : Math.hypot(dest.x - p.x, dest.z - p.z);
+    // Route AROUND, not through: order the commander to a point on the far
+    // side of a solid block. The straight line is blocked, so only the
+    // squad's A* gets them there — a wall-slider stalls against the face.
+    const wall = m.level.obstacles.find((o) => (o.coverH ?? o.h) > 1.7
+      && o.hw > 1.2 && Math.hypot(o.x - p.x, o.z - p.z) < 30
+      && Math.hypot(o.x - p.x, o.z - p.z) > 6);
+    let routed = null;
+    if (wall) {
+      const dx = wall.x - p.x, dz = wall.z - p.z;
+      const dd = Math.hypot(dx, dz) || 1;
+      const raw = {
+        x: wall.x + (dx / dd) * (wall.hw + 3.5),
+        z: wall.z + (dz / dd) * (wall.hd + 3.5),
+      };
+      const safe = m.safeSpawn(raw.x, raw.z);
+      m.playerAuto = { x: safe.x, z: safe.z };
+      for (let i = 0; i < 500; i++) m.updatePlayer(0.05);
+      routed = Math.hypot(safe.x - p.x, safe.z - p.z);
+    }
     // Self-defense: the commander is not a mannequin while you command.
     // Park an enemy in front of them; they face it and return fire on their
     // own, through the same AI path the rest of the company uses.
@@ -5309,7 +5328,7 @@ test('the tactical camera commands the squad, and the commander is a unit too', 
     for (let i = 0; i < 240; i++) m.updatePlayer(0.05);
     const defended = m.stats.shotsFired > shotsBefore;
     m.toggleTactical();
-    return { on, hudFlag, boxed, ordered, auto, before, after, defended, off: !m.rts };
+    return { on, hudFlag, boxed, ordered, auto, before, after, routed, defended, off: !m.rts };
   });
   expect(r.on).toBe(true);
   expect(r.hudFlag).toBe(true);
@@ -5322,6 +5341,8 @@ test('the tactical camera commands the squad, and the commander is a unit too', 
   expect(r.auto).toBeLessThan(5);
   // And the commander's body obeys the board: walked to (or into) the point.
   expect(r.after).toBeLessThan(Math.max(2, r.before - 5));
+  // Ordered behind a solid block, they route around it and arrive.
+  if (r.routed !== null) expect(r.routed).toBeLessThan(4);
   // Left alone under fire, they defend themselves.
   expect(r.defended).toBe(true);
   expect(r.off).toBe(true);

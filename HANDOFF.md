@@ -667,7 +667,12 @@ Open, in rough priority order:
    `worldToScreen`/`screenToGround` must `camera.updateMatrixWorld()` first
    (a posed-but-unrendered camera projects a frame stale — the acceptance
    test caught it); the pit refuses the mode (no squad, and the crowd does
-   not take orders); the reticle hides via `hud.tactical`.
+   not take orders); the reticle hides via `hud.tactical`. The commander's
+   auto-walk goes through `moveToward()` — the squad's NavGrid A*, corner
+   waypoints, local avoidance — not a straight line; `p.path`/`p.pathGoal`
+   are cleared on arrival AND on manual-WASD cancel, or the next order
+   reuses a stale route. `lastX` is snapshotted for every entity before
+   updatePlayer, so `faceMotion` works for the player too.
 
 ---
 
