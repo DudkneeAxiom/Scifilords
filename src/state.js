@@ -579,6 +579,31 @@ function availableLord(S, r, faction) {
 }
 
 /**
+ * The lord a faction trusts with its wars.
+ *
+ * M&B's marshal: one name the offensives belong to, so a war reads as
+ * somebody's campaign rather than a weather system. Held until captured or
+ * turned; the writ then moves, and the log says where. Preference goes to
+ * the record — wins over defeats — with a thumb on the scale for martial
+ * temperaments, because factions promote the people who want the job.
+ */
+export function marshalOf(S, faction) {
+  S.marshals = S.marshals || {};
+  const cur = lordById(S, S.marshals[faction]);
+  if (cur && cur.faction === faction && !cur.captured) return cur;
+  const pool = (S.lords || []).filter((l) => l.faction === faction && !l.captured);
+  if (!pool.length) return null;
+  const score = (l) => (l.wins || 0) - (l.defeats || 0) + (temperOf(l).odds < 1 ? 2 : 0);
+  pool.sort((a, b) => score(b) - score(a) || (a.id < b.id ? -1 : 1));
+  const had = S.marshals[faction];
+  S.marshals[faction] = pool[0].id;
+  if (had !== pool[0].id) {
+    pushLog(S, `${pool[0].name} carries the marshal's writ for ${FACTIONS[faction]?.name || faction} now.`, 'world');
+  }
+  return pool[0];
+}
+
+/**
  * What happens to a commander whose column is gone.
  *
  * Never simply deleted. A lord who dies every time their party is beaten makes
@@ -909,6 +934,7 @@ function onNewDay(S, r) {
   // an unrelated test failing intermittently rather than as anything obviously
   // to do with the new code.
   tickWar(S, rng((S.seed ^ 0x7717) + S.day * 3301));
+  tickArmies(S, rng((S.seed ^ 0x3f2b) + S.day * 769));
   tickManpower(S, rng((S.seed ^ 0x2b19) + S.day * 4409));
   tickTorching(S, rng((S.seed ^ 0x70c4) + S.day * 947));
   tickFactionRecruiting(S, rng((S.seed ^ 0x51ad) + S.day * 5171));
@@ -1429,6 +1455,34 @@ function moveParties(S, hours, r) {
         p.heading = Math.atan2(dx, dz);
       }
       continue;
+    }
+
+    // A warband answering the marshal's call: it rides for the column, and
+    // on contact it stops being a party and starts being part of an army.
+    if (p.joinArmy) {
+      const col = S.parties.find((x) => x.id === p.joinArmy);
+      if (!col || !col.siegeTarget) {
+        p.joinArmy = null;                    // the column is gone or done
+      } else {
+        const dx = col.x - p.x, dz = col.z - p.z;
+        const d = Math.hypot(dx, dz);
+        if (d < 22) {
+          col.strength += p.strength;
+          if (col.army) col.army.merged += p.strength;
+          if (p.lordId) {
+            const l = lordById(S, p.lordId);
+            if (l) l.freeDay = S.day;         // rides inside the column now
+          }
+          pushLog(S, `${p.name} folded into ${col.name}.`, 'info');
+          S.parties = S.parties.filter((x) => x !== p);
+        } else {
+          const step = Math.min(d, p.speed * hours);
+          p.x += (dx / d) * step;
+          p.z += (dz / d) * step;
+          p.heading = Math.atan2(dx, dz);
+        }
+        continue;
+      }
     }
 
     // An escorted convoy: one road, one destination, pay on delivery. It is
@@ -4136,9 +4190,12 @@ function tryCapture(S, r, attacker, defender) {
   // Somebody has to be left to lose it. A faction reduced to one place keeps it
   // — being wiped off the map entirely takes the player's contracts with it.
   if (!mine.length || theirs.length <= 1) return null;
-  // One offensive at a time per faction. Without this a long war stacks columns
-  // until the map is nothing but armies.
-  if (S.parties.some((p) => p.siegeTarget && p.faction === attacker)) return null;
+  // One offensive at a time per faction — TWO for a faction broad enough to
+  // staff two commands. Without a cap a long war stacks columns until the map
+  // is nothing but armies; without the second column a big faction's war
+  // never looks any bigger than a small one's.
+  const columns = S.parties.filter((p) => p.siegeTarget && p.faction === attacker).length;
+  if (columns >= (mine.length >= 4 ? 2 : 1)) return null;
 
   let best = null, bd = Infinity, from = null;
   for (const t of theirs) {
@@ -4163,6 +4220,16 @@ function tryCapture(S, r, attacker, defender) {
   // the field in ranks through the mission's wave streaming. On the map it
   // fights the same durational battles as everything else, just for longer.
   col.strength = Math.round(col.strength * range(r, 3.2, 4.6));
+  // The faction's wars belong to its marshal. If the writ-holder is free to
+  // take the field, this column is theirs, whoever the muster first named.
+  const marshal = marshalOf(S, attacker);
+  if (marshal && !S.parties.some((p) => p !== col && p.lordId === marshal.id)) {
+    if (col.lordId && col.lordId !== marshal.id) {
+      const stoodDown = lordById(S, col.lordId);
+      if (stoodDown) stoodDown.freeDay = S.day;
+    }
+    col.lordId = marshal.id;
+  }
   // The lord leading it raises the army their temperament deserves: a
   // martial lord marches heavy, a cautious one holds people back.
   const colLord = lordOfParty(S, col);
@@ -4172,7 +4239,22 @@ function tryCapture(S, r, attacker, defender) {
   col.siegeTarget = best.id;
   col.tx = best.x;
   col.tz = best.z;
-  col.name = `${FACTIONS[attacker]?.short || attacker} column`;
+  col.name = colLord && colLord.id === S.marshals?.[attacker]
+    ? `Marshal ${colLord.name}'s column`
+    : `${FACTIONS[attacker]?.short || attacker} column`;
+  // The call goes out: warbands already in the field ride to the column and
+  // fold into it on contact. What answers the call is what makes an army an
+  // army instead of a big patrol — and cohesion is the clock it marches on.
+  col.army = { cohesion: 100, merged: 0 };
+  let called = 0;
+  for (const p of S.parties) {
+    if (called >= 2) break;
+    if (p === col || p.faction !== attacker || p.siegeTarget || p.joinArmy) continue;
+    if (!(p.kind || '').startsWith('warband')) continue;
+    p.joinArmy = col.id;
+    called++;
+    pushLog(S, `${p.name} rides to join the column.`, 'info');
+  }
   pushLog(S, `${FACTIONS[attacker]?.name || attacker} is moving on ${best.name}.`,
     S.allegiance === defender ? 'bad' : 'info');
 
@@ -4368,6 +4450,31 @@ function tickRaids(S, r) {
     if (Math.hypot(loc.x - S.pos.x, loc.z - S.pos.z) < 420) {
       pushLog(S, `${p.name} took people off ${loc.name}.`, 'bad');
     }
+  }
+}
+
+/**
+ * Cohesion: the clock an army marches on.
+ *
+ * Bannerlord's rule, cut to this game's size — a gathered army is a
+ * perishable thing. Every day on the road spends some of the patience that
+ * holds it together; run dry before the siege lands and the called strength
+ * goes home, the offensive with it. Sieges here resolve in days, so the
+ * decay is steep: an army that dawdles for a week and a half is an army
+ * that was never going to take anything.
+ */
+export function tickArmies(S, r) {
+  for (const p of S.parties) {
+    if (!p.army) continue;
+    if (!p.siegeTarget) { p.army = null; continue; }
+    p.army.cohesion -= irange(r, 7, 13);
+    if (p.army.cohesion > 0) continue;
+    p.strength = Math.max(8, p.strength - p.army.merged);
+    pushLog(S, `${p.name} has come apart on the road — the called strength went home.`, 'info');
+    p.siegeTarget = null;
+    p.army = null;
+    for (const w of S.parties) if (w.joinArmy === p.id) w.joinArmy = null;
+    pickPartyTarget(S, r, p);
   }
 }
 

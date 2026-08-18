@@ -6531,3 +6531,67 @@ test('an army marches on more than ration blocks', async ({ page }) => {
   // Same six days, same wages, same water: the plate is the difference.
   expect(r.variedGain).toBeGreaterThan(r.plainGain + 10);
 });
+
+test('an army is a perishable thing: marshals, the call, and cohesion', async ({ page }) => {
+  await boot(page);
+  await newCampaign(page);
+  const r = await page.evaluate(() => {
+    const { State, DATA, makeRng } = window.KR.dev;
+    const S = window.KR.campaign;
+    // The writ goes to the record: wins, minus defeats, martial thumb on
+    // the scale — and it is sticky until the holder is taken.
+    S.lords = [];
+    S.marshals = {};
+    S.lords.push(
+      { id: 'l_a', name: 'Aldric Vane', faction: 'trust', temper: 'cautious', wins: 1, defeats: 0, captured: false, freeDay: 0 },
+      { id: 'l_b', name: 'Bern Halst', faction: 'trust', temper: 'martial', wins: 3, defeats: 1, captured: false, freeDay: 0 },
+      { id: 'l_c', name: 'Corvo Reyd', faction: 'trust', temper: 'martial', wins: 0, defeats: 4, captured: false, freeDay: 0 },
+    );
+    const m1 = State.marshalOf(S, 'trust');
+    const stable = State.marshalOf(S, 'trust');
+    S.lords.find((l) => l.id === m1.id).captured = true;
+    const m2 = State.marshalOf(S, 'trust');
+
+    // A called warband folds into the column on contact.
+    const far = DATA.LOCATIONS.find((l) => l.kind === 'settlement');
+    const col = {
+      id: 'p_col', kind: 'warband_trust', faction: 'trust', name: 'Test column',
+      x: 1000, z: 1000, tx: far.x, tz: far.z, speed: 0.01, strength: 100,
+      tier: 3, quality: 1, armour: 0, vehicles: 0, baseHostile: false,
+      hostileToPlayer: false, target: null, home: null, heading: 0,
+      siegeTarget: far.id, army: { cohesion: 100, merged: 0 },
+    };
+    const wb = {
+      id: 'p_wb', kind: 'warband_trust', faction: 'trust', name: 'Answering warband',
+      x: 1030, z: 1000, speed: 6, strength: 40, tier: 3, quality: 1, armour: 0,
+      vehicles: 0, baseHostile: false, hostileToPlayer: false, target: null,
+      home: null, heading: 0, joinArmy: 'p_col',
+    };
+    S.parties.push(col, wb);
+    State.advanceTime(S, 6);
+    State.advanceTime(S, 6);
+    const merged = {
+      strength: col.strength, army: col.army ? col.army.merged : -1,
+      gone: !S.parties.some((p) => p.id === 'p_wb'),
+    };
+
+    // Run the clock out: the called strength goes home, the offensive dies.
+    col.army = { cohesion: 5, merged: col.army.merged };
+    State.tickArmies(S, makeRng(31));
+    const spent = { strength: col.strength, off: col.siegeTarget, army: col.army };
+    S.parties = S.parties.filter((p) => p.id !== 'p_col');
+    return {
+      m1: m1.id, stable: stable.id, m2: m2.id,
+      merged, spent,
+    };
+  });
+  expect(r.m1).toBe('l_b');
+  expect(r.stable).toBe('l_b');
+  expect(r.m2).toBe('l_a');
+  expect(r.merged.gone).toBe(true);
+  expect(r.merged.strength).toBe(140);
+  expect(r.merged.army).toBe(40);
+  expect(r.spent.strength).toBe(100);
+  expect(r.spent.off).toBe(null);
+  expect(r.spent.army).toBe(null);
+});
