@@ -2706,12 +2706,12 @@ export function spoilsPanel(S, result, { onClose }) {
     const body = `
       <div class="prose">The field is quiet. What the enemy carried is yours
         to sort — kit goes on the truck, and the people go where you say.</div>
-      <div class="section-title">FROM THE ENEMY SUPPLY — ${spoils.length} PIECES</div>
+      <div class="section-title">FROM THE ENEMY SUPPLY — ${spoils.length} ${spoils.length === 1 ? 'PIECE' : 'PIECES'}</div>
       ${spoils.length ? `<div class="spoils-grid">${Object.entries(counts).map(([id, n]) =>
     `<div class="note good">${esc(id.toUpperCase())}${n > 1 ? ` ×${n}` : ''}</div>`).join('')}</div>
       <div class="hint">Loaded on the truck. Fit it to the company from the EQUIPMENT screen.</div>`
     : '<div class="empty">NOTHING WORTH STRIPPING</div>'}
-      <div class="section-title">PRISONERS TAKEN — ${caps.length}</div>
+      <div class="section-title">${caps.length === 1 ? 'PRISONER' : 'PRISONERS'} TAKEN — ${caps.length}</div>
       ${caps.length ? caps.map((p) => `<div class="pris">
         <span class="pris-name">${esc(p.name)}</span>
         <span class="pris-role">${esc(p.role || '')}${p.captiveFaction ? ` — ${esc(p.captiveFaction)}` : ''}</span>
