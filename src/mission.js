@@ -868,8 +868,13 @@ export class Mission {
       const ent = this.spawnEntity({
         id: s.id, side: 'player', soldier: s, faction: 'player',
         x: sp.x + a, z: sp.z + 2.4, yaw: face, hp: s.hp, weapon: s.weapon,
-        // A soldier looks like the people who raised them.
-        model: ORIGINS[s.origin]?.model || 'soldier_bracket',
+        // A soldier looks like the people who TRAINED them: a pressed Trust
+        // regular keeps Trust kit under your amber ring, which is exactly
+        // how you tell your drilled troops from your scrappers at a glance.
+        // No lineage, and they look like the people who raised them.
+        model: s.lineage === 'trust' ? 'soldier_trust'
+          : s.lineage === 'syndic' ? 'soldier_syndic'
+            : (ORIGINS[s.origin]?.model || 'soldier_bracket'),
         // Morale reaches the field.
         //
         // It decided desertion and nothing else, so a company on the edge of

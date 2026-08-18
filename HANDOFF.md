@@ -813,6 +813,19 @@ Open, in rough priority order:
    the garrison's stairs outside their own wall); and test staging that
    holds W after a mount walks straight across and off the far side.
 
+**Troop lineage** (this session). Mount & Blade's troop trees, this
+   game's way: `s.lineage` (trust/syndic/raider) is whose army TRAINED a
+   soldier. Pressed prisoners keep `captiveFaction` as lineage (that
+   doctrine is most of why pressing is worth the morale hit); recruits at
+   a faction-held town carry the holder's writ (`recruitPool`, keyed on
+   `ownerOf`, majors only — free towns train nobody). Doctrine lands in
+   `effective()` via `lineageMod` + the LINEAGES table in roster.js:
+   Trust-drilled +.05 acc/+.18 cover, Syndic muster +6% speed/+.12
+   aggression/−.05 cover, raider stock −.02 acc/+4% speed/+.15 closeDmg.
+   On the field a lineaged soldier wears their trainer's kit (mission
+   spawn model override — your amber ring is the side signal, the uniform
+   is the training signal), and the roster card shows the lineage badge.
+
 ---
 
 ## The summary artifact

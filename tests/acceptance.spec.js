@@ -5855,3 +5855,52 @@ test('verticality: the player mounts a crate, and ordered troops climb the wall 
   expect(r.walker.dist).toBeLessThan(4);
   expect(r.walker.elev).toBeGreaterThan(4);
 });
+
+test('lineage: pressed troops keep their training, recruits carry their town writ', async ({ page }) => {
+  await boot(page);
+  await newCampaign(page);
+  const r = await page.evaluate(async () => {
+    const { State, DATA } = window.KR.dev;
+    const Roster = await import('/src/roster.js');
+    const S = window.KR.campaign;
+    // A pressed Trust prisoner is Trust-drilled.
+    S.prisoners = [];
+    const { rng } = await import('/src/util.js');
+    const rr = rng(77);
+    const cap = Roster.makeSoldier(rr, { role: 'rifleman' });
+    cap.captiveFaction = 'trust';
+    cap.id = 'lin_test';
+    S.prisoners.push(cap);
+    State.pressPrisoner(S, 'lin_test');
+    const pressed = S.roster.find((x) => x.id === 'lin_test');
+    // Doctrine reaches the numbers: same soldier, with and without lineage.
+    const withL = Roster.effective(pressed);
+    const stash = pressed.lineage;
+    pressed.lineage = null;
+    const withoutL = Roster.effective(pressed);
+    pressed.lineage = stash;
+    // A Syndic muster walks faster than the same body untrained.
+    pressed.lineage = 'syndic';
+    const syndic = Roster.effective(pressed);
+    pressed.lineage = stash;
+    // Recruits at a Trust-held town carry the writ.
+    const town = DATA.LOCATIONS.find((l) => l.kind === 'settlement'
+      && State.ownerOf(S, l.id) === 'trust');
+    S.relations = S.relations || {};
+    S.relations[town.id] = 60;
+    const pool = State.recruitPool(S, town.id);
+    return {
+      lineage: pressed.lineage,
+      accGain: withL.accuracy - withoutL.accuracy,
+      coverGain: withL.cover - withoutL.cover,
+      speedGain: syndic.speed - withoutL.speed,
+      poolLineages: pool.map((s) => s.lineage),
+    };
+  });
+  expect(r.lineage).toBe('trust');
+  expect(r.accGain).toBeCloseTo(0.05, 2);
+  expect(r.coverGain).toBeCloseTo(0.18, 2);
+  expect(r.speedGain).toBeGreaterThan(0.1);
+  expect(r.poolLineages.length).toBeGreaterThan(0);
+  expect(r.poolLineages.every((l) => l === 'trust')).toBe(true);
+});

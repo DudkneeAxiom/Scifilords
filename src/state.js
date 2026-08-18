@@ -2184,9 +2184,13 @@ export function recruitPool(S, locId) {
       origin: originId,
       avoid: [...S.roster.map((x) => x.name), ...pool.map((x) => x.name)],
     });
-    // They arrive wearing what their people issue.
+    // They arrive wearing what their people issue — and trained the way the
+    // town's holder trains: a recruit raised under Trust writ is
+    // Trust-drilled, under Syndic writ a Syndic muster. Free towns and
+    // scrapper country train nobody in particular.
     if (origin.kit.armour) s.equip.body = origin.kit.armour;
     if (origin.kit.head) s.equip.head = origin.kit.head;
+    if (holderOfHere === 'trust' || holderOfHere === 'syndic') s.lineage = holderOfHere;
     s.maxHp = maxHpOf(s);
     s.hp = s.maxHp;
     pool.push(s);
@@ -2234,6 +2238,9 @@ export function pressPrisoner(S, id) {
   const [p] = S.prisoners.splice(i, 1);
   p.how = `Pressed into service, day ${S.day}`;
   p.pressed = true;
+  // They keep their training. A pressed Trust regular is still Trust-drilled
+  // — that doctrine is most of why pressing them is worth the morale hit.
+  if (p.captiveFaction && !p.lineage) p.lineage = p.captiveFaction;
   S.roster.push(p);
   S.stats.recruited++;
   // Nobody likes serving next to somebody who was shooting at them last week.

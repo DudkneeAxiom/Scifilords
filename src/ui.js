@@ -15,7 +15,7 @@ import {
 import {
   portrait, label, rankOf, roleOf, weaponOf, effective, STATUS, woundInfo,
   deployable, choosePerk, awaitingPerk, ladder, armourRating, originOf,
-  creedOf, regardTier,
+  creedOf, regardTier, LINEAGES,
 } from './roster.js';
 import { SOLDIER_PERKS, COMMANDER_PERKS, perkDef, companyMods } from './perks.js';
 import * as Dip from './diplomacy.js';
@@ -1940,7 +1940,7 @@ function solRow(s) {
     <div class="sol-main">
       <div class="sol-name"><span class="rk">${rk.abbr}</span>${esc(s.name)}${s.isCommander ? ' <span class="dim">— you</span>' : ''}
         ${s.pendingPerks?.length ? '<span class="pending">PROMOTION PENDING</span>' : ''}</div>
-      <div class="sol-meta">${r.name.toUpperCase()} · ${esc(weaponOf(s).abbr)}${s.kit ? ` · ${esc(KIT[s.kit].abbr)}` : ''}${traits ? ` · ${traits}` : ''}</div>
+      <div class="sol-meta">${r.name.toUpperCase()} · ${esc(weaponOf(s).abbr)}${s.kit ? ` · ${esc(KIT[s.kit].abbr)}` : ''}${s.lineage && LINEAGES[s.lineage] ? ` · <span class="lineage">${LINEAGES[s.lineage].name}</span>` : ''}${traits ? ` · ${traits}` : ''}</div>
       ${(() => {
     // A companion is an officer: what they do for the whole company sits on
     // their card, because that effect is why the fee was worth paying.

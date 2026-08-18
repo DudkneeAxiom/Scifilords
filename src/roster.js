@@ -106,6 +106,36 @@ function originMod(s, key) {
   return o && o.mods[key] ? o.mods[key] : 0;
 }
 
+/**
+ * Lineage: whose army trained this soldier before they were yours.
+ *
+ * Mount & Blade's troop trees, in this game's terms. A pressed Trust
+ * prisoner was DRILLED — they shoot straighter and use cover like they were
+ * taught to; a Syndic muster walks fast and presses hard; raider stock is
+ * ragged at range and vicious up close. Recruits carry the doctrine of the
+ * faction that holds their town; scrappers and free towns train nobody in
+ * particular. The roster badge is LINEAGES[id].name.
+ */
+export const LINEAGES = {
+  trust: {
+    id: 'trust', name: 'TRUST-DRILLED',
+    mods: { acc: 0.05, cover: 0.18 },
+  },
+  syndic: {
+    id: 'syndic', name: 'SYNDIC MUSTER',
+    mods: { speed: 0.06, aggression: 0.12, cover: -0.05 },
+  },
+  raider: {
+    id: 'raider', name: 'RAIDER STOCK',
+    mods: { acc: -0.02, speed: 0.04, closeDmg: 0.15, cover: -0.1 },
+  },
+};
+
+function lineageMod(s, key) {
+  const l = s.lineage && LINEAGES[s.lineage];
+  return l && l.mods[key] ? l.mods[key] : 0;
+}
+
 export const originOf = (s) => ORIGINS[s.origin] || ORIGINS.free;
 // Soldiers saved before creeds existed have neither field. They read as
 // professionals who feel nothing in particular, which is a fair description of
@@ -157,16 +187,18 @@ export function effective(s, company = null) {
   // Scarred soldiers no longer shoot worse for being hurt.
   const woundAcc = hasPerk(s, 'scarred') ? 0 : (w?.acc || 0);
   const speedMul = 1 + traitSum(s, 'speed') + perkMod(s, 'speed')
-    + kitMod(s, 'speed') + originMod(s, 'speed') + (w?.speed || 0);
+    + kitMod(s, 'speed') + originMod(s, 'speed') + lineageMod(s, 'speed') + (w?.speed || 0);
   return {
     accuracy: clamp(
       role.accuracy + rank.accBonus + traitSum(s, 'acc') + perkMod(s, 'acc')
-      + kitMod(s, 'acc') + originMod(s, 'acc') + woundAcc + (company?.squadAcc || 0), 0.12, 0.97),
-    aggression: role.aggression,
+      + kitMod(s, 'acc') + originMod(s, 'acc') + lineageMod(s, 'acc')
+      + woundAcc + (company?.squadAcc || 0), 0.12, 0.97),
+    aggression: clamp(role.aggression + lineageMod(s, 'aggression'), 0.1, 1),
     speed: clamp(4.2 * speedMul, 1.6, 7.5),
     sight: 55 + traitSum(s, 'sight') + perkMod(s, 'sight')
       + kitMod(s, 'sight') + originMod(s, 'sight') + (company?.squadSight || 0),
-    cover: 0.35 + traitSum(s, 'cover') + perkMod(s, 'cover') + originMod(s, 'cover'),
+    cover: 0.35 + traitSum(s, 'cover') + perkMod(s, 'cover') + originMod(s, 'cover')
+      + lineageMod(s, 'cover'),
     coverRange: 9 + perkMod(s, 'coverRange'),
     luck: traitSum(s, 'luck') + perkMod(s, 'luck') + originMod(s, 'luck'),
     // 0 = fully affected by suppressing fire, 1 = immune.
@@ -174,7 +206,7 @@ export function effective(s, company = null) {
       + (company?.squadSuppressResist || 0), 0, 0.92),
     suppressPower: 1 + perkMod(s, 'suppressPower') + (company?.squadSuppress || 0),
     rangeAcc: perkMod(s, 'rangeAcc'),
-    closeDmg: perkMod(s, 'closeDmg'),
+    closeDmg: perkMod(s, 'closeDmg') + lineageMod(s, 'closeDmg'),
     reloadMul: 1 * (hasPerk(s, 'quickdraw') ? 0.65 : 1),
     magMul: 1 + (perkMod(s, 'magMul') ? perkMod(s, 'magMul') - 1 : 0)
       + (kitMod(s, 'magMul') ? kitMod(s, 'magMul') - 1 : 0),
