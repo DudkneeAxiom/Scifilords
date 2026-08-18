@@ -1,7 +1,17 @@
 # Handoff
 
-Current as of the town-rebuild round (the commit carrying this file),
-**100/100 acceptance tests passing**. Pushed history lives at
+Current as of the world-map development pass (the commit carrying this
+file), **100/100 acceptance tests passing**. The strategic layer is now a
+living campaign space: an irregular carved rim with the world continuing
+beyond it, interior ridge walls whose passes are the roads, durational
+NPC-vs-NPC battles with reinforcement and join-able arrivals, events with
+lifetimes (distress signals, old-regime transponders, lootable
+battlefields), predation that makes parties MEET, contact intel with
+fuzzy estimates and intents, and six new locations including three
+faction pickets. tools/mapsoak.mjs plays all of it through the real UI
+and steers at whatever blinks; the pulse probe pattern (2-hour cadence,
+never 24-hour snapshots — they hide battles whole) is how the world's
+rhythm is read. Pushed history lives at
 <https://github.com/DudkneeAxiom/Scifilords>; push only when asked.
 
 The last long session was almost entirely strategic-layer work, aimed at making
