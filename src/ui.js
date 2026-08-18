@@ -2077,6 +2077,9 @@ export function favourPanel(S, loc, cbs) {
     : `<div class="prose dim mt">Turning them down costs nothing. Agreeing and then not
        coming back costs ten points of standing in ${esc(loc.name)}.</div>`}`;
 
+  // A training favour is worked here, a session a day, rather than handed in
+  // from the truck — so its panel grows a verb of its own.
+  const canDrill = f.accepted && f.kind === 'train' && !prog.ready;
   modal({
     title: 'A WORD WITH YOU',
     tag: `${esc(loc.name.toUpperCase())} · ${rel > 0 ? '+' : ''}${Math.round(rel)}`,
@@ -2085,6 +2088,7 @@ export function favourPanel(S, loc, cbs) {
       ? (prog.ready ? '<button class="btn btn-major" data-x="hand">HAND IT OVER</button>' : '')
       : `<button class="btn btn-major" data-x="take">AGREE</button>
          <button class="btn" data-x="decline">NOT THIS TIME</button>`}
+      ${canDrill ? '<button class="btn btn-major" data-x="drill">DRILL THE LOCALS (6H)</button>' : ''}
       <button class="btn" data-x="close">BACK</button>`,
     onClose: cbs.onClose,
   });
@@ -2092,10 +2096,61 @@ export function favourPanel(S, loc, cbs) {
     close: onCloseWrap(cbs.onClose),
     take: () => { State.acceptFavour(S, loc.id); Audio.uiSelect(); cbs.onDone(); },
     decline: () => { State.declineFavour(S, loc.id); Audio.uiBack(); cbs.onDone(); },
+    drill: () => {
+      const res = State.runDrill(S, loc.id);
+      if (res?.ran) { State.advanceTime(S, 6); Audio.uiSelect(); }
+      else if (res) toast('THE YARD', res.why, '');
+      cbs.onDone();
+    },
     hand: () => {
       const res = State.completeFavour(S, loc.id);
       Audio.deployTone();
       if (res) toast('FAVOUR DONE', `${res.who} paid ${res.pay}`, 'good');
+      cbs.onDone();
+    },
+  });
+}
+
+/**
+ * The debtor's side of a debt favour: a doorstep conversation in somebody
+ * else's town. Asking is free; what it costs to insist is written on the
+ * button that insists.
+ */
+export function debtPanel(S, loc, cbs) {
+  const f = State.debtorApproach(S, loc.id);
+  if (!f) { cbs.onClose?.(); return; }
+  const body = `
+    <div class="fav-who">
+      <span class="fw-name">${esc(f.debtor)}</span>
+      <span class="fw-role">owes ${f.amount} to ${esc(f.who)}</span>
+    </div>
+    <div class="prose fav-ask">They know why you are here. Everyone on this
+    street knows why you are here.</div>
+    <div class="fav-terms">
+      <div><span class="lbl">YOUR CUT</span><span class="val">${f.pay}</span></div>
+      <div><span class="lbl">PRESSING COSTS</span><span class="val bad">-8 here</span></div>
+    </div>`;
+  modal({
+    title: 'CALLING IN A DEBT',
+    tag: esc(loc.name.toUpperCase()),
+    body,
+    foot: `<button class="btn btn-major" data-x="ask">ASK FOR THE MONEY</button>
+      <button class="btn btn-warn" data-x="press">TAKE IT ANYWAY</button>
+      <button class="btn" data-x="close">LEAVE IT</button>`,
+    onClose: cbs.onClose,
+  });
+  wire({
+    close: onCloseWrap(cbs.onClose),
+    ask: () => {
+      const res = State.collectDebt(S, loc.id);
+      if (res?.paid) { Audio.deployTone(); toast('PAID UP', `${f.debtor} handed over the ${f.amount}`, 'good'); }
+      else { Audio.uiBack(); toast('NOT TODAY', `${f.debtor} pleads poverty. Press, or come back with more of a name.`, ''); }
+      cbs.onDone();
+    },
+    press: () => {
+      State.pressDebt(S, loc.id);
+      Audio.deployTone();
+      toast('COLLECTED', `The town watched you do it`, 'bad');
       cbs.onDone();
     },
   });
@@ -2179,6 +2234,10 @@ export function settlementMenu(S, loc, cbs) {
     else if (prog.ready) verb('favour', `Report to ${esc(fav.who)}`, 'They are waiting', 'major');
     else verb('favour', `Call on ${esc(fav.who)}`, esc(prog.note));
   }
+  // A debt favour puts a doorstep in ANOTHER town: the debtor's, not the
+  // creditor's. If they live here, the door is on the list.
+  const debt = State.debtorApproach(S, loc.id);
+  if (debt) verb('debt', `Find ${esc(debt.debtor)}`, `They owe ${debt.amount} to ${esc(debt.who)}`, 'warn');
   // On foot, Mount-and-Blade style: the same town the company would fight
   // over, walked as a place, with the services standing where the layout put
   // them. Only offered where the layout has authored streets to walk.

@@ -2757,7 +2757,10 @@ export const favourAt = (S, locId) => (S.favours || {})[locId] || null;
 const favourText = (f, key) => (f[key] || '')
   .replace(/%WHO%/g, f.who)
   .replace(/%QTY%/g, f.qty || '')
-  .replace(/%GOOD%/g, f.good ? GOODS[f.good].name.toLowerCase() : '');
+  .replace(/%GOOD%/g, f.good ? GOODS[f.good].name.toLowerCase() : '')
+  .replace(/%TO%/g, f.to ? locName(f.to) : '')
+  .replace(/%DEBTOR%/g, f.debtor || '')
+  .replace(/%AMT%/g, f.amount || '');
 
 /**
  * Ask one of the named people in a settlement for something.
@@ -2766,7 +2769,7 @@ const favourText = (f, key) => (f[key] || '')
  * actually lives there — a favour from a stranger is just a contract with worse
  * pay. There is a cooldown after each one so a town does not become a queue.
  */
-export function offerFavour(S, locId, r) {
+export function offerFavour(S, locId, r, lord = null) {
   if (!S.favours) S.favours = {};
   if (S.favours[locId]) return S.favours[locId];
   if ((S.favourCooldown?.[locId] || 0) > S.day) return null;
@@ -2791,8 +2794,41 @@ export function offerFavour(S, locId, r) {
     f.qty = irange(r, 3, 7);
     // Worth rather more than the goods, because you are also carrying them.
     f.pay = Math.round(GOODS[f.good].base * f.qty * range(r, 1.15, 1.5));
+  } else if (tpl.kind === 'deliver' || tpl.kind === 'debt') {
+    // Both need a second town: somewhere to carry to, or somewhere the
+    // debtor is keeping their head down.
+    const there = LOCATIONS.filter((l) => l.id !== locId
+      && l.kind === 'settlement' && l.services?.length && l.contacts?.length);
+    if (!there.length) return null;
+    const dest = pick(r, there);
+    f.to = dest.id;
+    if (tpl.kind === 'deliver') {
+      f.qty = irange(r, 2, 5);
+      // Paid by the mile, roughly — a run across the Reach is worth more
+      // than a run up the road.
+      const dist = Math.hypot(dest.x - loc.x, dest.z - loc.z);
+      f.pay = Math.round(500 + dist * range(r, 1.1, 1.6));
+    } else {
+      f.debtor = pick(r, dest.contacts).name;
+      f.amount = Math.round(range(r, 600, 1100));
+      // Your cut, and it is a cut — the debt is not yours to keep.
+      f.pay = Math.round(f.amount * range(r, 0.4, 0.55));
+    }
+  } else if (tpl.kind === 'train') {
+    f.qty = irange(r, 2, 3);
+    f.need = f.qty;
+    f.pay = Math.round(range(r, 500, 850));
   } else {
     f.pay = Math.round(range(r, 700, 1200));
+  }
+  // A lord holding court here sometimes puts the ask forward themselves.
+  // Same work, better pay, and the person remembering is somebody whose
+  // memory moves armies.
+  if (lord && r() < 0.4) {
+    f.who = lord.name;
+    f.role = 'holding court';
+    f.lordId = lord.id;
+    f.pay = Math.round(f.pay * 1.5);
   }
   S.favours[locId] = f;
   return f;
@@ -2820,11 +2856,109 @@ export function favourProgress(S, f) {
       note: `${have} of ${f.qty} ${GOODS[f.good].name.toLowerCase()} in the truck`,
     };
   }
+  if (f.kind === 'deliver') {
+    // Pays out at the far end, not back here — so at the origin this only
+    // ever reads as "on the road".
+    return { ready: false, note: `${f.qty} crates bound for ${locName(f.to)}` };
+  }
+  if (f.kind === 'debt') {
+    return {
+      ready: !!f.collected,
+      note: f.collected ? 'The debt is in hand' : `${f.debtor} is at ${locName(f.to)}`,
+    };
+  }
+  if (f.kind === 'train') {
+    const done = f.trained || 0;
+    return {
+      ready: done >= f.need,
+      note: done >= f.need ? 'The locals will hold' : `${done} of ${f.need} drill sessions run`,
+    };
+  }
   const cleared = (S.stats.lairsCleared || 0) - (f.mark || 0);
   return {
     ready: cleared > 0,
     note: cleared > 0 ? 'The camp is cleared' : 'No camp cleared since you agreed',
   };
+}
+
+/**
+ * The travelling half of the new favours, checked on every arrival.
+ *
+ * A delivery hands itself in the moment you reach the destination — pay on
+ * the spot, standing at the origin, a nod at this end. Nobody drives back
+ * across the Reach to be told well done.
+ */
+export function arrivalFavours(S, locId) {
+  const out = [];
+  for (const [origin, f] of Object.entries(S.favours || {})) {
+    if (!f.accepted || f.kind !== 'deliver' || f.to !== locId) continue;
+    S.credits += f.pay;
+    S.renown = (S.renown || 0) + 12;
+    changeRelation(S, origin, 14, `a delivery for ${f.who}`);
+    changeRelation(S, locId, 4, 'crates that arrived sealed');
+    if (f.lordId) {
+      const lord = lordById(S, f.lordId);
+      if (lord) lord.regard = clamp((lord.regard || 0) + 2, -10, 10);
+    }
+    S.stats.favours = (S.stats.favours || 0) + 1;
+    pushLog(S, favourText(f, 'done'), 'good');
+    delete S.favours[origin];
+    if (!S.favourCooldown) S.favourCooldown = {};
+    S.favourCooldown[origin] = S.day + 6;
+    out.push({ pay: f.pay, who: f.who, from: origin });
+  }
+  return out;
+}
+
+/** The accepted debt favour whose debtor lives at this town, if any. */
+export function debtorApproach(S, locId) {
+  for (const f of Object.values(S.favours || {})) {
+    if (f.accepted && f.kind === 'debt' && f.to === locId && !f.collected) return f;
+  }
+  return null;
+}
+
+/**
+ * Ask the debtor for the money. Whether they pay depends on how big your
+ * name is and how this town feels about you — a company the town likes is
+ * a company the debtor cannot pretend not to have heard of. Deterministic
+ * per favour per day, so asking twice in one sitting is not a slot machine.
+ */
+export function collectDebt(S, locId) {
+  const f = debtorApproach(S, locId);
+  if (!f) return null;
+  let h = 0;
+  for (let i = 0; i < f.id.length; i++) h = (h * 31 + f.id.charCodeAt(i)) | 0;
+  const roll = rng((S.seed ^ Math.abs(h)) + S.day * 271)();
+  const chance = clamp(0.35 + (S.renown || 0) / 1500 + relationOf(S, locId) / 120, 0.2, 0.9);
+  if (roll < chance) {
+    f.collected = true;
+    pushLog(S, `${f.debtor} paid up. The whole ${f.amount}, in used notes.`, 'good');
+    return { paid: true, f };
+  }
+  pushLog(S, `${f.debtor} says the money is coming. It is not coming.`);
+  return { paid: false, f };
+}
+
+/** Collect it anyway. The town watches you do it, and remembers. */
+export function pressDebt(S, locId) {
+  const f = debtorApproach(S, locId);
+  if (!f) return null;
+  f.collected = true;
+  changeRelation(S, locId, -8, `strong-arming ${f.debtor}`);
+  pushLog(S, `${f.debtor} paid with your hand on their collar. ${locName(locId)} saw it.`, 'bad');
+  return { paid: true, pressed: true, f };
+}
+
+/** One drill session in the yard: once a day, at the favour's own town. */
+export function runDrill(S, locId) {
+  const f = favourAt(S, locId);
+  if (!f || !f.accepted || f.kind !== 'train') return null;
+  if (f.lastDrill === S.day) return { ran: false, why: 'You have already drilled them today.' };
+  f.lastDrill = S.day;
+  f.trained = (f.trained || 0) + 1;
+  pushLog(S, `A morning in the yard at ${locName(locId)}. ${f.trained} of ${f.need} sessions run.`);
+  return { ran: true, trained: f.trained, need: f.need };
 }
 
 /**
@@ -2836,6 +2970,15 @@ export function completeFavour(S, locId) {
   const f = favourAt(S, locId);
   if (!f || !favourProgress(S, f).ready) return null;
   if (f.kind === 'goods') S.cargo[f.good] -= f.qty;
+  if (f.kind === 'train') {
+    // The yard work sticks: a town that can hold a line can also man one.
+    S.manpower = S.manpower || {};
+    S.manpower[locId] = (S.manpower[locId] || 0) + 3;
+  }
+  if (f.lordId) {
+    const lord = lordById(S, f.lordId);
+    if (lord) lord.regard = clamp((lord.regard || 0) + 2, -10, 10);
+  }
   S.credits += f.pay;
   S.renown = (S.renown || 0) + 12;
   changeRelation(S, locId, 14, `a favour for ${f.who}`);

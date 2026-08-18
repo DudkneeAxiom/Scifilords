@@ -289,7 +289,12 @@ function enterLocation() {
     // reads as a bug the first time a player notices it.
     let h = 0;
     for (let i = 0; i < loc.id.length; i++) h = (h * 31 + loc.id.charCodeAt(i)) | 0;
-    State.offerFavour(S, loc.id, makeRng(S.seed + S.day * 977 + Math.abs(h)));
+    State.offerFavour(S, loc.id, makeRng(S.seed + S.day * 977 + Math.abs(h)),
+      State.lordAt(S, loc.id));
+    // A delivery bound HERE hands itself in the moment you arrive.
+    for (const d of State.arrivalFavours(S, loc.id)) {
+      UI.toast('DELIVERED', `${d.who} paid ${d.pay}`, 'good');
+    }
   }
 
   if (!loc.services.length) {
@@ -355,6 +360,10 @@ function enterLocation() {
         }
         if (verb === 'favour') {
           UI.favourPanel(S, loc, { onClose: () => openMenu(), onDone: () => openMenu() });
+          return;
+        }
+        if (verb === 'debt') {
+          UI.debtPanel(S, loc, { onClose: () => openMenu(), onDone: () => openMenu() });
           return;
         }
         if (verb === 'holdings') {

@@ -1255,6 +1255,28 @@ export const FAVOURS = [
     done: 'The road is quiet again. %WHO% will remember which company made it so.',
     fail: 'The road is still bad, and %WHO% stopped expecting anything.',
   },
+  // The other three shapes of small work: carrying something OUT, leaning on
+  // somebody who owes, and standing in a yard teaching locals which end of a
+  // rifle is which. Each resolves against machinery that already exists —
+  // arriving at a town, a word in a town, and days spent in a town.
+  {
+    id: 'carry', kind: 'deliver',
+    ask: '%WHO% has %QTY% sealed crates that need to reach %TO%, and would rather they rode with guns around them.',
+    done: 'Signed for at the far end. %WHO% will hear it arrived before you are back on the road.',
+    fail: 'The crates never arrived anywhere. %WHO% has stopped asking after them.',
+  },
+  {
+    id: 'owed', kind: 'debt',
+    ask: '%WHO% is owed %AMT% credits by %DEBTOR% over in %TO%, and is too polite — or too known — to collect in person.',
+    done: 'The debt came home. %WHO% counted out your share without being asked.',
+    fail: 'The debt is still standing, and %WHO% has written it off along with you.',
+  },
+  {
+    id: 'drill', kind: 'train',
+    ask: '%WHO% wants the locals able to hold a line for five minutes. %QTY% drill sessions in the yard would do it.',
+    done: 'They are not soldiers. But they will stand, and %WHO% knows who taught them to.',
+    fail: 'The yard stayed empty. The locals are as soft as the day you agreed.',
+  },
 ];
 
 // Holdings.

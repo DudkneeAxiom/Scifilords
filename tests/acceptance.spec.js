@@ -6334,3 +6334,104 @@ test('stalls, wars, and burnt fields: the campaign layer rounds out', async ({ p
   // Burnt fields: same starting manpower, measurably less recovery.
   expect(r.slowed.burnt).toBeLessThan(r.slowed.healthy);
 });
+
+test('small work in three new shapes: crates out, debts in, locals drilled', async ({ page }) => {
+  await boot(page);
+  await newCampaign(page);
+  const r = await page.evaluate(() => {
+    const { State, DATA, makeRng } = window.KR.dev;
+    const S = window.KR.campaign;
+    const town = DATA.LOCATIONS.find((l) => l.kind === 'settlement'
+      && l.contacts?.length && l.services?.length);
+    // Roll the offer machinery until it deals the kind under test — the
+    // template pick is seeded, so walking seeds walks the deck.
+    const grab = (kind, lord = null) => {
+      for (let i = 0; i < 600; i++) {
+        if (S.favours) delete S.favours[town.id];
+        S.favourCooldown = {};
+        const f = State.offerFavour(S, town.id, makeRng(1000 + i), lord);
+        if (f && f.kind === kind) return f;
+      }
+      return null;
+    };
+
+    // Crates out: agreed here, paid at the far end, the moment you arrive.
+    const del = grab('deliver');
+    State.acceptFavour(S, town.id);
+    const c0 = S.credits;
+    const arrived = State.arrivalFavours(S, del.to);
+    const delPaid = S.credits - c0;
+    const delClosed = !State.favourAt(S, town.id);
+
+    // Debts in: the doorstep is at the DEBTOR'S town. Asking may or may not
+    // land; taking it anyway always does, and this town saw you do it.
+    const debt = grab('debt');
+    State.acceptFavour(S, town.id);
+    const door = State.debtorApproach(S, debt.to);
+    const asked = State.collectDebt(S, debt.to);
+    const rel0 = State.relationOf(S, debt.to);
+    let pressed = false;
+    if (!asked.paid) { State.pressDebt(S, debt.to); pressed = true; }
+    const relDrop = pressed ? State.relationOf(S, debt.to) - rel0 : 0;
+    const debtReady = State.favourProgress(S, debt).ready;
+    const c1 = S.credits;
+    const handedDebt = State.completeFavour(S, town.id);
+    const debtCut = S.credits - c1;
+
+    // Locals drilled: one session a day, and a town that finished the course
+    // can put three more bodies on a wall.
+    const tr = grab('train');
+    State.acceptFavour(S, town.id);
+    const first = State.runDrill(S, town.id);
+    const sameDay = State.runDrill(S, town.id);
+    let guard = 0;
+    while (!State.favourProgress(S, tr).ready && guard++ < 6) {
+      State.advanceTime(S, 24);
+      State.runDrill(S, town.id);
+    }
+    S.manpower = S.manpower || {};
+    const mp0 = S.manpower[town.id] || 0;
+    const handedTrain = State.completeFavour(S, town.id);
+    const mpUp = (S.manpower[town.id] || 0) - mp0;
+
+    // A lord holding court sometimes fronts the ask, and remembers it landing.
+    const lord = { id: 'l_probe', name: 'Overseer Kest', faction: 'trust', regard: 0 };
+    S.lords.push(lord);
+    let lorded = null;
+    for (let i = 0; i < 900 && !lorded; i++) {
+      if (S.favours) delete S.favours[town.id];
+      S.favourCooldown = {};
+      const f = State.offerFavour(S, town.id, makeRng(5000 + i), lord);
+      if (f && f.lordId === lord.id && f.kind === 'deliver') lorded = f;
+    }
+    let regardUp = 0;
+    if (lorded) {
+      State.acceptFavour(S, town.id);
+      State.arrivalFavours(S, lorded.to);
+      regardUp = lord.regard;
+    }
+
+    return {
+      delPay: del.pay, delPaid, arrived: arrived.length, delClosed,
+      door: !!door, askedShape: typeof asked.paid, pressed, relDrop,
+      debtReady, debtCut, cutExpected: debt.pay,
+      firstRan: first.ran, sameDayBlocked: sameDay.ran === false,
+      trainReady: !!handedTrain, mpUp,
+      lorded: !!lorded, regardUp,
+    };
+  });
+  expect(r.delPaid).toBe(r.delPay);
+  expect(r.arrived).toBe(1);
+  expect(r.delClosed).toBe(true);
+  expect(r.door).toBe(true);
+  expect(r.askedShape).toBe('boolean');
+  if (r.pressed) expect(r.relDrop).toBeLessThan(0);
+  expect(r.debtReady).toBe(true);
+  expect(r.debtCut).toBe(r.cutExpected);
+  expect(r.firstRan).toBe(true);
+  expect(r.sameDayBlocked).toBe(true);
+  expect(r.trainReady).toBe(true);
+  expect(r.mpUp).toBe(3);
+  expect(r.lorded).toBe(true);
+  expect(r.regardUp).toBe(2);
+});
