@@ -657,8 +657,10 @@ export function renderWorldHud(h) {
       ct.dataset.sig = '';
     } else {
       ct.classList.remove('hidden');
+      const TINT = { trust: '#3fb8c4', syndic: '#d8434f', raider: '#a855c8', player: '#c08d3f' };
       const html2 = `<div class="panel-title">CONTACTS</div>` + rows.map((p) =>
         `<div class="log-line ${p.hostile ? 'bad' : ''}">`
+        + `<span style="color:${TINT[p.faction] || '#9a958a'}">■</span> `
         + `<span class="t">${esc(p.est)}</span>${esc(p.name)}`
         + `<span class="dim"> · ${esc(p.intent)} · ${Math.round(p.dist)}m</span></div>`).join('');
       if (ct.dataset.sig !== html2) { ct.innerHTML = html2; ct.dataset.sig = html2; }
@@ -2478,6 +2480,8 @@ export function encounterPanel(S, party, cbs) {
     const past = [];
     if (lord.defeats) past.push(`you have broken their command ${lord.defeats} time(s)`);
     if (lord.wins) past.push(`they have ${lord.wins} win(s) on the road`);
+    if ((lord.regard || 0) >= 5) past.push('they owe you their freedom');
+    if ((lord.regard || 0) <= -5) past.push('they carry a personal grudge against Bracket');
     return `<div class="prose mt"><span class="hl">${esc(lord.name)}</span> leads them${
       past.length ? ` — ${esc(past.join(', '))}` : ''}.</div>`;
   })()}

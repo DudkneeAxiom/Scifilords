@@ -534,7 +534,11 @@ function availableLord(S, r, faction) {
 export function unhorseLord(S, r, party, { byPlayer }) {
   const lord = lordOfParty(S, party);
   if (!lord) return null;
-  if (byPlayer) lord.defeats++;
+  if (byPlayer) {
+    lord.defeats++;
+    // Beaten by your hand: personal, and remembered as such.
+    lord.regard = clamp((lord.regard || 0) - 2, -10, 10);
+  }
   // Taken, or away across country on foot. Being captured is the interesting
   // outcome and so it is the less likely one.
   if (byPlayer && r() < 0.35) {
@@ -611,6 +615,8 @@ export function ransomLord(S, id) {
   lord.heldByPlayer = false;
   // Back in the field shortly, and sore about it.
   lord.freeDay = S.day + 8;
+  // Sold back like cargo. The faction pays; the person does not forget.
+  lord.regard = clamp((lord.regard || 0) - 3, -10, 10);
   if (S.rep[lord.faction] != null) S.rep[lord.faction] -= 6;
   pushLog(S, `${lord.name} was ransomed back to `
     + `${FACTIONS[lord.faction]?.name || lord.faction} for ${paid} credits.`, 'good');
@@ -624,6 +630,9 @@ export function releaseLord(S, id) {
   lord.captured = false;
   lord.heldByPlayer = false;
   lord.freeDay = S.day + 4;
+  // Released without terms: a personal debt, distinct from the faction's
+  // ledger, and the kind that changes what their column does on a road.
+  lord.regard = clamp((lord.regard || 0) + 6, -10, 10);
   if (S.rep[lord.faction] != null) S.rep[lord.faction] += 8;
   S.morale = clamp((S.morale ?? 70) + 2, 0, 100);
   pushLog(S, `${lord.name} was released without terms. `
@@ -1190,13 +1199,19 @@ function partyIntent(S, p, squad) {
   // chases anybody". A rule the simulation depends on cannot be owned by the
   // view.
   if (locationAt(S, PURSUIT_SANCTUARY)) return 'patrol';
+  // Regard is personal and it is mechanical: a lord released without terms
+  // does not hunt the company that let them walk, and one ransomed back like
+  // cargo presses harder than the odds alone would say.
+  const lord = lordOfParty(S, p);
+  if (lord && (lord.regard || 0) >= 5) return 'patrol';
   const d = Math.hypot(p.x - S.pos.x, p.z - S.pos.z);
   if (d > (p.chasing ? PURSUIT_GIVE_UP : PURSUIT_SIGHT)) return 'patrol';
   if (!squad.length) return 'chase';
   const { odds } = estimateFight(S, squad, p);
   // estimateFight reports the COMPANY's chance, so theirs is what is left.
   const theirs = 1 - odds;
-  const bold = BOLDNESS[p.kind] ?? BOLDNESS_DEFAULT;
+  let bold = BOLDNESS[p.kind] ?? BOLDNESS_DEFAULT;
+  if (lord && (lord.regard || 0) <= -5) bold *= 0.7;   // grudges take worse odds
   if (theirs > bold) return 'chase';
   // Well under what they would accept: not merely uninterested, but actively
   // getting out of the way. This is the tier description made true — looters

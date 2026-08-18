@@ -1154,10 +1154,12 @@ export class WorldMap {
         m = Models.get(p.model);
         m.scale.setScalar(7.0);
         m.traverse((o) => { if (o.isMesh) o.castShadow = true; });
+        // Vivid tints, not uniform colours: the same signal palette the
+        // borders use, so a band's allegiance reads at map distance.
         const ring = this.makeRing(
           p.owner === 'player'
             ? (this.S.ownFaction?.colour ?? 0xc08d3f)
-            : (p.faction ? FACTIONS[p.faction].color : 0x7a7468), 24);
+            : (TERRITORY_TINTS[p.faction] ?? (p.faction ? FACTIONS[p.faction].color : 0x7a7468)), 24);
         ring.material.opacity = 0.4;
         this.scene.add(m); this.scene.add(ring);
         m.userData.ring = ring;

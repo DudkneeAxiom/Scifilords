@@ -430,11 +430,11 @@ export class Mission {
    * it does not obscure the body, does not clutter the sky, and reads at the
    * shallow angle this camera actually looks along.
    */
-  makeFriendRing() {
+  makeFriendRing(color = 0x63d0f0) {
     const ring = new THREE.Mesh(
       new THREE.RingGeometry(0.42, 0.58, 16),
       new THREE.MeshBasicMaterial({
-        color: 0x63d0f0, transparent: true, opacity: 0.55,
+        color, transparent: true, opacity: 0.55,
         side: THREE.DoubleSide, depthWrite: false,
       }),
     );
@@ -4272,8 +4272,16 @@ export class Mission {
 
       // Mark your own. Built lazily so nothing is allocated for the forty
       // hostiles who will never need one.
-      if (e.side === 'player' && !e.isPlayer && !e.friendRing) {
-        e.friendRing = this.makeFriendRing();
+      // Faction identity underfoot, Mount-and-Blade legible: your own people
+      // ring Bracket amber, Trust cyan, Syndic red, raiders violet. The kits
+      // are deliberately similar — the same surplus wars produced them — so
+      // the ring is the ONLY signal, and it never lies about a side.
+      if (!e.isPlayer && !e.friendRing && !e.dead
+        && (e.side === 'player' || e.side === 'enemy')) {
+        const col = e.side === 'player' ? 0xc08d3f
+          : e.faction === 'trust' ? 0x3fb8c4
+            : e.faction === 'syndic' ? 0xd8434f : 0xa855c8;
+        e.friendRing = this.makeFriendRing(col);
         this.scene.add(e.friendRing);
       }
       if (e.friendRing) {
