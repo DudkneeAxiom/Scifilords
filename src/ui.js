@@ -2825,3 +2825,27 @@ function wire(map) {
 }
 
 const onCloseWrap = (fn) => () => { closeModal(); };
+
+/**
+ * A battle in progress, arrived at: both sides named with their strengths,
+ * and the choice — pick a side and go in, or leave them to it. The world
+ * resolves it either way; this panel is the player claiming a stake, not
+ * the fight waiting for one.
+ */
+export function battlePanel(S, info, cbs) {
+  const side = (list) => list.map((p) => `${esc(p.name)} — ${Math.round(p.strength)}`).join('<br>');
+  modal({
+    title: 'A BATTLE IN PROGRESS',
+    tag: 'ON THE ROAD',
+    body: `<div class="prose">Weapons fire ahead. Two sides are at it and neither is done.</div>
+      <div class="two-col mt">
+        <div><div class="section-title">ONE SIDE</div><div class="prose">${side(info.a)}</div></div>
+        <div><div class="section-title">THE OTHER</div><div class="prose">${side(info.b)}</div></div>
+      </div>`,
+    foot: `<button class="btn btn-warn" data-x="joina">FIGHT FOR THE FIRST</button>
+      <button class="btn btn-warn" data-x="joinb">FIGHT FOR THE SECOND</button>
+      <button class="btn" data-x="close">LEAVE THEM TO IT</button>`,
+    onClose: cbs.onClose,
+  });
+  wire({ joina: () => cbs.onJoin('a'), joinb: () => cbs.onJoin('b') });
+}

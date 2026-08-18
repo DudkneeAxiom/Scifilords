@@ -1074,6 +1074,26 @@ export class Mission {
     const first = Math.min(total, FIELD_CAP);
     this.deployEnemyWave(first, roles, true);
     this.skirmishCommitted = first;
+
+    // Joining a battle already in progress: whoever you sided with is on the
+    // field beside you. Same contract as plant militia — they fight, they can
+    // die, they are nobody's payroll.
+    if (this.spec.allies) {
+      const sp = this.level.playerSpawn;
+      const n = Math.min(8, Math.round(this.spec.allies));
+      for (let i = 0; i < n; i++) {
+        const ent = this.spawnEntity({
+          id: `ally_`, side: 'player', faction: this.spec.allyFaction || 'syndic',
+          x: sp.x - 8 + (i % 4) * 5, z: sp.z + 4 + Math.floor(i / 4) * 4,
+          yaw: 0, hp: 80, weapon: i % 3 ? 'rifle' : 'smg',
+          model: this.spec.allyFaction === 'trust' ? 'soldier_trust' : 'soldier_syndic',
+          acc: 0.46, speed: 4.0, aggression: 0.55, coverPref: 0.6,
+          name: 'Allied fighter',
+        });
+        ent.militia = true;
+        this.squad.push(ent);
+      }
+    }
   }
 
   /** Put a batch of hostiles on the field, arced across the approach. */

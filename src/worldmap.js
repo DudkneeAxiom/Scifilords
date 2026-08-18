@@ -49,12 +49,13 @@ const TERRITORY_TINTS = {
  */
 
 export class WorldMap {
-  constructor({ campaign, container, onEnterLocation, onEncounter, onHud }) {
+  constructor({ campaign, container, onEnterLocation, onEncounter, onHud, onBattle }) {
     this.S = campaign;
     this.container = container;
     this.onEnterLocation = onEnterLocation;
     this.onEncounter = onEncounter;
     this.onHud = onHud || (() => {});
+    this.onBattle = onBattle || null;
     this.partyMeshes = new Map();
     this.zoom = 1;
     this.disposed = false;
@@ -1148,6 +1149,19 @@ export class WorldMap {
       this.nearSet = nowNear;
       this.nearSeeded = true;
       return;
+    }
+
+    // A battle in progress is something you ARRIVE AT — observed first, never
+    // auto-joined. Once seen it does not renag; the rings stay on the map.
+    this.battleSeen = this.battleSeen || new Set();
+    for (const btl of S.mapBattles || []) {
+      if (this.battleSeen.has(btl.id) || loc) break;
+      if (Math.hypot(btl.x - S.pos.x, btl.z - S.pos.z) > 46) continue;
+      this.battleSeen.add(btl.id);
+      this.stopTravel();
+      Audio.uiAlert();
+      this.onBattle?.(btl);
+      break;
     }
 
     for (const p of near) {

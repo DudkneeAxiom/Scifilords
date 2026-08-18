@@ -106,6 +106,7 @@ function toWorld(isNew) {
     campaign: G.campaign,
     container: viewport,
     onEncounter: handleEncounter,
+    onBattle: handleMapBattle,
     onHud: (h) => {
       // Never leave the Reach paused with nothing on top of it.
       //
@@ -930,3 +931,34 @@ window.addEventListener('beforeunload', () => {
 });
 
 boot();
+
+// A battle arrived at on the map: name both sides, offer a stake in it.
+// Joining launches a real deployment against the chosen enemy's strongest
+// party, with the befriended side's fighters on the field as allies.
+function handleMapBattle(btl) {
+  if (UI.modalOpen()) return;
+  const S = G.campaign;
+  G.world?.setPaused(true);
+  const partiesOf = (side) => btl[side]
+    .map((id) => S.parties.find((p) => p.id === id))
+    .filter((p) => p && p.battle === btl.id);
+  const a = partiesOf('a'), b = partiesOf('b');
+  if (!a.length || !b.length) { G.world?.setPaused(false); return; }
+  UI.battlePanel(S, { a, b }, {
+    onClose: () => G.world?.setPaused(false),
+    onJoin: (side) => {
+      UI.closeModal();
+      const friends = side === 'a' ? a : b;
+      const foes = side === 'a' ? b : a;
+      const target = foes.slice().sort((x, y) => y.strength - x.strength)[0];
+      const allies = friends.reduce((t, p) => t + p.strength, 0);
+      // The joined fight is the player's now: the sim releases its half.
+      for (const p of [...friends, ...foes]) p.battle = null;
+      S.mapBattles = (S.mapBattles || []).filter((x) => x.id !== btl.id);
+      openDeploy({
+        type: 'skirmish', site: 'roadside', layout: 'roadside',
+        party: target, allies, allyFaction: friends[0]?.faction || null,
+      });
+    },
+  });
+}
