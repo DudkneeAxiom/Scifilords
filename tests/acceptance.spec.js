@@ -7038,3 +7038,116 @@ test('five on five: steel pairs off, keeps its feet, and one side breaks', async
   expect(r.swingsSeen).toBeGreaterThan(5);
   expect(r.hurtMine || r.hurtFoes).toBe(true);
 });
+
+test('the battle line: arms select as one, form in rows, and reshape on call', async ({ page }) => {
+  await boot(page);
+  await newCampaign(page);
+  await page.evaluate(async () => {
+    const { Mission } = await import('/src/mission.js');
+    const UI = await import('/src/ui.js');
+    const G = window.KR;
+    const S = G.campaign;
+    // A mixed company: swords, a spear, and a rifle standing in for the
+    // ranged arm until the bows land.
+    S.roster[0].weapon = 'sword';
+    S.roster[1].weapon = 'sword';
+    S.roster[2].weapon = 'spear';
+    S.roster[3].weapon = 'rifle';
+    G.mission?.dispose();
+    G.world?.dispose(); G.world = null;
+    document.getElementById('viewport').innerHTML = '';
+    UI.show('hud');
+    G.mission = new Mission({
+      campaign: S,
+      spec: { type: 'skirmish', site: 'roadside', layout: 'roadside',
+        enemyFaction: 'raider', party: { strength: 3 } },
+      squad: S.roster.slice(0, 4),
+      container: document.getElementById('viewport'),
+      onHud: () => {}, onToast: () => {}, onIntro: () => {}, onWheel: () => {}, onEnd: () => {},
+    });
+    await G.mission.start();
+    G.mission.paused = true;
+  });
+  await page.waitForFunction(() => window.KR.mission?.player, null, { timeout: 40000 });
+  const r = await page.evaluate(() => {
+    const m = window.KR.mission;
+    const p = m.player;
+    // A quiet field: the line forms with nobody in sight. The enemy is
+    // EXILED, not killed — a cleared objective ends the mission and
+    // step() no-ops forever after (this cost an hour once; see HANDOFF).
+    for (const e of m.entities) {
+      if (e.side === 'enemy') {
+        e.x = 400; e.z = 400; e.state = 'guard'; e.alert = 0;
+        e.target = null; e.lastSeen = null; e.sight = 5;
+      }
+    }
+    m.skirmishTotal = 0;
+    // Steel makes the battle line the default.
+    const defaulted = m.formation;
+    // The arms select as one.
+    m.selectGroup('spear');
+    const spearSel = m.commanded().map((s) => s.weapon.id);
+    m.selectGroup('ranged');
+    const rangedSel = m.commanded().map((s) => s.weapon.id);
+    m.selectGroup('inf');
+    const infSel = m.commanded().map((s) => s.weapon.id);
+    // Rows: infantry nearest the commander, spears behind, ranged at the back.
+    const backs = { inf: [], spear: [], ranged: [] };
+    for (const s of m.squad) {
+      if (s.dead || s.down) continue;
+      backs[m.battleGroup(s)].push(m.battleSlot(s).back);
+    }
+    // Reshape on call: infantry line → wall.
+    const shape0 = m.groupShape.inf;
+    m.cycleGroupShape();
+    const shape1 = m.groupShape.inf;
+    // Mixed selection refuses the reshape rather than guessing.
+    m.selectGroup('all');
+    m.cycleGroupShape();
+    const shapeAfterAll = m.groupShape.spear;
+    // And the line actually forms: scatter everyone near the commander
+    // first (the layout is campaign-seeded — convergence must be measured
+    // over the same open ground every run, not across whatever furniture
+    // this seed placed), then run the sim and measure slot error.
+    m.selectAll();
+    m.squad.forEach((s, i) => {
+      if (s.dead || s.down) return;
+      s.x = p.x + Math.sin(i * 2.1) * 5;
+      s.z = p.z + Math.cos(i * 2.1) * 5;
+      s.path = null; s.moveTarget = null;
+    });
+    m.paused = false;
+    const realStep = m.step.bind(m);
+    m.step = () => {};
+    for (let i = 0; i < 720; i++) realStep(1 / 30);
+    let worst = 0;
+    for (const s of m.squad) {
+      if (s.dead || s.down) continue;
+      const slot = m.battleSlot(s);
+      const bx = Math.sin(p.yaw + Math.PI), bz = Math.cos(p.yaw + Math.PI);
+      const rx = Math.sin(p.yaw + Math.PI / 2), rz = Math.cos(p.yaw + Math.PI / 2);
+      const dest = { x: p.x + bx * slot.back + rx * slot.side,
+        z: p.z + bz * slot.back + rz * slot.side };
+      worst = Math.max(worst, Math.hypot(dest.x - s.x, dest.z - s.z));
+    }
+    return {
+      defaulted, spearSel, rangedSel, infSel,
+      infBack: Math.max(...backs.inf), spearBack: Math.min(...backs.spear),
+      rangedBack: Math.min(...backs.ranged),
+      shape0, shape1, shapeAfterAll, worst: Number(worst.toFixed(2)),
+    };
+  });
+  expect(r.defaulted).toBe('battle');
+  expect(r.spearSel).toEqual(['spear']);
+  expect(r.rangedSel).toEqual(['rifle']);
+  expect(r.infSel).toEqual(['sword']);
+  // The rows hold their order: line, spears, bows.
+  expect(r.infBack).toBeLessThan(r.spearBack);
+  expect(r.spearBack).toBeLessThan(r.rangedBack);
+  expect(r.shape0).toBe('line');
+  expect(r.shape1).toBe('wall');
+  expect(r.shapeAfterAll).toBe('line');
+  // Twelve sim-seconds later everyone stands on their slot — within the
+  // movement deadband (soldiers stop walking inside 2.2m of a destination).
+  expect(r.worst).toBeLessThan(2.5);
+});

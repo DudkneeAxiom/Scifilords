@@ -1056,10 +1056,32 @@ as rare relic props, not combat.
 
 ### Phase status
 
-1. INSPECT — two Explore agents mapped mission.js combat + data
-   plumbing (reports land in this session; fold conclusions here).
-2. PLAYER MELEE — next.
-3-10. per task list #55-#64.
+1. INSPECT — done (OVERHAUL.md carries the full code map).
+2. PLAYER MELEE — done (`5636eab`): strike/updateSwing/resolveStrike,
+   guard/shield/kick/spear rules/stagger/stamina, procedural swing
+   anim, WIND/PLATE HUD.
+3. ASSETS — done (`d4e7b51`): six wpn_* meshes + melee schema + shield
+   KIT entry.
+4. 5V5 — done (`345348a`): claim-scored pairing in acquire(), the
+   meleeSpacing in-out rhythm, swing camera bell.
+5. FORMATIONS/COMMANDS — done: battleGroup (inf/spear/ranged off the
+   carried weapon), FORMATIONS.battle (slot:null sentinel → battleSlot
+   local-frame rectangles: inf 3.2 back, spears 6.4, ranged 11.5),
+   groupShape line/wall/loose per arm ('n' cycles, refuses mixed
+   selections), keys 6/7/8/9 = ALL/INF/SPEAR/RANGED, melee squads
+   default to 'battle'.
+6-10. per task list #60-#64.
+
+**Sim-test traps, hard-earned:** (a) `step()` gates on `this.paused`
+AND `this.over` — a staged test that KILLS all enemies completes the
+objective, sets `over`, and every later step no-ops with no error;
+EXILE enemies to (400,400) with sight 5 instead. (b) To drive the sim
+by hand: `m.paused = false; const realStep = m.step.bind(m); m.step =
+() => {};` — starve the rAF loop, drive the bound original. (c) The
+movement deadband rests soldiers up to 2.2m from any destination —
+convergence bounds must be ≥2.5m, and convergence must be measured
+from a scattered start NEAR the commander, not across seed-varying
+furniture.
 
 ---
 

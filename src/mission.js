@@ -132,6 +132,15 @@ const FORMATIONS = {
       return { lateral: s === 0 ? -1.9 : 1.9, off: 7.5 + rank * 5.5 };
     },
   },
+  // The melee era's default. Slots come from battleSlot() — grouped by arm,
+  // rectangles in the commander's local frame — not from the angle scheme
+  // the gun formations use, so `slot` here is a sentinel the follow branch
+  // checks for.
+  battle: {
+    id: 'battle', name: 'BATTLE LINE',
+    desc: 'Infantry forward, spears behind them, ranged at the back.',
+    slot: null,
+  },
 };
 
 export class Mission {
@@ -175,6 +184,9 @@ export class Mission {
     this.mouse = { down: false, right: false };
     this.mouseVel = { x: 0, y: 0 };
     this.pStamina = 1;                     // the commander's wind, 0..1
+    // Per-arm formation shapes for THE BATTLE LINE. Ranged default loose:
+    // bunched bows are one volley's worth of casualties.
+    this.groupShape = { inf: 'line', spear: 'line', ranged: 'loose' };
     this.marker = null;
     this.result = null;
     this.stats = { kills: 0, shotsFired: 0, medkitsUsed: 0 };
@@ -917,8 +929,10 @@ export class Mission {
       this.squad.push(ent);
     }
     this.squadOrder = 'follow';
-    // How they stand when formed up. See FORMATIONS.
-    this.formation = 'wedge';
+    // How they stand when formed up. See FORMATIONS. A company carrying
+    // steel forms the battle line by default; a gunline keeps its wedge.
+    this.formation = this.squad.some((s) => s.weapon?.melee || s.weapon?.bow)
+      ? 'battle' : 'wedge';
     // Stance. Crouch is a held pose blended 0..1 rather than a boolean, so the
     // camera, the aim penalty and the character all move together instead of
     // snapping. Airborne is tracked as a height above the ground plus a
@@ -1925,6 +1939,8 @@ export class Mission {
         desc: 'Get behind the nearest hard thing and stay down until told.' },
       { id: 'follow', name: 'FORM UP', key: 'F',
         desc: 'Back on me, in whatever shape you last called.' },
+      { id: 'battle', name: 'BATTLE LINE', key: '',
+        desc: 'Infantry forward, spears behind them, ranged at the back.' },
       { id: 'line', name: 'LINE', key: '',
         desc: 'Abreast of you. Every gun forward, wide frontage.' },
       { id: 'spread', name: 'SPREAD', key: '',
@@ -2077,6 +2093,14 @@ export class Mission {
         else if (this.rts && this.ctrlGroups[Number(k)]) this.recallGroup(Number(k));
         else this.toggleSelect(Number(k) - 1);
       }
+      // The arms of the line, one key each: ALL / INFANTRY / SPEARS /
+      // RANGED. Fast enough to use mid-swing, which is the entire point.
+      if (k === '6') this.selectGroup('all');
+      if (k === '7') this.selectGroup('inf');
+      if (k === '8') this.selectGroup('spear');
+      if (k === '9') this.selectGroup('ranged');
+      // Cycle the selected arm's shape: line, wall, loose.
+      if (k === 'n') this.cycleGroupShape();
       if (k === '`' || k === '0') this.selectAll();
       if (k === 'escape') this.togglePause();
       if (k === 'tab') { e.preventDefault(); this.showRoster = true; }
@@ -2569,6 +2593,78 @@ export class Mission {
     this.selection.clear();
     Audio.uiMove();
     this.onToast('', 'WHOLE SQUAD', 'order');
+  }
+
+  /** Which arm of the line a body belongs to, read off what it carries. */
+  battleGroup(e) {
+    const w = e.weapon;
+    if (!w) return 'inf';
+    if (w.bow || (!w.melee && (w.range || 0) > 20)) return 'ranged';
+    if (w.id === 'spear') return 'spear';
+    return 'inf';
+  }
+
+  /** Select a whole arm at once: ALL, INFANTRY, SPEARS, RANGED. */
+  selectGroup(g) {
+    this.selection.clear();
+    if (g !== 'all') {
+      this.squad.forEach((s, i) => {
+        if (s.dead || s.down || s.militia) return;
+        if (this.battleGroup(s) === g) this.selection.add(i);
+      });
+    }
+    Audio.uiMove();
+    const label = g === 'all' ? 'WHOLE SQUAD'
+      : g === 'inf' ? 'INFANTRY' : g === 'spear' ? 'SPEARS' : 'RANGED';
+    this.onToast('', this.selection.size || g === 'all'
+      ? label : `${label} — NOBODY CARRIES IT`, 'order');
+  }
+
+  /** Cycle the selected arm's shape: line → wall → loose. */
+  cycleGroupShape() {
+    // Which arm is selected? All of one kind, or the shape call is ambiguous.
+    const sel = this.commanded();
+    if (!sel.length) return;
+    const groups = new Set(sel.map((s) => this.battleGroup(s)));
+    if (groups.size !== 1) {
+      this.onToast('', 'PICK ONE ARM TO RESHAPE (7/8/9)', 'order');
+      return;
+    }
+    const g = [...groups][0];
+    const order = ['line', 'wall', 'loose'];
+    const cur = this.groupShape[g] || 'line';
+    const next = order[(order.indexOf(cur) + 1) % order.length];
+    this.groupShape[g] = next;
+    Audio.order();
+    const gl = g === 'inf' ? 'INFANTRY' : g === 'spear' ? 'SPEARS' : 'RANGED';
+    this.onToast(gl, next.toUpperCase(), 'order');
+  }
+
+  /**
+   * THE BATTLE LINE's slots: infantry forward, spears a rank behind them,
+   * ranged well back — each arm in its own shape. Slots are local-frame
+   * rectangles behind the commander's facing, stable per body, and a
+   * soldier displaced from theirs steers home the moment they disengage.
+   */
+  battleSlot(e) {
+    const groups = { inf: [], spear: [], ranged: [] };
+    for (const s of this.squad) {
+      if (s.dead || s.down) continue;
+      groups[this.battleGroup(s)].push(s);
+    }
+    const g = this.battleGroup(e);
+    const list = groups[g];
+    const i = Math.max(0, list.indexOf(e));
+    const shape = this.groupShape[g] || (g === 'ranged' ? 'loose' : 'line');
+    const baseBack = g === 'inf' ? 3.2 : g === 'spear' ? 6.4 : 11.5;
+    const spacing = shape === 'wall' ? 1.15 : shape === 'loose' ? 2.6 : 1.65;
+    const ranks = shape === 'line' ? 1 : 2;
+    const perRank = Math.max(1, Math.ceil(list.length / ranks));
+    const rank = Math.floor(i / perRank);
+    const c = (i % perRank) - (Math.min(perRank, list.length) - 1) / 2;
+    const side = c * spacing + (shape === 'loose' && rank % 2 ? spacing * 0.5 : 0);
+    const back = baseBack + rank * (shape === 'wall' ? 1.25 : 2.4);
+    return { side, back };
   }
 
   setSquadOrder(order) {
@@ -4588,11 +4684,19 @@ export class Mission {
       // Follow: stand in whatever shape the commander has called for. The
       // camera sits directly behind them, so every formation pushes people out
       // to the sides rather than into a conga line down the middle of the view.
-      const i = this.squad.indexOf(e);
       const f = FORMATIONS[this.formation] || FORMATIONS.wedge;
-      const { lateral, off } = f.slot(i);
-      const bearing = p.yaw + Math.PI + lateral;
-      dest = { x: p.x + Math.sin(bearing) * off, z: p.z + Math.cos(bearing) * off };
+      if (!f.slot) {
+        // THE BATTLE LINE: rectangles in the commander's local frame.
+        const { side, back } = this.battleSlot(e);
+        const bx = Math.sin(p.yaw + Math.PI), bz = Math.cos(p.yaw + Math.PI);
+        const rx = Math.sin(p.yaw + Math.PI / 2), rz = Math.cos(p.yaw + Math.PI / 2);
+        dest = { x: p.x + bx * back + rx * side, z: p.z + bz * back + rz * side };
+      } else {
+        const i = this.squad.indexOf(e);
+        const { lateral, off } = f.slot(i);
+        const bearing = p.yaw + Math.PI + lateral;
+        dest = { x: p.x + Math.sin(bearing) * off, z: p.z + Math.cos(bearing) * off };
+      }
     }
 
     // Under fire, prefer nearby cover over the ordered position. Cover Hound
