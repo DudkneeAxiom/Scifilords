@@ -588,6 +588,132 @@ def prop_hab_block():
     export("hab_block")
 
 
+def prop_town_house():
+    """One-storey dwelling, scaled to the person walking past it: a 2.05m
+    door, windows at eye height, 3.1m walls. The hab_block reads as a tower
+    because it crams three window rows into 6.4m of height; this is the
+    building a town is actually made of."""
+    clear()
+    root = empty("root")
+    taper("body", (5.6, 4.6, 3.1), (0, 0, 1.55), "concrete_dk", root,
+          top=(0.96, 0.96), bottom=(1.0, 1.0))
+    box("roof", (6.0, 5.0, 0.3), (0, 0, 3.25), "concrete", root)
+    box("coping", (2.2, 0.5, 0.34), (-1.6, 2.0, 3.45), "rust", root)
+    # The door, with a canvas over it: the one human-sized hole in the front.
+    box("door", (1.05, 0.18, 2.05), (1.5, -2.28, 1.03), "pitch", root)
+    box("lintel", (1.3, 0.2, 0.16), (1.5, -2.32, 2.14), "steel_dk", root)
+    box("awning", (1.5, 0.9, 0.08), (1.5, -2.7, 2.4), "canvas", root, rot=(0.18, 0, 0))
+    # Two shuttered windows at standing height.
+    for i, x in enumerate((-1.7, -0.1)):
+        box(f"win{i}", (1.0, 0.14, 0.85), (x, -2.32, 1.55), "glass", root)
+        box(f"sill{i}", (1.16, 0.12, 0.1), (x, -2.36, 1.05), "concrete", root)
+        box(f"shut{i}", (0.2, 0.1, 0.85), (x - 0.62, -2.36, 1.55), "olive_dk", root)
+    box("side_win", (0.14, 1.0, 0.8), (2.75, 0.6, 1.6), "glass", root)
+    cyl("stove", 0.16, 1.6, (-2.0, 1.4, 3.7), "steel_dk", root)
+    box("paint", (1.6, 0.08, 0.7), (-1.2, -2.32, 2.55), "ochre_dk", root)
+    export("town_house")
+
+
+def prop_town_house_2():
+    """Two storeys at a true 2.7m per floor — the tall neighbour on the main
+    street, with a balcony slab over the door."""
+    clear()
+    root = empty("root")
+    taper("body", (6.0, 5.0, 5.8), (0, 0, 2.9), "concrete_dk", root,
+          top=(0.95, 0.95), bottom=(1.0, 1.0))
+    box("band", (6.1, 5.1, 0.22), (0, 0, 3.0), "concrete", root)
+    box("roof", (6.4, 5.4, 0.32), (0, 0, 5.95), "concrete", root)
+    box("door", (1.05, 0.18, 2.05), (-1.6, -2.48, 1.03), "pitch", root)
+    box("balcony", (1.7, 0.8, 0.14), (-1.6, -2.85, 3.1), "steel_dk", root)
+    box("rail", (1.7, 0.06, 0.5), (-1.6, -3.2, 3.42), "steel_dk", root)
+    for i, x in enumerate((0.4, 1.9)):
+        box(f"winA{i}", (1.0, 0.14, 0.85), (x, -2.48, 1.6), "glass", root)
+        box(f"sillA{i}", (1.16, 0.12, 0.1), (x, -2.52, 1.1), "concrete", root)
+    for i, x in enumerate((-1.6, 0.4, 1.9)):
+        box(f"winB{i}", (1.0, 0.14, 0.85), (x, -2.48, 4.35), "glass", root)
+        box(f"sillB{i}", (1.16, 0.12, 0.1), (x, -2.52, 3.85), "concrete", root)
+    cyl("tank", 0.6, 1.2, (1.8, 1.5, 6.5), "rust", root)
+    box("paint", (2.0, 0.08, 0.8), (0.6, -2.52, 2.5), "ochre_dk", root)
+    export("town_house_2")
+
+
+def prop_town_hall():
+    """The trading hall — the civic building on the square's east side.
+    Double doors, tall windows, a parapet and a painted sign: one landmark,
+    so the square has a front."""
+    clear()
+    root = empty("root")
+    taper("body", (9.0, 7.0, 5.2), (0, 0, 2.6), "concrete_dk", root,
+          top=(0.97, 0.97), bottom=(1.0, 1.0))
+    box("parapet", (9.4, 7.4, 0.5), (0, 0, 5.35), "concrete", root)
+    for i, x in enumerate((-4.3, 4.3)):
+        box(f"pilaster{i}", (0.5, 0.5, 5.2), (x, -3.3, 2.6), "concrete", root)
+    box("doorL", (1.1, 0.2, 2.3), (-0.58, -3.52, 1.15), "pitch", root)
+    box("doorR", (1.1, 0.2, 2.3), (0.58, -3.52, 1.15), "pitch", root)
+    box("lintel", (2.6, 0.24, 0.24), (0, -3.56, 2.42), "steel_dk", root)
+    for i, x in enumerate((-3.0, -1.6, 1.6, 3.0)):
+        box(f"win{i}", (0.9, 0.16, 1.6), (x, -3.52, 3.6), "glass", root)
+    box("sign", (3.4, 0.12, 0.9), (0, -3.6, 4.6), "ochre", root)
+    box("steps", (3.0, 1.0, 0.3), (0, -4.0, 0.15), "concrete", root)
+    cyl("vent", 0.4, 1.0, (-3.0, 2.2, 5.9), "steel_dk", root)
+    export("town_hall")
+
+
+def prop_market_stall():
+    """A stall a person sells things from: posts, a sloped canvas, a counter
+    at counter height. The counter is the collision; the canvas is overhead."""
+    clear()
+    root = empty("root")
+    for i, (x, y) in enumerate(((-1.2, -0.9), (1.2, -0.9), (-1.2, 0.9), (1.2, 0.9))):
+        box(f"post{i}", (0.12, 0.12, 2.3), (x, y, 1.15), "steel_dk", root)
+    box("canvas", (2.9, 2.3, 0.08), (0, 0, 2.35), "canvas", root, rot=(0.12, 0, 0))
+    box("counter", (2.5, 0.8, 0.95), (0, -0.7, 0.48), "olive_dk", root)
+    box("counter_top", (2.6, 0.9, 0.1), (0, -0.7, 1.0), "bone", root)
+    box("goods", (0.8, 0.5, 0.4), (-0.6, -0.65, 1.25), "ochre", root)
+    box("crate2", (0.6, 0.6, 0.6), (0.9, 0.5, 0.3), "dirt_lt", root)
+    export("market_stall")
+
+
+def prop_town_wall():
+    """A town's wall, not a fortress's: 3.2m of coursed masonry with a coping
+    stone. Encloses without dwarfing — the rampart stays the siege piece."""
+    clear()
+    root = empty("root")
+    taper("body", (6.0, 1.0, 3.2), (0, 0, 1.6), "concrete_dk", root,
+          top=(1.0, 0.82), bottom=(1.0, 1.0))
+    box("coping", (6.2, 1.25, 0.28), (0, 0, 3.34), "concrete", root)
+    box("course", (6.0, 1.06, 0.2), (0, 0, 1.1), "dirt", root)
+    for i, x in enumerate((-2.4, 2.4)):
+        box(f"foot{i}", (0.7, 1.5, 0.9), (x, 0, 0.45), "concrete_dk", root)
+    export("town_wall")
+
+
+def prop_gate_tower():
+    """The gate pier. Referenced by two layouts and never authored —
+    Models.get() returned an empty group, so the fort has been flanking its
+    gate with invisible colliders since the wall went in."""
+    clear()
+    root = empty("root")
+    taper("shaft", (2.6, 2.6, 6.4), (0, 0, 3.2), "concrete_dk", root,
+          top=(0.88, 0.88), bottom=(1.0, 1.0))
+    box("cap", (3.0, 3.0, 0.4), (0, 0, 6.6), "concrete", root)
+    box("slit", (0.5, 2.7, 0.9), (0, 0, 5.2), "black", root)
+    box("light", (0.3, 0.3, 0.24), (0, -1.35, 6.2), "amber", root, emissive=2.5)
+    box("course", (2.7, 2.7, 0.24), (0, 0, 2.2), "dirt", root)
+    export("gate_tower")
+
+
+def prop_town_arch():
+    """The beam over the gateway — scenery only, no collision box in the
+    layout: the opening under it is the whole point."""
+    clear()
+    root = empty("root")
+    box("beam", (10.6, 1.4, 1.0), (0, 0, 4.6), "concrete_dk", root)
+    box("sign", (4.0, 0.14, 0.7), (0, -0.76, 4.6), "ochre_dk", root)
+    box("lamp", (0.32, 0.32, 0.26), (0, -0.8, 3.95), "amber", root, emissive=2.2)
+    export("town_arch")
+
+
 def prop_watchtower():
     clear()
     root = empty("root")
@@ -1207,6 +1333,13 @@ def main():
 
     prop_bunker()
     prop_hab_block()
+    prop_town_house()
+    prop_town_house_2()
+    prop_town_hall()
+    prop_market_stall()
+    prop_town_wall()
+    prop_gate_tower()
+    prop_town_arch()
     prop_watchtower()
     prop_comms_mast()
     prop_radar_dish()

@@ -20,7 +20,7 @@ import { rng, range, irange, pick } from './util.js';
  * Basin floor. Deliberately shallow relief — this is a drained industrial
  * pan, and flat ground keeps sightlines honest and AI pathing reliable.
  */
-export function heightAt(x, z) {
+function rawHeight(x, z) {
   // The ground has relief now. It was flat for a long time, and the reason was
   // real: every obstacle is an axis-aligned box that used to be anchored to ONE
   // ground sample, so a rampart across a slope had daylight under its downhill
@@ -50,6 +50,27 @@ export function heightAt(x, z) {
     + Math.sin(x * 0.105 - 0.4) * Math.cos(z * 0.098 + 0.3) * 2.0
     + Math.cos(z * 0.19 + 1.1) * 0.3                              // grain
   );
+}
+
+// A levelled pad under a built-up site. People do not build a town on swells —
+// they grade the ground first — and a street that rolls under buildings that
+// stand on stilts of collision reads as exactly what it is. Set per-build from
+// the layout's meta (see build()); null for every site that fights on raw
+// terrain. Module state is safe here for the same reason the model cache is:
+// one level exists at a time, and the next build() overwrites it.
+let FLAT = null;
+
+export function heightAt(x, z) {
+  const h = rawHeight(x, z);
+  if (!FLAT) return h;
+  const d = Math.hypot(x - FLAT.x, z - FLAT.z);
+  if (d >= FLAT.r + FLAT.fade) return h;
+  if (d <= FLAT.r) return FLAT.y;
+  // Smoothstep out to the raw terrain, so the pad has an edge you can see
+  // but not a cliff you fall off.
+  const t = (d - FLAT.r) / FLAT.fade;
+  const s = t * t * (3 - 2 * t);
+  return FLAT.y * (1 - s) + h * s;
 }
 
 // Peak-to-trough of heightAt(), used to normalise anything that shades by
@@ -181,6 +202,16 @@ class Builder {
     this.props = [];
     this.obstacles = [];
     this.covers = [];
+    // No-build ground: rectangles clear() treats as occupied without putting
+    // an obstacle there. A road is a fact about where things must NOT stand,
+    // and until this existed only luck kept the random dressing passes out of
+    // one — the town's gate arch was open or blocked depending on the seed.
+    this.reserved = [];
+  }
+
+  /** Reserve open ground: nothing random may be placed inside it. */
+  protect(x, z, hw, hd) {
+    this.reserved.push({ x, z, hw, hd });
   }
 
   /**
@@ -272,6 +303,9 @@ class Builder {
   clear(x, z, r, ignoreWalk = false) {
     for (const o of this.obstacles) {
       if (ignoreWalk && o.walk) continue;
+      if (Math.abs(x - o.x) < o.hw + r && Math.abs(z - o.z) < o.hd + r) return false;
+    }
+    for (const o of this.reserved) {
       if (Math.abs(x - o.x) < o.hw + r && Math.abs(z - o.z) < o.hd + r) return false;
     }
     return true;
@@ -497,6 +531,15 @@ class Builder {
 const BOX = {
   bunker: [3.6, 3.1, 3.6],
   hab_block: [3.1, 2.6, 6.6],
+  // The town kit, authored to the person walking past: doors at 2.05m, one
+  // storey at 3.1, two at 5.8. Boxes match the drawn bodies.
+  town_house: [2.9, 2.4, 3.4],
+  town_house_2: [3.1, 2.6, 6.1],
+  town_hall: [4.6, 3.6, 5.6],
+  // Counter height on the full footprint: a stall is shoot-over cover you
+  // walk around, and the canvas overhead stops nothing.
+  market_stall: [1.5, 1.2, 1.0],
+  town_wall: [3.0, 0.62, 3.5],
   watchtower: [1.8, 1.8, 6.2],
   comms_mast: [1.7, 1.7, 4.0],
   radar_dish: [1.4, 1.4, 4.0],
@@ -786,58 +829,110 @@ function habQuarter(b, { blocks, street, origin = [0, 0], jitter = 0 }) {
 }
 
 function siteSettlement(b) {
-  // THE TOWN — two streets crossing at a market square, hab blocks packed in
-  // rows either side. The player comes up the south road into the square, and
-  // everything above it is close work: doorways, corners, and lanes barely wide
-  // enough for two people to pass.
+  // THE TOWN — a walled settlement with an anatomy: one gate in the south
+  // wall, a main street running up from it, and a framed market square at the
+  // top of the street with the trades around its edges. The old version was
+  // eleven identical cubes scattered on a grid, which read as an encounter
+  // site with houses for cover; this reads as a place, because the buildings
+  // AGREE about where the street is — continuous frontages, an alley behind
+  // each row, and every quarter reachable by a lane rather than by open field.
   //
-  // The square is deliberately open. It is the only place on the map with long
-  // sightlines, so holding it is worth something and crossing it costs you.
+  // The square is still deliberately open: the only long sightlines inside
+  // the walls, so holding it is worth something and crossing it costs you.
+  //
+  // The gateway is an OPEN arch — wall and towers, no gate mesh. A door here
+  // would need the siege's breach mechanic in every raid, defense and visit;
+  // an open gate makes the wall a fact about where you can walk, not a lock.
+  const WALL_Z = 26;
+  // ---- the wall: a full circuit, four corner towers, one arch ----
+  // The enclosure is 84 x 64 — big enough that the quarters inside have air
+  // between them, which is most of what makes a town read as a town rather
+  // than a barracks. town_wall, not rampart: a town encloses itself without
+  // dressing as a fortress, and the rampart stays the siege piece.
+  // Segment runs are sized so every joint overlaps its neighbour or the
+  // corner tower — the wall-integrity probe walks all four lines, and it has
+  // already caught a five-metre hole beside each gate pier and daylight at
+  // two corners. A wall with gaps is scenery.
+  for (const i of [-6, -5, -4, -3, -2, 2, 3, 4, 5, 6]) {
+    b.prop('town_wall', i * 6.0 + (i > 0 ? 3.4 : -3.4), WALL_Z, 0, BOX.town_wall, 1);
+  }
+  b.prop('town_wall', -10.2, WALL_Z, 0, BOX.town_wall, 1);
+  b.prop('town_wall', 10.2, WALL_Z, 0, BOX.town_wall, 1);
+  for (let i = -7; i <= 7; i++) {
+    b.prop('town_wall', i * 6.0, -38, 0, BOX.town_wall, 1);
+  }
+  for (const sx of [-42, 42]) {
+    for (let i = 0; i < 12; i++) {
+      b.prop('town_wall', sx, -39 + i * 6.0, Math.PI / 2, BOX.town_wall, 1);
+    }
+  }
+  for (const [cx, cz] of [[-42, 26], [42, 26], [-42, -38], [42, -38]]) {
+    b.prop('gate_tower', cx, cz, 0, BOX.gate_tower, 1);
+  }
+  // The gate: real piers (the model existed only as a name until this round —
+  // the fort's flanks were invisible colliders), and the arch beam over the
+  // opening as pure scenery: no box, walk through.
+  b.prop('gate_tower', -5.9, WALL_Z, 0, BOX.gate_tower, 1);
+  b.prop('gate_tower', 5.9, WALL_Z, 0, BOX.gate_tower, 1);
+  b.prop('town_arch', 0, WALL_Z, 0, null, 1);
+  // Outside the wall: the road up, and what the last fight left on it.
+  b.prop('truck_wreck', 11, 33, 0.9, BOX.truck_wreck, 1);
+  b.prop('sandbags', -8, 31, 0.3, BOX.sandbags, 1.2);
+  // A guard post just inside the arch.
+  b.prop('checkpoint', -7, 22, 0, BOX.checkpoint, 1);
+  b.prop('sandbags', 7, 22.5, -0.2, BOX.sandbags, 1.1);
 
-  // ---- the two street-facing rows either side of the main north road ----
-  habQuarter(b, {
-    street: 13,
-    blocks: [
-      [-2, -2, 0], [-2, -1, 0], [-2, 1, 0], [-2, 2, 0],
-      [2, -2, 0], [2, -1, 0], [2, 1, 0], [2, 2, 0],
-    ],
-  });
-  // ---- an east-west row along the top, closing the square off ----
-  habQuarter(b, {
-    street: 13,
-    blocks: [[-1, -3, Math.PI / 2], [0, -3, Math.PI / 2], [1, -3, Math.PI / 2]],
-  });
+  // ---- the road in: a loose gate row, then it opens onto the square ----
+  // Three buildings, not four parallel rows: the road is ~13m wide and the
+  // town breathes around it, the way the model games' towns do.
+  b.prop('town_house_2', -8.4, 16, Math.PI / 2, BOX.town_house_2, 1);
+  b.prop('town_house', 8.6, 17.5, -Math.PI / 2, BOX.town_house, 1);
+  b.prop('town_house_2', 8.8, 9.5, -Math.PI / 2, BOX.town_house_2, 1);
 
-  // The market square itself: awnings and stalls improvised out of containers
-  // and crates, left where the traders dropped them.
-  b.prop('container', -7, -4, 0, BOX.container, 1);
-  b.prop('container', 7, -3, 0, BOX.container, 1);
-  b.prop('crate', -4, 1, 0.4, BOX.crate, 1);
-  b.prop('crate', -3, 2.4, 1.2, BOX.crate, 1);
-  b.prop('crate', 4.5, 0.5, 0.8, BOX.crate, 1);
-  b.prop('barrier', -2, 6, 0, BOX.barrier, 1);
-  b.prop('barrier', 2, 6, 0, BOX.barrier, 1);
-  b.prop('generator', 9, 5, 0, BOX.generator, 1);
+  // ---- the square: stalls around a well, the hall at its head ----
+  b.prop('market_stall', -7, 2, 0, BOX.market_stall, 1);
+  b.prop('market_stall', -7, -7, 0, BOX.market_stall, 1);
+  b.prop('market_stall', 7, 2, Math.PI, BOX.market_stall, 1);
+  b.prop('market_stall', 7, -7, Math.PI, BOX.market_stall, 1);
+  // The pump house is the well: offset from the centre like a real one.
+  b.prop('generator', 3.4, -1.5, 0.15, BOX.generator, 1);
+  b.prop('crate', -2.4, 1.4, 0.4, BOX.crate, 1);
+  b.prop('town_hall', 0, -17, 0, BOX.town_hall, 1);
 
-  // A checkpoint on the south approach — the way in, and the first thing the
-  // garrison will try to hold.
-  b.prop('checkpoint', -4, 22, 0, BOX.checkpoint, 1);
-  b.prop('checkpoint', 4, 22, 0, BOX.checkpoint, 1);
-  b.prop('sandbags', -8, 20, 0.3, BOX.sandbags, 1.2);
-  b.prop('sandbags', 8, 20, -0.3, BOX.sandbags, 1.2);
-  b.prop('truck_wreck', 12, 17, 0.9, BOX.truck_wreck, 1);
+  // ---- the west quarter: housing, staggered, with air between ----
+  b.prop('town_house', -20, 10, 0, BOX.town_house, 1);
+  b.prop('town_house_2', -28, 4, Math.PI / 2, BOX.town_house_2, 1);
+  b.prop('town_house', -19, -2, Math.PI / 2, BOX.town_house, 1);
+  b.prop('town_house', -28, -12, 0, BOX.town_house, 1);
+  b.prop('town_house_2', -20, -14, Math.PI, BOX.town_house_2, 1);
+  b.prop('pipe_run', -24, -3, 0, BOX.pipe_run, 1);
 
-  // Watchtowers on the corners. They are what makes an approach across the
-  // open south side genuinely expensive.
-  b.prop('watchtower', -20, 14, 0, BOX.watchtower, 1);
-  b.prop('watchtower', 20, 14, 0, BOX.watchtower, 1);
+  // ---- the east quarter: the trade yard ----
+  b.prop('town_house_2', 24, 6, -Math.PI / 2, BOX.town_house_2, 1);
+  b.prop('container', 27, -2, 0.15, BOX.container, 1);
+  b.prop('container', 30, -8, 0, BOX.container, 1);
+  b.prop('generator', 25, -13, 0, BOX.generator, 1);
 
-  // Back lanes: rubbish, drums and a catwalk between two roofs.
-  b.prop('catwalk', -13, -8, Math.PI / 2, BOX.catwalk, 1);
-  b.prop('pipe_run', 15, -10, 0, BOX.pipe_run, 1);
-  b.scatter(['crate'], 9, 0, -6, 26, () => BOX.crate);
-  b.scatter(['rock_0', 'rock_1'], 8, 0, 26, 30);
-  b.perimeter(56);
+  // ---- the north quarter: the station the town is named for ----
+  b.prop('bunker', -12, -28, 0, BOX.bunker, 1.1);
+  b.prop('comms_mast', -3, -30, 0, BOX.comms_mast, 1.2);
+  b.prop('antenna_small', -7, -27, 0, BOX.antenna_small, 1);
+  b.prop('town_house', 14, -27, Math.PI, BOX.town_house, 1);
+  b.prop('town_house_2', 24, -26, Math.PI / 2, BOX.town_house_2, 1);
+
+  // Rubbish where people live: in the quarters' pockets, never in the road.
+  b.scatter(['crate'], 5, 6, -24, 5, () => BOX.crate);
+  b.scatter(['crate'], 5, -15, 15, 5, () => BOX.crate);
+  b.scatter(['crate'], 4, 17, 12, 4, () => BOX.crate);
+
+  // Reserved AFTER the authored scatters (which use clear() and would refuse
+  // reserved ground) and BEFORE the random passes build() runs next: the
+  // road out to the spawn, and the whole interior, so outskirt clusters land
+  // outside the walls where they belong.
+  b.protect(0, 36, 4.4, 24);
+  b.protect(0, -6, 41, 31);
+  b.scatter(['rock_0', 'rock_1'], 8, 0, 44, 34);
+  b.perimeter(64);
 
   return {
     name: 'THE TOWN',
@@ -846,30 +941,29 @@ function siteSettlement(b) {
       fog: 0x55483a, ground: 0x5a5142, groundLow: 0x312b22, acc: 0x565c38,
       sky: 0x4a4038, sun: 0xf0c88c, sunI: 3.2, amb: 0x6a6a74, ambI: 2.0,
     },
-    playerSpawn: { x: 0, z: 42, ry: 0 },
-    extraction: { x: 0, z: 45 },
+    playerSpawn: { x: 0, z: 50, ry: 0 },
+    extraction: { x: 0, z: 53 },
     enemyFaction: 'syndic',
-    objectivePoint: { x: 0, z: -2 },
+    objectivePoint: { x: 0, z: -5 },
     // Where things are in town, for the walking visit. Each anchor sits on
-    // open street beside its structure — the market among the stalls, the
-    // board at the square's south edge where the traffic passes, hiring and
-    // the infirmary at the mouths of the east and west lanes, the notable's
-    // door in the north row. The gate is the south checkpoint, which is also
-    // how you leave. A layout that declares no areas cannot be walked; add
-    // these to its builder to open it up.
+    // open ground beside its structure: the trader in the stall aisle, the
+    // clerk where the road opens onto the square, the hiring agent at the
+    // trade yard, the medic in the west quarter, the notable behind the hall.
+    // The way out is just inside the arch. A layout that declares no areas
+    // cannot be walked; add these to its builder to open it up.
     areas: [
-      { id: 'market', x: -6, z: 1, service: 'market', label: 'The market' },
-      { id: 'board', x: 0, z: 8.5, service: 'contracts', label: 'The posting board' },
-      { id: 'recruit', x: 12, z: -2, service: 'recruit', label: 'The hiring row' },
-      { id: 'medical', x: -12, z: -2, service: 'medical', label: 'The infirmary' },
-      { id: 'favour', x: 0, z: -12, label: 'A door with a name on it' },
+      { id: 'market', x: -4.4, z: -3, service: 'market', label: 'The market' },
+      { id: 'board', x: 4.4, z: 10, service: 'contracts', label: 'The posting board' },
+      { id: 'recruit', x: 19.5, z: -2, service: 'recruit', label: 'The hiring row' },
+      { id: 'medical', x: -15, z: -2, service: 'medical', label: 'The infirmary' },
+      { id: 'favour', x: 0, z: -22.6, label: 'A door with a name on it' },
     ],
-    gate: { x: 0, z: 20 },
-    garrison: [[-6, 4], [6, 3], [0, -10], [-12, -6], [12, -5], [0, 14], [-16, 2], [16, 1]],
+    gate: { x: 0, z: 22.8 },
+    garrison: [[-3.2, 19], [3.2, 19], [-8, -3], [8, 4.6], [0, -10.5], [-24, -7], [24, -16], [0, -26]],
     patrols: [
-      [[-13, 14], [-13, -14], [13, -14], [13, 14], [-13, 14]],
-      [[0, 18], [0, -6], [0, 18]],
-      [[-20, -2], [20, -2], [-20, -2]],
+      [[-10.5, 1], [-10.5, -9.5], [10.5, -9.5], [10.5, 1], [-10.5, 1]],
+      [[0, 21], [0, 3.6], [0, 21]],
+      [[-35, 18], [-35, -33], [35, -33], [35, 18], [-35, 18]],
     ],
   };
 }
@@ -1073,6 +1167,16 @@ const SITES = {
  */
 export function build(siteId, seed, override = {}) {
   const b = new Builder(seed);
+  // Graded ground, decided BEFORE the layout runs: every prop seats itself
+  // against heightAt() as it is placed, so the pad cannot come from the
+  // layout's own return value. Keyed here, beside the site table. The pad
+  // covers the walled town; the fade reaches the terrain outside the gate.
+  const FLATTENS = {
+    settlement: { x: 0, z: -6, r: 56, fade: 14 },
+  };
+  const fl = FLATTENS[siteId];
+  FLAT = null;                                     // never inherit a pad
+  if (fl) FLAT = { ...fl, y: rawHeight(fl.x, fl.z) };
   // How much ground this particular fight gets.
   //
   // Every site used to be the same size whatever was happening on it, so a

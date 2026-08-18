@@ -4589,32 +4589,43 @@ test('a town can be walked, and the walk is not a deployment', async ({ page }) 
   expect(walk.areas).toContain('recruit');
   expect(walk.gate).toBe(1);
 
-  // Stand at the market and hold E: the trade panel must open over the
-  // paused walk, and closing it must hand the street back.
+  // Stand at the trader and hold E: their CHAT opens over the paused walk —
+  // a word first, business second — and its option leads into the trade
+  // panel. Closing hands the street back.
   await page.evaluate(() => {
     const m = window.KR.mission;
     const a = m.interactables.find((i) => i.kind === 'area' && i.area === 'market');
     m.player.x = a.x; m.player.z = a.z;
   });
   await page.keyboard.down('e');
-  await page.waitForFunction(() => window.KR.dev.UI.modalOpen(), null, { timeout: 8000 });
+  await page.waitForSelector('#modal [data-x="opt0"]', { timeout: 8000 });
   await page.keyboard.up('e');
   expect(await page.evaluate(() => window.KR.mission.paused),
-    'the walk ran on underneath the market panel').toBe(true);
+    'the walk ran on underneath the chat').toBe(true);
+  expect(await page.evaluate(() =>
+    document.querySelector('#modal .modal-title')?.textContent?.trim()))
+    .toBe('THE TRADER');
+  await page.click('#modal [data-x="opt0"]');
+  // The chat's option opened the trade screen over it.
+  await page.waitForFunction(() =>
+    document.querySelector('#modal .modal-title')?.textContent?.trim() !== 'THE TRADER'
+    && window.KR.dev.UI.modalOpen(), null, { timeout: 5000 });
   await page.click('#modal [data-x="close"]');
   await page.waitForFunction(() => !window.KR.mission.paused, null, { timeout: 5000 });
 
-  // Leave by the gate: back on the map, and the campaign never heard about a
-  // "deployment" — a walk must not count as one or pay like one.
+  // Leave through the gate watch's chat: back on the map, and the campaign
+  // never heard about a "deployment" — a walk must not count as one.
   await page.evaluate(() => {
     const m = window.KR.mission;
     const g = m.interactables.find((i) => i.kind === 'leave');
     m.player.x = g.x; m.player.z = g.z;
   });
   await page.keyboard.down('e');
+  await page.waitForSelector('#modal [data-x="opt0"]', { timeout: 8000 });
+  await page.keyboard.up('e');
+  await page.click('#modal [data-x="opt0"]');
   await page.waitForFunction(() => !window.KR.mission && window.KR.world,
     null, { timeout: 10000 });
-  await page.keyboard.up('e');
   const after = await page.evaluate(() => ({
     missions: window.KR.campaign.stats.missions,
     atTown: window.KR.dev.State.locationAt(window.KR.campaign, 38)?.id,

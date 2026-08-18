@@ -2492,6 +2492,32 @@ export function encounterPanel(S, party, cbs) {
   });
 }
 
+/**
+ * A word with somebody in town.
+ *
+ * The walk used to hold E on a person and open their bare panel, which made
+ * the people vending machines. This is the beat between: their name, a line
+ * in their own voice, and the choice of doing business or moving on — the
+ * shape the games this models use for every town conversation. Options route
+ * back through the caller, which opens the appropriate screen OVER this one;
+ * GOOD DAY hands the street back.
+ */
+export function townChat(S, { who, line, options }, cbs) {
+  modal({
+    title: who.toUpperCase(),
+    tag: 'IN TOWN',
+    body: `<div class="prose">${esc(line)}</div>`,
+    foot: options.map((o, i) => `<button class="btn ${o.major ? 'btn-major' : ''}"
+      data-x="opt${i}">${esc(o.label)}</button>`).join('')
+      + '<button class="btn" data-x="close">GOOD DAY</button>',
+    onClose: cbs.onClose,
+  });
+  wire(Object.fromEntries([
+    ...options.map((o, i) => [`opt${i}`, () => cbs.onPick(o.id)]),
+    ['close', onCloseWrap(cbs.onClose)],
+  ]));
+}
+
 // --------------------------------------------------------------------------
 // Deployment picker
 // --------------------------------------------------------------------------

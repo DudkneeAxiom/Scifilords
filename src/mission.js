@@ -1012,7 +1012,7 @@ export class Mission {
     watch.released = true;
     this.interactables.push({
       kind: 'leave', entity: watch, x: watch.x, z: watch.z,
-      progress: 0, need: 0.8, label: 'Back to the road',
+      progress: 0, need: 0.8, label: 'Speak with the gate watch',
     });
     // Townsfolk, so the streets read as lived-in rather than evacuated. The
     // worker model, unbound; they stand where the day put them.
@@ -1353,8 +1353,13 @@ export class Mission {
     for (let i = 0; i < 3; i++) {
       const a = (i / 3) * Math.PI * 2 + this.r() * 0.7;
       const d = 12 + this.r() * 10;
-      const cx = clamp(o.x + Math.cos(a) * d, -this.level.bounds + 8, this.level.bounds - 8);
-      const cz = clamp(o.z + Math.sin(a) * d, -this.level.bounds + 8, this.level.bounds - 8);
+      // Snapped to open ground: a store rolled into the middle of a hab block
+      // is a raid that can never be completed, and the town is a lot denser
+      // than it was.
+      const safe = this.safeSpawn(
+        clamp(o.x + Math.cos(a) * d, -this.level.bounds + 8, this.level.bounds - 8),
+        clamp(o.z + Math.sin(a) * d, -this.level.bounds + 8, this.level.bounds - 8));
+      const cx = safe.x, cz = safe.z;
       const it = {
         kind: 'loot', x: cx, z: cz, taken: false, progress: 0, need: 2.6,
         label: 'Break it open',
@@ -2767,6 +2772,15 @@ export class Mission {
       return;
     }
     if (it.kind === 'leave') {
+      // Through the gate watch's chat when the shell is listening — leaving
+      // is a word with somebody, like everything else in town. The direct
+      // end remains for a Mission driven without a shell (tests, probes).
+      if (this.onArea) {
+        it.progress = 0;
+        Audio.uiSelect();
+        this.onArea('gate');
+        return;
+      }
       it.done = true;
       this.endMission(true, 'left');
     }

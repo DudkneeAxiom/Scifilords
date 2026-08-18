@@ -1,6 +1,6 @@
 # Handoff
 
-Current as of the visits round (the commit carrying this file),
+Current as of the town-rebuild round (the commit carrying this file),
 **100/100 acceptance tests passing**. Pushed history lives at
 <https://github.com/DudkneeAxiom/Scifilords>; push only when asked.
 
@@ -483,6 +483,38 @@ Open, in rough priority order:
    visiting — menu or walk — the company token leaves the world map
    (`setInside`), and the menu's WAIT verb passes six hours a click with the
    clock in the panel tag, so being in town is being somewhere.
+
+   The settlement is now a real town with its own asset kit, authored in
+   tools/blender/build.py to the scale of the person walking past: town_house
+   (one storey, a 2.05m door, windows at eye height), town_house_2 (two true
+   2.7m storeys with a balcony), town_hall (the civic front on the square),
+   market_stall (counter-height collision, canvas overhead), town_wall (3.2m
+   coursed masonry — the rampart stays the siege piece), gate_tower (which
+   two layouts referenced and nobody had ever authored: Models.get returned
+   an empty group, so the fort had been flanking its gate with INVISIBLE
+   colliders), and town_arch (scenery only, no box — the opening is the
+   point). The wall is a FULL 84x64 circuit with a gate_tower at each of the
+   four corners and one south arch; inside, the buildings sit in staggered
+   QUARTERS with air between them — west housing, east trade yard, the
+   station north, stalls around an off-centre well with the hall at the
+   square's head — rather than parallel rows, which read as a barracks
+   however good the models were. The ground inside is a graded pad
+   (`FLATTENS` in level.js build() — set before the layout runs, because
+   props seat against heightAt() as they are placed), and the whole interior
+   plus the road out to the spawn is `b.protect()`ed so the random dressing
+   passes land outside the walls.
+
+   Rules its geometry taught. The arch is an OPEN gap — a door would need
+   the siege's breach mechanic in every raid, defense and visit; do not
+   "finish" it by adding one. The road through the arch is `b.protect()`ed
+   ground: the random dressing passes only avoid EXISTING obstacles, so an
+   empty road stays open by luck until it is reserved — the arch was open or
+   blocked depending on the campaign seed until that call existed. Raid
+   stores safeSpawn-snap for the same density reason. And if you add kit
+   models, they must be named in THREE places or they fail quietly:
+   tools/blender/build.py (the mesh), src/models.js MODELS (the preload),
+   and BOX in src/level.js (the collision the audit test checks against the
+   mesh).
 
    Limits worth knowing before extending it. Only `settlement`-layout towns
    offer the walk — a layout opts in by declaring `areas` and a `gate` in its

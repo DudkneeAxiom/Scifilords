@@ -469,35 +469,84 @@ function handleTownArea(spec, area) {
   if (document.pointerLockElement) document.exitPointerLock();
   const back = () => { if (G.mission && !G.mission.over) G.mission.paused = false; };
 
-  if (area === 'market') {
-    UI.inventoryPanel(S, { onClose: back, onLoadout: () => openLoadout() });
-  } else if (area === 'board') {
-    const openBoardHere = () => UI.contractPanel(S, {
-      onAccept: (id) => { State.acceptContract(S, id); openBoardHere(); },
-      onClose: back,
-    });
-    openBoardHere();
-  } else if (area === 'recruit' || area === 'medical') {
-    // The services panel, without onRaid/onPit — the panel hides those
-    // buttons when the callbacks are absent, and robbing a town mid-stroll
-    // is a decision for the map, not for a doorway.
-    const openHere = () => UI.settlementPanel(S, loc, {
-      onRefresh: () => openHere(),
-      onBoard: () => UI.contractPanel(S, {
-        onAccept: (id) => { State.acceptContract(S, id); openHere(); },
-        onClose: () => openHere(),
-      }),
-      onTrade: () => UI.inventoryPanel(S, {
-        onClose: () => openHere(), onLoadout: () => openLoadout(),
-      }),
-      onClose: back,
-    });
-    openHere();
-  } else if (area === 'favour') {
-    UI.favourPanel(S, loc, { onClose: back, onDone: back });
-  } else {
-    back();
-  }
+  const openTrade = () => UI.inventoryPanel(S, { onClose: back, onLoadout: () => openLoadout() });
+  const openBoardHere = () => UI.contractPanel(S, {
+    onAccept: (id) => { State.acceptContract(S, id); openBoardHere(); },
+    onClose: back,
+  });
+  // The services panel, without onRaid/onPit — the panel hides those buttons
+  // when the callbacks are absent, and robbing a town mid-stroll is a
+  // decision for the map, not for a doorway.
+  const openServices = () => UI.settlementPanel(S, loc, {
+    onRefresh: () => openServices(),
+    onBoard: () => UI.contractPanel(S, {
+      onAccept: (id) => { State.acceptContract(S, id); openServices(); },
+      onClose: () => openServices(),
+    }),
+    onTrade: () => UI.inventoryPanel(S, {
+      onClose: () => openServices(), onLoadout: () => openLoadout(),
+    }),
+    onClose: back,
+  });
+  const openFavour = () => UI.favourPanel(S, loc, { onClose: back, onDone: back });
+
+  // A word first, business second: each person gets a line in their own
+  // voice and options that lead into the appropriate screen — the panels
+  // open OVER the chat, the way settlement verbs already work.
+  const CHATS = {
+    market: {
+      who: 'The trader',
+      line: 'Prices are what the road makes them. Everything on these stalls '
+        + 'came through that gate one way or another — have a look.',
+      options: [{ id: 'trade', label: 'SEE THE STALLS', major: true }],
+    },
+    board: {
+      who: 'The posting clerk',
+      line: 'Work goes up when it comes in, and it has been coming in. '
+        + 'Read the board; ask me nothing the board can answer.',
+      options: [{ id: 'board', label: 'READ THE BOARD', major: true }],
+    },
+    recruit: {
+      who: 'The hiring agent',
+      line: 'People come through looking to sign with anyone who feeds them. '
+        + 'Some of them can even shoot. I keep the honest list.',
+      options: [{ id: 'services', label: 'WHO IS LOOKING FOR WORK', major: true }],
+    },
+    medical: {
+      who: 'The medic',
+      line: 'Kits, beds, and no questions. Bring your wounded in before the '
+        + 'rot does the deciding for you.',
+      options: [{ id: 'services', label: 'INTO THE INFIRMARY', major: true }],
+    },
+    favour: {
+      who: spec.favourWho || 'A notable',
+      line: 'You will want to hear this from me, not from the street.',
+      options: [{ id: 'favour', label: 'HEAR THEM OUT', major: true }],
+    },
+    gate: {
+      who: 'The gate watch',
+      line: 'The road is the road and the walls are ours. Say the word when '
+        + 'you want the one traded for the other.',
+      options: [{ id: 'leave', label: 'BACK TO THE ROAD', major: true }],
+    },
+  };
+  const chat = CHATS[area];
+  if (!chat) { back(); return; }
+  UI.townChat(S, chat, {
+    onClose: back,
+    onPick: (id) => {
+      if (id === 'trade') openTrade();
+      else if (id === 'board') openBoardHere();
+      else if (id === 'services') openServices();
+      else if (id === 'favour') openFavour();
+      else if (id === 'leave') {
+        // closeModal fires the chat's onClose (which unpauses) and then the
+        // walk ends — the order is harmless, and endMission handles the rest.
+        UI.closeModal();
+        G.mission?.endMission(true, 'left');
+      }
+    },
+  });
 }
 
 // --------------------------------------------------------------------------
