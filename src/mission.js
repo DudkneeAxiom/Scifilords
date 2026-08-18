@@ -173,6 +173,8 @@ export class Mission {
     this.interactables = [];
     this.keys = new Set();
     this.mouse = { down: false, right: false };
+    this.mouseVel = { x: 0, y: 0 };
+    this.pStamina = 1;                     // the commander's wind, 0..1
     this.marker = null;
     this.result = null;
     this.stats = { kills: 0, shotsFired: 0, medkitsUsed: 0 };
@@ -728,6 +730,14 @@ export class Mission {
       sight: opts.sight ?? 55,
       aggression: opts.aggression ?? 0.5,
       coverPref: opts.coverPref ?? 0.4,
+      // The melee era: the swing in flight, the guard, and the plate on
+      // the off arm. shieldHp 0 means no shield; the guard still turns
+      // some steel bare-handed, just not arrows.
+      swing: null,
+      guard: 0,
+      guardBreak: 0,
+      shieldHp: opts.shieldHp ?? 0,
+      blockArc: opts.blockArc ?? 2.1,
       order: 'follow',
       orderPoint: null,
       target: null,
@@ -859,6 +869,10 @@ export class Mission {
     if (this.player.weapon) {
       this.player.ammo = Math.round(this.player.weapon.mag * (ef.magMul || 1));
     }
+    if (cmd.kit === 'shield') {
+      this.player.shieldHp = KIT.shield.shieldHp;
+      this.player.blockArc = KIT.shield.blockArc;
+    }
 
     this.squad = [];
     for (let i = 1; i < this.squadSoldiers.length; i++) {
@@ -894,6 +908,12 @@ export class Mission {
       ent.maxHp = e2.maxHp;
       ent.hp = Math.min(s.hp, e2.maxHp);
       if (ent.weapon) ent.ammo = Math.round(ent.weapon.mag * (e2.magMul || 1));
+      // The plate shield rides the gear slot: carry one and the guard has
+      // something real behind it.
+      if (s.kit === 'shield') {
+        ent.shieldHp = KIT.shield.shieldHp;
+        ent.blockArc = KIT.shield.blockArc;
+      }
       this.squad.push(ent);
     }
     this.squadOrder = 'follow';
@@ -2019,12 +2039,15 @@ export class Mission {
       if (e.repeat) return;
       const k = e.key.toLowerCase();
       this.keys.add(k);
-      if (k === 'r') this.tryReload(this.player);
+      if (k === 'r' && !this.player?.weapon?.melee) this.tryReload(this.player);
       if (k === 'e') this.interactStart = true;
-      // Q swaps shoulders; the order wheel lives on the middle mouse button.
-      // In the tactical view Q/E rotate the board instead — held, not
-      // tapped, read per-frame in updateTacticalCamera.
-      if (k === 'q' && !this.rts) this.swapShoulder();
+      // Q swaps shoulders behind a gun; with steel in hand it is the boot —
+      // the can-opener that breaks a guard at contact range. In the
+      // tactical view Q/E rotate the board instead.
+      if (k === 'q' && !this.rts) {
+        if (this.player?.weapon?.melee) this.kick(this.player);
+        else this.swapShoulder();
+      }
       // One context button, the way a cover shooter does it: it takes cover if
       // there is cover, leaves it if you are in it, and vaults otherwise. A
       // separate key for each would be three things to remember in a firefight.
@@ -2130,6 +2153,10 @@ export class Mission {
       }
       if (document.pointerLockElement !== el) return;
       if (this.wheel?.open) { this.steerWheel(e.movementX, e.movementY); return; }
+      // A decaying record of recent hand motion: the direction a swing is
+      // thrown comes from how the hand was moving when it was thrown.
+      this.mouseVel.x = this.mouseVel.x * 0.7 + e.movementX;
+      this.mouseVel.y = this.mouseVel.y * 0.7 + e.movementY;
       const s = 0.0022 * (this.mouse.right ? 0.55 : 1);
       this.camYaw -= e.movementX * s;
       // A positive pitch raises the camera above the look target, i.e. looks
@@ -2885,6 +2912,154 @@ export class Mission {
     return { x: e.x - this.player.x, z: e.z - this.player.z };
   }
 
+  // ------------------------------------------------------------------
+  // The melee era: swings, guards, and the wind to throw them with.
+  // A swing is a COMMITTED thing — it has a windup the other man can
+  // read, an apex where the steel arrives, and a recovery you pay for.
+  // Resolution happens at the apex in updateSwing, never on the click.
+  // ------------------------------------------------------------------
+
+  /** Begin a swing. Direction is animation flavour; the arc is the rule. */
+  strike(e, dir = 'right') {
+    const w = e.weapon;
+    if (!w?.melee || e.cooldown > 0 || e.swing || e.arriving > 0) return;
+    let dur = 60 / w.rpm;
+    if (e.isPlayer) {
+      // Tired swings drag. The bar also gates sprint — one wind, all of it.
+      if (this.pStamina < 0.2) dur *= 1.5;
+      this.pStamina = Math.max(0, this.pStamina - 0.18);
+      this.stats.swings = (this.stats.swings || 0) + 1;
+    }
+    e.swing = { t: 0, dur, dir, hitDone: false };
+    e.cooldown = dur + 0.12;               // recovery beyond the follow-through
+    e.guard = 0;                           // you cannot hide behind a swing
+    this.raiseAlarm(e, e.target || { x: e.x, z: e.z });
+  }
+
+  /** Advance a swing; the steel arrives at the apex. */
+  updateSwing(dt, e) {
+    const s = e.swing;
+    if (!s) return;
+    s.t += dt;
+    if (!s.hitDone && s.t >= s.dur * 0.55) {
+      s.hitDone = true;
+      this.resolveStrike(e);
+    }
+    if (s.t >= s.dur) e.swing = null;
+  }
+
+  /**
+   * The apex: an arc sweep in front of the swinger, nearest valid body
+   * inside reach. Blocks, shields, spear rules and stagger all live here,
+   * because here is where the steel actually meets somebody.
+   */
+  resolveStrike(e) {
+    const w = e.weapon;
+    const reach = (w.reach || 2) + 0.5;    // arm on top of the steel
+    const halfArc = (w.arc ?? 1.6) / 2 + 0.15;
+    let best = null, bd = Infinity;
+    for (const t of this.entities) {
+      if (t === e || t.dead || t.isTitan) continue;
+      if (t.side === e.side) continue;
+      if (t.inserting) continue;
+      const dx = t.x - e.x, dz = t.z - e.z;
+      const d = Math.hypot(dx, dz);
+      if (d > reach + 0.4) continue;
+      if (Math.abs(angleDelta(Math.atan2(dx, dz), e.yaw)) > halfArc) continue;
+      if (d < bd) { bd = d; best = t; }
+    }
+    if (!best) return;
+
+    let dmg = w.damage;
+    // A spear is a wall at its point and a walking stick inside it.
+    if (w.insideMin && bd < w.insideMin) dmg *= w.insideMul;
+    // Braced steel meets a charge: closing speed is the target's own doing.
+    if (w.brace) {
+      const vx = best.x - (best.lastX ?? best.x), vz = best.z - (best.lastZ ?? best.z);
+      const closing = -(vx * (best.x - e.x) + vz * (best.z - e.z));
+      if (closing > 0.03) dmg *= w.brace;
+    }
+    // Melee skill: the swinger's accuracy stat is their bladework.
+    dmg *= 0.7 + (e.eff?.accuracy ?? e.acc ?? 0.6) * 0.6;
+
+    // The guard: facing the blow, inside the protected frontage.
+    const offFacing = Math.abs(angleDelta(
+      Math.atan2(e.x - best.x, e.z - best.z), best.yaw));
+    const guarded = (best.guard || 0) > 0 && !best.swing
+      && !(best.guardBreak > 0)
+      && offFacing < ((best.blockArc ?? 2.1) / 2);
+    if (guarded) {
+      if ((best.shieldHp || 0) > 0) {
+        // The plate takes it. Half weight through the arm, mauls triple.
+        best.shieldHp -= Math.max(4, dmg * (w.shieldMul ?? 1) * 0.5);
+        if (best.shieldHp <= 0) {
+          best.shieldHp = 0;
+          if (best.isPlayer || e.isPlayer) this.onToast('SHIELD GONE', 'The plate is done', 'bad');
+        }
+        dmg = 0;
+      } else {
+        dmg *= 0.3;                        // bare steel turns most of it
+      }
+      if (best.isPlayer) this.pStamina = Math.max(0, this.pStamina - 0.15);
+      Audio.impact('metal', this.relPos(best));
+    }
+    // Stagger: weight interrupts. A maul cancels a sword mid-swing;
+    // equals trade cancels; a blade staggers nothing.
+    if (best.swing && (w.stagger ?? 1) >= (best.weapon?.stagger ?? 1)
+      && (w.stagger ?? 1) > 0) {
+      best.swing = null;
+      best.cooldown = Math.max(best.cooldown, 0.35);
+    }
+    if (dmg > 0) {
+      const hy = Level.heightAt(best.x, best.z) + 1.2 + (best.elev || 0);
+      this.applyDamage(best, dmg, e, { x: best.x, y: hy, z: best.z });
+    } else {
+      best.char.flinch();
+    }
+    e.char.kick();                          // follow-through weight
+  }
+
+  /** The commander's wind: swings and sprint spend it, standing still buys it back. */
+  updateStamina(dt, sprinting) {
+    if (sprinting) this.pStamina = Math.max(0, this.pStamina - dt * 0.1);
+    else this.pStamina = Math.min(1, this.pStamina + dt * 0.25);
+  }
+
+  /** Read the swing direction off recent hand motion. */
+  swingDirFromMouse() {
+    const { x, y } = this.mouseVel;
+    if (Math.abs(y) > Math.abs(x) * 1.4) return y < 0 ? 'overhead' : 'thrust';
+    return x < 0 ? 'left' : 'right';
+  }
+
+  /**
+   * The kick: not a killer, a can-opener. Breaks a guard at boot range so
+   * the next swing lands on somebody, and shoves them half a step.
+   */
+  kick(e) {
+    if (e.cooldown > 0.2 || e.swing) return;
+    e.cooldown = Math.max(e.cooldown, 0.5);
+    let best = null, bd = Infinity;
+    for (const t of this.entities) {
+      if (t === e || t.dead || t.side === e.side || t.isTitan) continue;
+      const d = Math.hypot(t.x - e.x, t.z - e.z);
+      if (d > 1.5) continue;
+      if (Math.abs(angleDelta(Math.atan2(t.x - e.x, t.z - e.z), e.yaw)) > 0.9) continue;
+      if (d < bd) { bd = d; best = t; }
+    }
+    if (!best) return;
+    best.guardBreak = 0.9;                  // the guard means nothing for a beat
+    best.guard = 0;
+    const d = Math.max(0.001, bd);
+    const px = (best.x - e.x) / d, pz = (best.z - e.z) / d;
+    const nx = best.x + px * 0.7, nz = best.z + pz * 0.7;
+    const rm = Level.resolveMove(this.level.obstacles, best.x, best.z, nx, nz,
+      Level.heightAt(best.x, best.z) + (best.elev || 0));
+    best.x = rm.x; best.z = rm.z;
+    best.char.flinch();
+    Audio.impact('body', this.relPos(best));
+  }
+
   /** Fire one round from `e` toward a world point. */
   fire(e, tx, ty, tz, spreadScale = 1) {
     const w = e.weapon;
@@ -3428,9 +3603,13 @@ export class Mission {
     this.updateStance(dt);
     this.aiming = this.mouse.right;
     this.updateCover(dt);
-    // You cannot sprint from a crouch or in mid-air.
+    // You cannot sprint from a crouch or in mid-air — and with steel in
+    // hand, not on an empty tank either. One wind pays for swings and
+    // sprints both, which is what makes a charge a decision.
     const sprint = this.keys.has('shift') && !this.aiming
-      && this.crouch < 0.3 && this.grounded;
+      && this.crouch < 0.3 && this.grounded
+      && !(p.weapon?.melee && this.pStamina <= 0.05);
+    if (p.weapon?.melee) this.updateStamina(dt, sprint);
 
     let mx = 0, mz = 0;
     if (this.keys.has('w')) mz += 1;
@@ -3495,7 +3674,25 @@ export class Mission {
     }
     p.cooldown = Math.max(0, p.cooldown - dt);
 
-    if (this.mouse.down && !this.paused) {
+    if (p.weapon?.melee) {
+      // The melee era: LMB throws a swing whose direction is read off the
+      // hand, RMB is the guard, and the guard means nothing mid-swing or
+      // for a beat after taking a boot.
+      this.updateSwing(dt, p);
+      if (p.guardBreak > 0) p.guardBreak -= dt;
+      p.guard = (this.mouse.right && !p.swing && !(p.guardBreak > 0)) ? 1 : 0;
+      if (this.mouse.down && !this.paused) {
+        if (!this.firedThisClick && p.cooldown <= 0) {
+          // The body commits to the camera's facing the moment steel moves.
+          p.yaw = this.camYaw + Math.PI;
+          this.strike(p, this.swingDirFromMouse());
+          this.firedThisClick = true;
+        }
+      } else {
+        this.firedThisClick = false;
+      }
+      this.mouseVel.x *= 0.82; this.mouseVel.y *= 0.82;
+    } else if (this.mouse.down && !this.paused) {
       const w = p.weapon;
       if (w.auto || !this.firedThisClick) {
         if (p.cooldown <= 0) {
@@ -4044,6 +4241,9 @@ export class Mission {
     }
 
     e.cooldown = Math.max(0, e.cooldown - dt);
+    // Steel in flight resolves whoever is driving the body.
+    this.updateSwing(dt, e);
+    if (e.guardBreak > 0) e.guardBreak -= dt;
     // A reinforcement is on the field but not yet in the fight.
     if (e.arriving > 0) e.arriving = Math.max(0, e.arriving - dt);
 
@@ -4436,6 +4636,18 @@ export class Mission {
     const w = e.weapon;
     if (!w || e.reloading > 0) return;
     if (this.inserting) return;
+    // Steel does not shoot. The movement layer has already closed the
+    // distance (the standoff band reads w.range, and a reach-valued range
+    // walks the AI into contact); all that is decided here is whether the
+    // target is in front of the point and the arm is rested.
+    if (w.melee) {
+      if (d > (w.reach || 2) + 0.7) return;
+      if (Math.abs(angleDelta(e.yaw, Math.atan2(t.x - e.x, t.z - e.z))) > 0.5) return;
+      // A soldier under a swing raises what guard they have.
+      e.guard = t.swing && !e.swing ? 1 : 0;
+      if (e.cooldown <= 0 && !e.swing) this.strike(e);
+      return;
+    }
     // Losing the shot decays readiness rather than erasing it, so a target
     // bobbing in and out of cover still eventually draws fire.
     // Losing the shot also un-ranges it, at half the rate it was gained: a
@@ -5316,6 +5528,12 @@ export class Mission {
         turn: e.turnRate || 0,
         slopePitch,
         slopeRoll,
+        // The melee era: swing phase 0..1, its thrown direction, and the
+        // guard blend. The rig turns these into arms; nothing else does.
+        melee: !!e.weapon?.melee,
+        swing: e.swing ? Math.min(1, e.swing.t / e.swing.dur) : 0,
+        swingDir: e.swing?.dir || 'right',
+        guard: e.guard || 0,
       });
       // Anything standing on top of the camera is removed from the render.
       // A squadmate holding formation directly behind the commander sits almost
@@ -5375,6 +5593,12 @@ export class Mission {
       hp: Math.max(0, p.hp), maxHp: p.maxHp,
       ammo: p.ammo, mag: p.weapon.mag, reloading: p.reloading > 0,
       weapon: p.weapon.abbr, weaponName: p.weapon.name,
+      // The melee era's readout: wind instead of rounds, plate instead of
+      // a magazine. The shell decides how to draw it.
+      melee: !!p.weapon.melee,
+      stamina: this.pStamina,
+      shieldHp: p.shieldHp || 0,
+      guarding: (p.guard || 0) > 0,
       aiming: this.aiming,
       // The insertion cinematic is a camera move, not gameplay. The crosshair
       // sat over it the whole way in, which reads as though the player has

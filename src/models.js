@@ -453,11 +453,15 @@ export function makeCharacter(variant, weaponModel = null, tint = null) {
     speed = 0, moveX = 0, moveZ = 0, aiming = false, down = false, dead = false,
     pitch = 0, reload = 0, sprint = false, turn = 0,
     slopePitch = 0, slopeRoll = 0,
+    melee = false, swing: swingPh = 0, swingDir = 'right', guard = 0,
   } = {}) {
     const s = state;
 
     // ---- blend the discrete states -------------------------------------
-    s.aim = smooth(s.aim, aiming && !down ? 1 : 0, dt, 12);
+    // Behind steel, "aim" is the guard: same close-shoulder camera pose,
+    // different arms below.
+    s.aim = smooth(s.aim, (melee ? guard > 0 : aiming) && !down ? 1 : 0, dt, 12);
+    s.guardBlend = smooth(s.guardBlend || 0, melee && guard > 0 ? 1 : 0, dt, 10);
     s.downed = smooth(s.downed, down || dead ? 1 : 0, dt, dead ? 7 : 5);
     s.recoil = Math.max(0, s.recoil - dt * 8);
     s.flinch = Math.max(0, s.flinch - dt * 5);
@@ -537,30 +541,74 @@ export function makeCharacter(variant, weaponModel = null, tint = null) {
     const rlDown = Math.sin(clamp(reload, 0, 1) * Math.PI) ** 0.7;
 
     const a = s.aim;
-    if (rig.armR) {
-      rig.armR.rotation.x = rest.armR.x + lerp(lowR.x, aimR.x, a) + s.recoil * 0.30 + rl * 0.10;
-      rig.armR.rotation.z = rest.armR.z + lerp(lowR.z, aimR.z, a);
-    }
-    setX(rig.elbowR, rest.elbowR.x + lerp(lowR.e, aimR.e, a) + s.recoil * 0.22);
-    if (rig.armL) {
-      rig.armL.rotation.x = rest.armL.x + lerp(lowL.x, aimL.x, a) + rlDown * 0.85;
-      rig.armL.rotation.z = rest.armL.z + lerp(lowL.z, aimL.z, a) + rl * 0.30;
-    }
-    setX(rig.elbowL, rest.elbowL.x + lerp(lowL.e, aimL.e, a) - rlDown * 0.55);
+    if (melee) {
+      // ---- the melee arms --------------------------------------------
+      // Carry: steel low at the side. Guard: weapon up across the body.
+      // Swing: one bell — windup raises the arm over 55% of the phase,
+      // the chop drives it through over the rest, with the direction
+      // pushing the shoulder's Z so overhead/left/right/thrust read.
+      const ph = clamp(swingPh, 0, 1);
+      const wind = ph < 0.55 ? ph / 0.55 : 1;
+      const chop = ph < 0.55 ? 0 : (ph - 0.55) / 0.45;
+      const dirZ = swingDir === 'left' ? -0.55 : swingDir === 'right' ? 0.45
+        : swingDir === 'overhead' ? 0.0 : 0.15;
+      const dirRaise = swingDir === 'overhead' ? -2.5
+        : swingDir === 'thrust' ? -1.35 : -2.0;
+      const g = s.guardBlend;
+      // Right arm: carry −0.5 → guard −1.1 → windup dirRaise → chop 0.75.
+      const baseX = lerp(-0.50, -1.10, g);
+      const armX = ph > 0
+        ? lerp(lerp(baseX, dirRaise, wind), 0.75, chop)
+        : baseX;
+      if (rig.armR) {
+        rig.armR.rotation.x = rest.armR.x + armX + s.flinch * 0.15;
+        rig.armR.rotation.z = rest.armR.z + (ph > 0 ? dirZ * wind * (1 - chop) : lerp(0.12, 0.30, g));
+      }
+      setX(rig.elbowR, rest.elbowR.x + (ph > 0 ? lerp(-0.5, -0.15, chop) : lerp(-0.55, -0.85, g)));
+      // Left arm: hangs on the carry, braces across on the guard (that is
+      // where the shield lives when there is one).
+      if (rig.armL) {
+        rig.armL.rotation.x = rest.armL.x + lerp(-0.30, -1.05, g) - ph * 0.1;
+        rig.armL.rotation.z = rest.armL.z + lerp(-0.08, -0.45, g);
+      }
+      setX(rig.elbowL, rest.elbowL.x + lerp(-0.5, -1.15, g));
+      if (weapon) {
+        // Blade vertical-ish at carry, levelled on guard, and the swing
+        // whips its pitch through the chop.
+        const armDelta = (rig.armR ? rig.armR.rotation.x - rest.armR.x : 0)
+          + (rig.elbowR ? rig.elbowR.rotation.x - rest.elbowR.x : 0);
+        const restPitch = lerp(0.85, 0.15, g);
+        const swingPitch = ph > 0 ? lerp(-0.5 * wind, 1.1, chop) : 0;
+        weapon.rotation.x = restPitch + swingPitch - armDelta * 0.6;
+        weapon.rotation.z = lerp(0.12, 0.02, g);
+        weapon.position.z = 0;
+      }
+    } else {
+      if (rig.armR) {
+        rig.armR.rotation.x = rest.armR.x + lerp(lowR.x, aimR.x, a) + s.recoil * 0.30 + rl * 0.10;
+        rig.armR.rotation.z = rest.armR.z + lerp(lowR.z, aimR.z, a);
+      }
+      setX(rig.elbowR, rest.elbowR.x + lerp(lowR.e, aimR.e, a) + s.recoil * 0.22);
+      if (rig.armL) {
+        rig.armL.rotation.x = rest.armL.x + lerp(lowL.x, aimL.x, a) + rlDown * 0.85;
+        rig.armL.rotation.z = rest.armL.z + lerp(lowL.z, aimL.z, a) + rl * 0.30;
+      }
+      setX(rig.elbowL, rest.elbowL.x + lerp(lowL.e, aimL.e, a) - rlDown * 0.55);
 
-    // ---- weapon ----------------------------------------------------------
-    // The weapon's pitch is driven directly rather than inherited from the arm
-    // chain. Parented naively it swings wildly with the shoulder and ends up
-    // pointing at the sky the moment the arm comes up.
-    if (weapon) {
-      const armDelta = (rig.armR ? rig.armR.rotation.x - rest.armR.x : 0)
-        + (rig.elbowR ? rig.elbowR.rotation.x - rest.elbowR.x : 0);
-      // Positive pitches the muzzle down. Low-ready points it at the ground
-      // ahead; shouldered, it follows the aim.
-      const wantPitch = lerp(0.62, pitch, a) + rlDown * 0.35 - s.recoil * 0.22;
-      weapon.rotation.x = wantPitch - armDelta;
-      weapon.rotation.z = lerp(0.20, 0.02, a);
-      weapon.position.z = -s.recoil * 0.06;    // kick back into the shoulder
+      // ---- weapon --------------------------------------------------------
+      // The weapon's pitch is driven directly rather than inherited from the
+      // arm chain. Parented naively it swings wildly with the shoulder and
+      // ends up pointing at the sky the moment the arm comes up.
+      if (weapon) {
+        const armDelta = (rig.armR ? rig.armR.rotation.x - rest.armR.x : 0)
+          + (rig.elbowR ? rig.elbowR.rotation.x - rest.elbowR.x : 0);
+        // Positive pitches the muzzle down. Low-ready points it at the ground
+        // ahead; shouldered, it follows the aim.
+        const wantPitch = lerp(0.62, pitch, a) + rlDown * 0.35 - s.recoil * 0.22;
+        weapon.rotation.x = wantPitch - armDelta;
+        weapon.rotation.z = lerp(0.20, 0.02, a);
+        weapon.position.z = -s.recoil * 0.06;  // kick back into the shoulder
+      }
     }
 
     // ---- collapse --------------------------------------------------------

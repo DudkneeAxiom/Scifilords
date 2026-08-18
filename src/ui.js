@@ -358,12 +358,24 @@ export function renderMissionHud(h) {
   // Strong enough to feel, weak enough to still fight through.
   $('suppress-vig').style.opacity = String(Math.min(0.55, (h.suppression || 0) * 0.62));
 
-  // Weapon
+  // Weapon. Behind steel the readout is wind and plate, not rounds — a
+  // sword has no magazine and the bar that matters is the one that gates
+  // the next swing.
   $('w-name').textContent = h.weapon;
-  $('w-cur').textContent = h.ammo;
-  $('w-mag').textContent = h.mag;
-  $('w-cur').parentElement.classList.toggle('low', h.ammo <= h.mag * 0.25);
-  $('w-state').textContent = h.reloading ? 'RELOADING' : (h.ammo === 0 ? 'EMPTY — R' : '');
+  if (h.melee) {
+    const sta = Math.round((h.stamina ?? 1) * 100);
+    $('w-cur').textContent = sta;
+    $('w-mag').textContent = 'WIND';
+    $('w-cur').parentElement.classList.toggle('low', sta <= 20);
+    $('w-state').textContent = h.guarding
+      ? (h.shieldHp > 0 ? `GUARD — PLATE ${Math.round(h.shieldHp)}` : 'GUARD')
+      : (h.shieldHp > 0 ? `PLATE ${Math.round(h.shieldHp)}` : '');
+  } else {
+    $('w-cur').textContent = h.ammo;
+    $('w-mag').textContent = h.mag;
+    $('w-cur').parentElement.classList.toggle('low', h.ammo <= h.mag * 0.25);
+    $('w-state').textContent = h.reloading ? 'RELOADING' : (h.ammo === 0 ? 'EMPTY — R' : '');
+  }
 
   // Vitals
   const vp = Math.max(0, Math.round((h.hp / Math.max(1, h.maxHp)) * 100));

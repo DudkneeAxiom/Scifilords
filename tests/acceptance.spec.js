@@ -6823,3 +6823,108 @@ test('a plain coat and borrowed plates: hostile gates, quiet errands, posters', 
   expect(r.caught).toBe(true);
   expect(r.shed).toBe(true);
 });
+
+test('steel arrives at the apex: swings, guards, spears, and the boot', async ({ page }) => {
+  await boot(page);
+  await newCampaign(page);
+  await page.evaluate(async () => {
+    const { Mission } = await import('/src/mission.js');
+    const UI = await import('/src/ui.js');
+    const G = window.KR;
+    const S = G.campaign;
+    S.roster[0].weapon = 'sword';
+    G.mission?.dispose();
+    G.world?.dispose(); G.world = null;
+    document.getElementById('viewport').innerHTML = '';
+    UI.show('hud');
+    G.mission = new Mission({
+      campaign: S,
+      spec: { type: 'skirmish', site: 'roadside', layout: 'roadside', enemyFaction: 'raider' },
+      squad: S.roster.slice(0, 2),
+      container: document.getElementById('viewport'),
+      onHud: () => {}, onToast: () => {}, onIntro: () => {}, onWheel: () => {}, onEnd: () => {},
+    });
+    await G.mission.start();
+    G.mission.paused = true;
+  });
+  await page.waitForFunction(() => window.KR.mission?.player, null, { timeout: 40000 });
+  const r = await page.evaluate(async () => {
+    const { WEAPONS, KIT } = await import('/src/data.js');
+    const m = window.KR.mission;
+    const p = m.player;
+    const foe = m.entities.find((e) => e.side === 'enemy' && !e.dead);
+    // Square up: the foe two metres in front of the point — with a sparring
+    // partner's constitution, because this test lands five blows on them.
+    foe.x = p.x; foe.z = p.z + 2.0; foe.weapon = WEAPONS.sword; foe.guard = 0;
+    foe.hp = 500; foe.maxHp = 500;
+    p.yaw = Math.atan2(foe.x - p.x, foe.z - p.z);
+    // 1) A landed swing: resolution at the apex, damage through.
+    const hp0 = foe.hp;
+    m.strike(p, 'overhead');
+    const midSwing = !!p.swing && p.swing.hitDone === false;
+    m.updateSwing(p.swing.dur * 0.6, p);
+    const hit = hp0 - foe.hp;
+    // 2) The guard turns it: same blow into a raised shield, plate pays.
+    p.swing = null; p.cooldown = 0;
+    foe.guard = 1; foe.shieldHp = KIT.shield.shieldHp;
+    foe.yaw = Math.atan2(p.x - foe.x, p.z - foe.z);
+    const hp1 = foe.hp;
+    m.strike(p, 'right');
+    m.updateSwing(p.swing.dur * 0.6, p);
+    const blocked = foe.hp === hp1;
+    const platePaid = KIT.shield.shieldHp - foe.shieldHp;
+    // 3) The boot breaks the guard, and the next swing lands. A kick is a
+    // contact move — step to boot range first.
+    p.swing = null; p.cooldown = 0;
+    foe.x = p.x; foe.z = p.z + 1.2;
+    m.kick(p);
+    const guardBroken = foe.guardBreak > 0 && foe.guard === 0;
+    const hp2 = foe.hp;
+    p.cooldown = 0;
+    foe.x = p.x; foe.z = p.z + 2.0;                 // the kick shoved them
+    m.strike(p, 'left');
+    m.updateSwing(p.swing.dur * 0.6, p);
+    const landedThroughBreak = foe.hp < hp2;
+    // 4) A spear is a wall at its point and a walking stick inside it.
+    p.swing = null; p.cooldown = 0; foe.guard = 0; foe.guardBreak = 0;
+    p.weapon = WEAPONS.spear;
+    foe.x = p.x; foe.z = p.z + 3.2;                 // at the point
+    const hpA = foe.hp;
+    m.strike(p, 'thrust'); m.updateSwing(p.swing.dur * 0.6, p);
+    const atPoint = hpA - foe.hp;
+    p.swing = null; p.cooldown = 0;
+    foe.x = p.x; foe.z = p.z + 0.9;                 // inside it
+    const hpB = foe.hp;
+    m.strike(p, 'thrust'); m.updateSwing(p.swing.dur * 0.6, p);
+    const inside = hpB - foe.hp;
+    // 5) Weight interrupts: a maul cancels a sword mid-swing.
+    p.swing = null; p.cooldown = 0;
+    p.weapon = WEAPONS.heavy;
+    foe.weapon = WEAPONS.sword;
+    foe.swing = { t: 0, dur: 0.55, dir: 'right', hitDone: false };
+    foe.x = p.x; foe.z = p.z + 2.0;
+    m.strike(p, 'overhead'); m.updateSwing(p.swing.dur * 0.6, p);
+    const staggered = foe.swing === null;
+    // 6) The wind: swings spend it, standing buys it back.
+    const sta0 = m.pStamina;
+    m.updateStamina(2.0, false);
+    return {
+      midSwing, hit, blocked, platePaid, guardBroken, landedThroughBreak,
+      atPoint, inside, staggered, staSpent: sta0 < 1, staBack: m.pStamina > sta0,
+      melee: !!p.weapon.melee,
+    };
+  });
+  expect(r.midSwing).toBe(true);
+  expect(r.hit).toBeGreaterThan(10);
+  expect(r.blocked).toBe(true);
+  expect(r.platePaid).toBeGreaterThan(0);
+  expect(r.guardBroken).toBe(true);
+  expect(r.landedThroughBreak).toBe(true);
+  expect(r.atPoint).toBeGreaterThan(0);
+  // Inside the reach the same spear lands at 60% weight.
+  expect(r.inside).toBeGreaterThan(0);
+  expect(r.inside).toBeLessThan(r.atPoint * 0.8);
+  expect(r.staggered).toBe(true);
+  expect(r.staSpent).toBe(true);
+  expect(r.staBack).toBe(true);
+});
