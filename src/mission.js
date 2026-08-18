@@ -1002,6 +1002,22 @@ export class Mission {
         progress: 0, need: 0.8, label: who.label,
       });
     }
+    // A companion, when the rotation puts one here: a named hire drinking
+    // near the market, with a story and a price. Meeting them is the walk's
+    // own reward — they exist nowhere else.
+    if (this.spec.companion) {
+      const cnpc = this.spawnEntity({
+        id: 'npc_comp', side: 'civil', faction: null,
+        x: -2.5, z: -1, yaw: 2.4, hp: 60, weapon: null,
+        model: 'soldier_prisoner', speed: 3.0, name: this.spec.companion.name,
+      });
+      cnpc.released = true;
+      this.interactables.push({
+        kind: 'area', area: 'companion', entity: cnpc, x: cnpc.x, z: cnpc.z,
+        progress: 0, need: 0.8, label: 'Someone worth talking to',
+      });
+    }
+
     // The way out is people too: a gate watch at the checkpoint.
     const gate = this.level.gate || this.level.objectivePoint;
     const watch = this.spawnEntity({

@@ -1384,3 +1384,44 @@ export const POLICIES = {
 };
 
 export const POLICY_LIST = Object.keys(POLICIES);
+
+/**
+ * Companions: named people with a past, found drinking near the market of
+ * whichever town the day's rotation puts them in. Each is a real soldier
+ * with a fixed name, a role, and a price — the M&B shape: you meet them,
+ * they tell you who they are, and the company either can afford them or
+ * cannot. Deliberately few and deliberately good: a companion should feel
+ * like a find, not a vending option.
+ */
+export const COMPANIONS = [
+  {
+    id: 'jorsa', name: 'Jorsa Vell', role: 'marksman', fee: 900, origin: 'littoral',
+    line: 'Ran overwatch for a Trust survey team until the Trust stopped paying '
+      + 'for what it saw. I hit what I look at. Ask the survey team.',
+  },
+  {
+    id: 'brik', name: 'Brik Halloran', role: 'breacher', fee: 750, origin: 'works',
+    line: 'Twelve years opening doors for the plant unions. Some doors were '
+      + 'locked, some were arguments. I open both.',
+  },
+  {
+    id: 'senna', name: 'Senna Kade', role: 'medic', fee: 1100, origin: 'free',
+    line: 'I kept a hab quarter of four thousand alive through two sieges. '
+      + 'I can keep your handful breathing through anything smaller.',
+  },
+  {
+    id: 'okkam', name: 'Okkam Dree', role: 'gunner', fee: 950, origin: 'scour',
+    line: 'The Scour teaches you to carry weight and hold ground. I do not '
+      + 'move when it gets loud. That is the entire skill.',
+  },
+  {
+    id: 'perrin', name: 'Perrin Ashe', role: 'signals', fee: 800, origin: 'sarn',
+    line: 'I listened to the whole Reach for the uplands relay. I still hear '
+      + 'most of it. You would be surprised what pays wages twice.',
+  },
+  {
+    id: 'vex', name: 'Vex Odell', role: 'rifleman', fee: 700, origin: 'free',
+    line: 'Deserted twice, from both of them. I know every pass, ford and '
+      + 'blind ridge in the basin — that is why both of them still want me.',
+  },
+];

@@ -8,7 +8,7 @@ import {
   LOCATIONS, MISSION_TYPES, FACTIONS, REGION, REGIONS, WEAPONS, KIT, ROLES, GOODS, GOODS_LIST,
   HOLDING_UPGRADES, UPGRADE_LIST, HOLDING_YIELD, TROOP_PATHS, RANKS, PARTY_TIERS, PARTY_TIER_LIST, renownTier,
   ARMOUR, ARMOUR_LIST, ORIGINS, originForLocation, CREEDS, REGARD_TIERS, FAVOURS,
-  FIRST_NAMES, LAST_NAMES, POLICIES, POLICY_LIST,
+  FIRST_NAMES, LAST_NAMES, POLICIES, POLICY_LIST, COMPANIONS,
 } from './data.js';
 import {
   startingCompany, makeSoldier, dayTick, STATUS, deployable, addXp, maxHpOf,
@@ -4189,4 +4189,40 @@ export function spawnDistressAmbush(S, x, z) {
   p.x = x + 20; p.z = z;
   p.hostileToPlayer = true;
   return p;
+}
+
+// --------------------------------------------------------------------------
+// Companions: named hires met in town walks
+// --------------------------------------------------------------------------
+
+/** Which companion, if any, is drinking in this town today. */
+export function companionAt(S, locId) {
+  const hired = S.companionsHired || [];
+  const pool = COMPANIONS.filter((c) => !hired.includes(c.id));
+  if (!pool.length) return null;
+  // Deterministic rotation: one companion somewhere most days, moving town
+  // to town on a cycle the player can actually follow rumors about.
+  const towns = LOCATIONS.filter((l) => l.services?.includes('market'));
+  const slot = Math.floor(S.day / 2) % towns.length;
+  if (towns[slot]?.id !== locId) return null;
+  return pool[Math.floor(S.day / 2) % pool.length];
+}
+
+/** They shake on it: fee out of the ledger, a named soldier onto the roster. */
+export function hireCompanion(S, compId) {
+  const c = COMPANIONS.find((x) => x.id === compId);
+  if (!c || (S.companionsHired || []).includes(c.id)) return { ok: false, why: 'Gone' };
+  if (S.credits < c.fee) return { ok: false, why: 'The fee is beyond the ledger' };
+  S.credits -= c.fee;
+  S.companionsHired = [...(S.companionsHired || []), c.id];
+  const r = rng((S.seed + c.id.length * 977) | 0);
+  const s = makeSoldier(r, {
+    role: c.role, rank: 1, how: `Signed on at a market table, day ${S.day}`,
+    day: S.day, name: c.name, origin: c.origin,
+    avoid: S.roster.map((x) => x.name),
+  });
+  s.companion = true;
+  S.roster.push(s);
+  pushLog(S, `${c.name} signed on with Bracket.`, 'good');
+  return { ok: true, soldier: s };
 }

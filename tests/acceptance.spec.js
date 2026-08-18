@@ -4738,3 +4738,45 @@ test('the living world survives save and load: battles, signals, wreckage', asyn
   expect(r.strengthAfter, 'the thawed battle stopped burning')
     .toBeLessThan(r.strengthBefore);
 });
+
+test('a companion is a find: one town, one story, one fee, one soldier', async ({ page }) => {
+  await boot(page);
+  await newCampaign(page);
+  const r = await page.evaluate(async () => {
+    const State = await import('/src/state.js');
+    const { LOCATIONS, COMPANIONS } = await import('/src/data.js');
+    const S = State.newCampaign(31415);
+    // Exactly one market town hosts a companion on any given day.
+    const hosts = LOCATIONS.filter((l) => l.services?.includes('market'))
+      .filter((l) => State.companionAt(S, l.id));
+    const c = State.companionAt(S, hosts[0].id);
+    // Too poor, then rich enough: the fee is a real gate.
+    S.credits = 0;
+    const refused = State.hireCompanion(S, c.id);
+    S.credits = c.fee + 100;
+    const before = S.roster.length;
+    const hired = State.hireCompanion(S, c.id);
+    const again = State.companionAt(S, hosts[0].id);
+    return {
+      hosts: hosts.length,
+      refused: refused.ok,
+      hired: hired.ok,
+      name: hired.soldier?.name,
+      wantName: c.name,
+      credits: S.credits,
+      rosterGrew: S.roster.length === before + 1,
+      companionFlag: S.roster.some((s) => s.companion),
+      // Hired means gone from the rotation — the same person cannot be
+      // standing at two market tables.
+      goneOrDifferent: !again || again.id !== c.id,
+    };
+  });
+  expect(r.hosts).toBe(1);
+  expect(r.refused).toBe(false);
+  expect(r.hired).toBe(true);
+  expect(r.name).toBe(r.wantName);
+  expect(r.credits).toBe(100);
+  expect(r.rosterGrew).toBe(true);
+  expect(r.companionFlag).toBe(true);
+  expect(r.goneOrDifferent).toBe(true);
+});

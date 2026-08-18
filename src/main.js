@@ -456,6 +456,7 @@ function startVisit(loc) {
     type: 'visit', site: loc.id, layout: loc.layout || 'settlement',
     siteName: loc.name, services: loc.services,
     hasFavour: !!fav, favourWho: fav?.who || null, locId: loc.id,
+    companion: State.companionAt(S, loc.id),
   };
   // The commander walks alone. A squad in tow turns every lane into a
   // pathing exercise, and nobody brings four riflemen to buy rations.
@@ -525,6 +526,11 @@ function handleTownArea(spec, area) {
       line: 'You will want to hear this from me, not from the street.',
       options: [{ id: 'favour', label: 'HEAR THEM OUT', major: true }],
     },
+    companion: spec.companion ? {
+      who: spec.companion.name,
+      line: spec.companion.line + ' The fee is ' + spec.companion.fee + ', once, and I stay hired.',
+      options: [{ id: 'hire', label: 'SIGN THEM ON (' + spec.companion.fee + ')', major: true }],
+    } : null,
     gate: {
       who: 'The gate watch',
       line: 'The road is the road and the walls are ours. Say the word when '
@@ -541,6 +547,14 @@ function handleTownArea(spec, area) {
       else if (id === 'board') openBoardHere();
       else if (id === 'services') openServices();
       else if (id === 'favour') openFavour();
+      else if (id === 'hire') {
+        const res = State.hireCompanion(S, spec.companion.id);
+        if (!res.ok) { Audio.uiDeny(); UI.toast('', res.why, 'bad'); return; }
+        UI.closeModal();
+        UI.toast('SIGNED ON', res.soldier.name + ' joins the company', 'good');
+        spec.companion = null;
+        back();
+      }
       else if (id === 'leave') {
         // closeModal fires the chat's onClose (which unpauses) and then the
         // walk ends — the order is harmless, and endMission handles the rest.
