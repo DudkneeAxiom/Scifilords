@@ -46,7 +46,7 @@ async function takeContractAt(page, site, type) {
       S.contracts.push(c);
     }
     c.accepted = true;
-    const L = { rampart: [-60, -290], perran: [240, 60], grellan: [200, -230] }[site];
+    const L = { rampart: [-160, -760], perran: [620, 160], grellan: [520, -600] }[site];
     window.KR.world.stopTravel();
     S.pos.x = L[0];
     S.pos.z = L[1] + 12;

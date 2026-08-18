@@ -108,6 +108,10 @@ function rimAndBeyond(x, z, d) {
 // exactly where the road goes, a shortcut over the shoulder is slow and
 // blind, and "the long way around" is a phrase with geography in it.
 const RIDGES = [
+  // The north valley wall: the basin's towns sit in the low country south of
+  // it, the Sarn road cuts through it, and with the settlements spread out it
+  // is what makes the journey north read as CROSSING something.
+  { ax: -1500, az: -1250, bx: 800, bz: -1550, h: 125, w: 200 },
   { ax: 900, az: -600, bx: 1300, bz: 900, h: 120, w: 180 },    // core | Weal
   { ax: -900, az: -300, bx: -1200, bz: 800, h: 110, w: 170 },  // core | Scour
   { ax: -300, az: 1200, bx: 900, bz: 1500, h: 100, w: 160 },   // core | Littoral
@@ -148,14 +152,22 @@ export function regionHeight(x, z) {
   const rx1 = x * C1 - z * S1, rz1 = x * S1 + z * C1;
   const rx2 = x * C2 - z * S2, rz2 = x * S2 + z * C2;
   const rx3 = x * C3 - z * S3, rz3 = x * S3 + z * C3;
-  const ranges = Math.sin(rx1 * 0.0070 + 1.2) * Math.cos(rz1 * 0.0064 - 0.4) * 46;
-  const hills = Math.sin(rx2 * 0.0165 - 0.9) * Math.cos(rz2 * 0.0172 + 0.5) * 21
-    + Math.cos(rx3 * 0.0139 + 2.1) * Math.sin(rz3 * 0.0128 - 1.1) * 13;
+  // Ridge-and-valley, not egg-crate. The old octaves multiplied sines of
+  // NEARLY EQUAL frequency on both axes, which makes round blobs — a wave of
+  // hills whichever way you look, and no direction anywhere in the country.
+  // Stretching each band hard along its own rotated axis makes LONG features:
+  // ridgelines you travel beside, valley floors you travel along, and a grain
+  // the roads visibly agree with. Amplitude moved out of the mid-frequency
+  // blobs and into the long forms for the same reason.
+  const ranges = Math.sin(rx1 * 0.0062 + 1.2) * Math.cos(rz1 * 0.0019 - 0.4) * 60;
+  const cross = Math.sin(rx3 * 0.0041 - 0.5) * Math.cos(rz3 * 0.0015 + 0.8) * 30;
+  const hills = Math.sin(rx2 * 0.0165 - 0.9) * Math.cos(rz2 * 0.0058 + 0.5) * 12
+    + Math.cos(rx3 * 0.0139 + 2.1) * Math.sin(rz3 * 0.0128 - 1.1) * 7;
   const broken = Math.sin(rx3 * 0.0370 + 0.3) * Math.cos(rz1 * 0.0355 - 0.8) * 7;
   const grain = Math.sin(rx2 * 0.0450 - 1.4) * Math.cos(rz3 * 0.0435 + 0.9) * 3.5;
   // Relief grows toward the rim: the pan stays walkable, the edges get savage.
   const relief = 0.55 + Math.min(d, 1.1) * 0.9;
-  return rim + swell + (ranges + hills + broken + grain) * relief;
+  return rim + swell + (ranges + cross + hills + broken + grain) * relief;
 }
 
 /**
@@ -278,7 +290,12 @@ export function travelFactor(x, z) {
   // all of them worse. NORM is the reciprocal of the mean factor measured
   // across the playable area, so a typical stretch of country comes out at 1.
   const NORM = 1.52;
-  const rough = NORM / (1 + slope * 1.9);
+  // Capped near neutral: the ridge-and-valley rework gave the world genuinely
+  // FLAT valley floors, and an uncapped norm drove every flat tile into the
+  // clamp ceiling — road and off-road alike, which silently made roads
+  // worthless exactly where people build them. Flat country is neutral;
+  // only a road is faster than neutral.
+  const rough = Math.min(1.06, NORM / (1 + slope * 1.9));
   const road = clamp(1 - roadDistance(x, z) / ROAD_REACH, 0, 1) * ROAD_BONUS;
   return clamp(rough * (1 + road), 0.72, 1.26);
 }

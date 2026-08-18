@@ -116,7 +116,7 @@ const runMission = async (site, type, label) => {
       S.contracts.push(c);
     }
     c.accepted = true;
-    const L = { rampart: [-60, -290], perran: [240, 60], grellan: [200, -230] }[site];
+    const L = { rampart: [-160, -760], perran: [620, 160], grellan: [520, -600] }[site];
     S.pos.x = L[0]; S.pos.z = L[1] + 12;
   }, [site, type]);
   await page.waitForTimeout(1200);

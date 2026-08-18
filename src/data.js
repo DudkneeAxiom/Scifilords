@@ -119,7 +119,7 @@ export const LOCATIONS = [
     kind: 'settlement',
     faction: 'trust',
     model: 'wm_settlement_trust',
-    x: -210, z: -160,
+    x: -550, z: -420,
     blurb: 'Rail depot and inventory house. Everything here is counted twice.',
     detail:
       'The Trust runs the Reach from Dolmet because the rail still works. Blast ' +
@@ -151,7 +151,7 @@ export const LOCATIONS = [
     kind: 'settlement',
     faction: 'syndic',
     model: 'wm_settlement_syndic',
-    x: 240, z: 60,
+    x: 620, z: 160,
     blurb: 'Hab blocks around a water reclaimer that must not stop.',
     detail:
       'Four thousand people and one reclaimer. The Syndics govern by shift ' +
@@ -182,7 +182,7 @@ export const LOCATIONS = [
     kind: 'settlement',
     faction: null,
     model: 'wm_settlement_neutral',
-    x: 40, z: 250,
+    x: 100, z: 650,
     blurb: 'A road junction that grew a market. No flag, by agreement.',
     detail:
       'Both sides buy here and both sides pretend they do not. The Crossing ' +
@@ -207,7 +207,7 @@ export const LOCATIONS = [
     kind: 'outpost',
     faction: 'trust',
     model: 'wm_outpost',
-    x: -60, z: -290,
+    x: -160, z: -760,
     blurb: 'Trust relay outpost. Feeds patrol coordination across the north.',
     detail:
       'A hard little post on the northern rim with a mast that talks to ' +
@@ -223,7 +223,7 @@ export const LOCATIONS = [
     kind: 'ruin',
     faction: null,
     model: 'wm_array',
-    x: 200, z: -230,
+    x: 520, z: -600,
     blurb: 'Dead deep-signal array. Predates both factions. Occupied by scrappers.',
     detail:
       'The dish is far too large for anything in the Reach and points at ' +
@@ -240,7 +240,7 @@ export const LOCATIONS = [
     kind: 'wild',
     faction: null,
     model: null,
-    x: -260, z: 190,
+    x: -680, z: 500,
     blurb: 'Lawless drainage flats. Nobody patrols it. Things cross it.',
     detail:
       'The low ground where the basin drains. Poisoned, unlit, and the fastest ' +
@@ -258,7 +258,7 @@ export const LOCATIONS = [
     kind: 'settlement',
     faction: 'syndic',
     model: 'wm_settlement_syndic',
-    x: -390, z: 150,
+    x: -1010, z: 390,
     blurb: 'A shaft head with a town on top of it. The Syndics were born here.',
     detail:
       'Everything at Harrow points down. The Deep still produces alloy and ' +
@@ -283,7 +283,7 @@ export const LOCATIONS = [
     kind: 'settlement',
     faction: null,
     model: 'wm_settlement_neutral',
-    x: 400, z: -30,
+    x: 1040, z: -80,
     blurb: 'A fuel stop that turned into a market. Buys anything, asks nothing.',
     detail:
       'The last serviceable pumping station on the eastern road. It survives ' +
@@ -308,7 +308,7 @@ export const LOCATIONS = [
     kind: 'outpost',
     faction: 'trust',
     model: 'wm_outpost',
-    x: 100, z: -390,
+    x: 260, z: -1010,
     blurb: 'Forward Trust depot. Everything that moves north moves through it.',
     detail:
       'Stacked to the roof with sealed crates nobody in the Reach is cleared ' +
@@ -325,7 +325,7 @@ export const LOCATIONS = [
     kind: 'ruin',
     faction: null,
     model: 'wm_array',
-    x: -400, z: -300,
+    x: -1040, z: -780,
     blurb: 'Drainage works from the old administration. Something still hums.',
     detail:
       'Nine was one of dozens that kept the basin dry. The pumps are dead, ' +
@@ -342,7 +342,7 @@ export const LOCATIONS = [
     kind: 'wild',
     faction: null,
     model: null,
-    x: -90, z: 400,
+    x: -230, z: 1040,
     blurb: 'Salt flats. Nothing grows, nothing hides, everything is visible.',
     detail:
       'Flat white ground for six kilometres in every direction. Crossing it is ' +
