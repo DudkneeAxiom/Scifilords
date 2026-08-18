@@ -15,7 +15,7 @@ import {
   effective, WOUNDS, resolveCasualty,
 } from './roster.js';
 import { companyMods } from './perks.js';
-import { travelFactor, clampToRegion } from './region.js';
+import { travelFactor, clampToRegion, ROADS as ROADS_DATA } from './region.js';
 import * as Dip from './diplomacy.js';
 import { rng, pick, irange, range, clamp, uid, uidFloor, setUidFloor } from './util.js';
 
@@ -827,6 +827,8 @@ export function advanceTime(S, hours) {
 function onNewDay(S, r) {
   maybeSpawnTitan(S, r);
   payday(S, r);
+  // World events: own stream, same reason as diplomacy below.
+  tickMapEvents(S, rng((S.seed ^ 0xe7e7) + S.day * 131));
   // The continent gets on with its own argument whether or not you are in it.
   //
   // On streams of their own, NOT the shared day-tick `r`. Every draw taken from
@@ -959,7 +961,7 @@ function maintainParties(S, r) {
 // over). Nobody waits for the player.
 // --------------------------------------------------------------------------
 
-const BATTLE_RANGE = 26;        // close enough that a meeting becomes a fight
+const BATTLE_RANGE = 42;        // close enough that a meeting becomes a fight
 const REINFORCE_RANGE = 300;    // how far the sound of one carries
 const BATTLE_BREAK = 0.4;       // a party routs below this share of its start
 
@@ -1343,6 +1345,32 @@ function moveParties(S, hours, r) {
       // they next settle rather than snapping back to where they were headed.
       p.target = null;
       continue;
+    }
+
+    // Predation is what makes parties MEET. A raider stalks the nearest
+    // weaker non-raider within sight; a faction band runs down raiders it
+    // outmatches. Without this, thirty parties on a six-kilometre map simply
+    // never pass within meeting range of each other — forty days of world
+    // ran without one battle before it existed.
+    if (canFieldBattle(p)) {
+      let quarry = null, qd = 300;
+      for (const q of S.parties) {
+        if (q.battle || !canFieldBattle(q) || !partiesHostile(S, p, q)) continue;
+        if (partyPower(p) < partyPower(q) * 0.85) continue;   // prey on the weaker
+        const d = Math.hypot(q.x - p.x, q.z - p.z);
+        if (d < qd) { qd = d; quarry = q; }
+      }
+      if (quarry) {
+        const dx = quarry.x - p.x, dz = quarry.z - p.z;
+        const d = Math.hypot(dx, dz) || 1;
+        const step = Math.min(d, Math.max(p.speed, 24) * 1.15 * hours * travelFactor(p.x, p.z));
+        p.x += (dx / d) * step;
+        p.z += (dz / d) * step;
+        p.heading = Math.atan2(dx, dz);
+        p.stalking = quarry.id;
+        continue;
+      }
+      p.stalking = null;
     }
 
     if (!p.target) { pickPartyTarget(S, r, p); continue; }
@@ -3679,9 +3707,14 @@ function partiesHostile(S, a, b) {
     return false;
   }
   const fa = a.faction, fb = b.faction;
+  // Raiders are everybody's problem and have no diplomacy — INCLUDING the
+  // unaligned trade caravans, which were invisible to them while this bailed
+  // on null factions. A convoy attack is the oldest event this game models
+  // itself on, and it emerges from this one line plus the battle system:
+  // raiders catch a trader, a patrol marches to the sound, the road keeps
+  // the wreckage.
+  if ((fa === 'raider') !== (fb === 'raider')) return true;
   if (!fa || !fb || fa === fb) return false;
-  // Raiders are everybody's problem and have no diplomacy.
-  if (fa === 'raider' || fb === 'raider') return true;
   return Dip.relationBetween(S, fa, fb) === 'war';
 }
 
@@ -4051,4 +4084,63 @@ export function load() {
 
 export function clearSave() {
   try { localStorage.removeItem(SAVE_KEY); } catch { /* ignore */ }
+}
+
+// --------------------------------------------------------------------------
+// World events with lifetimes
+//
+// Signals appear, mean something for a few days, and stop mattering — whether
+// or not anyone came. A distress call is not always what it says it is; an
+// old-regime transponder is never quite anything you expected. The rule that
+// makes them events rather than quest markers: they expire, and the world
+// does not explain the ones you missed.
+// --------------------------------------------------------------------------
+
+export function tickMapEvents(S, r) {
+  S.mapEvents = S.mapEvents || [];
+  S.mapEvents = S.mapEvents.filter((e) => S.day < e.expiresDay);
+  if (S.mapEvents.length >= 2) return;
+
+  if (r() < 0.45) {
+    // A distress signal near a road: somebody's bad day, or bait.
+    const seg = ROADS_FOR_EVENTS[Math.floor(r() * ROADS_FOR_EVENTS.length)];
+    const t = 0.25 + r() * 0.5;
+    const x = seg.ax + (seg.bx - seg.ax) * t + (r() - 0.5) * 160;
+    const z = seg.az + (seg.bz - seg.az) * t + (r() - 0.5) * 160;
+    S.mapEvents.push({
+      id: uid('evt'), kind: 'distress', x, z,
+      day: S.day, expiresDay: S.day + 2 + Math.floor(r() * 2),
+      // The die is cast when the signal is BORN, not when it is answered —
+      // saving and reloading in front of one changes nothing.
+      roll: r(),
+    });
+  } else if (r() < 0.18) {
+    // Old-regime hardware waking somewhere off the roads. Rare on purpose.
+    const wilds = LOCATIONS.filter((l) => l.kind === 'wild');
+    const at = wilds[Math.floor(r() * wilds.length)];
+    if (at && !S.mapEvents.some((e) => e.kind === 'oldsignal')) {
+      S.mapEvents.push({
+        id: uid('evt'), kind: 'oldsignal',
+        x: at.x + (r() - 0.5) * 120, z: at.z + (r() - 0.5) * 120,
+        day: S.day, expiresDay: S.day + 4 + Math.floor(r() * 3),
+        roll: r(),
+      });
+    }
+  }
+}
+
+// Road segments resolved once for event placement, same shape as region.js.
+const ROADS_FOR_EVENTS = [];
+for (const [a, b] of ROADS_DATA) {
+  const la = locById(a), lb = locById(b);
+  if (la && lb) ROADS_FOR_EVENTS.push({ ax: la.x, az: la.z, bx: lb.x, bz: lb.z });
+}
+
+/** A band stood up around a false distress signal. Returns the party. */
+export function spawnDistressAmbush(S, x, z) {
+  const r = rng((S.seed + Math.round(x * 7 + z * 13)) | 0);
+  const p = spawnParty(S, r, 'scrappers', 'vetch');
+  p.x = x + 20; p.z = z;
+  p.hostileToPlayer = true;
+  return p;
 }

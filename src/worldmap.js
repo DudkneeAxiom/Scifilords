@@ -49,13 +49,14 @@ const TERRITORY_TINTS = {
  */
 
 export class WorldMap {
-  constructor({ campaign, container, onEnterLocation, onEncounter, onHud, onBattle }) {
+  constructor({ campaign, container, onEnterLocation, onEncounter, onHud, onBattle, onEvent }) {
     this.S = campaign;
     this.container = container;
     this.onEnterLocation = onEnterLocation;
     this.onEncounter = onEncounter;
     this.onHud = onHud || (() => {});
     this.onBattle = onBattle || null;
+    this.onEvent = onEvent || null;
     this.partyMeshes = new Map();
     this.zoom = 1;
     this.disposed = false;
@@ -1089,6 +1090,21 @@ export class WorldMap {
       }
       m.position.set(s.x, regionHeight(s.x, s.z), s.z);
     }
+    for (const e of S.mapEvents || []) {
+      seen.add(e.id);
+      let m = this.eventMeshes.get(e.id);
+      if (!m) {
+        m = this.makeRing(e.kind === 'oldsignal' ? 0xa855c8 : 0xd8a83f, 22);
+        m.material.opacity = 0.6;
+        this.scene.add(m);
+        this.eventMeshes.set(e.id, m);
+      }
+      m.position.set(e.x, regionHeight(e.x, e.z) + 1.6, e.z);
+      // A beacon blinks; a transponder breathes. Different cadence, same glance.
+      m.material.opacity = e.kind === 'oldsignal'
+        ? 0.35 + Math.sin(performance.now() * 0.0012) * 0.25
+        : (Math.floor(performance.now() / 500) % 2 ? 0.75 : 0.2);
+    }
     for (const [id, m] of this.eventMeshes) {
       if (!seen.has(id)) {
         this.scene.remove(m);
@@ -1149,6 +1165,23 @@ export class WorldMap {
       this.nearSet = nowNear;
       this.nearSeeded = true;
       return;
+    }
+
+    // Signals and battlefields are arrived at the same way battles are: once,
+    // on approach, with the choice left standing.
+    this.eventSeen = this.eventSeen || new Set();
+    const arrivables = [
+      ...(S.mapEvents || []).map((e) => ({ ...e, _t: 'event' })),
+      ...(S.mapSites || []).filter((s) => s.loot).map((s) => ({ ...s, _t: 'site' })),
+    ];
+    for (const ev of arrivables) {
+      if (this.eventSeen.has(ev.id) || loc) break;
+      if (Math.hypot(ev.x - S.pos.x, ev.z - S.pos.z) > 34) continue;
+      this.eventSeen.add(ev.id);
+      this.stopTravel();
+      Audio.uiAlert();
+      this.onEvent?.(ev);
+      break;
     }
 
     // A battle in progress is something you ARRIVE AT — observed first, never

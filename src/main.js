@@ -107,6 +107,7 @@ function toWorld(isNew) {
     container: viewport,
     onEncounter: handleEncounter,
     onBattle: handleMapBattle,
+    onEvent: handleMapEvent,
     onHud: (h) => {
       // Never leave the Reach paused with nothing on top of it.
       //
@@ -961,4 +962,106 @@ function handleMapBattle(btl) {
       });
     },
   });
+}
+
+// A signal or a battlefield, arrived at. The die for a signal was cast the
+// day it was born (ev.roll), so answering one is opening an envelope, not
+// rolling in front of the judge — and not every envelope is honest.
+function handleMapEvent(ev) {
+  if (UI.modalOpen()) return;
+  const S = G.campaign;
+  G.world?.setPaused(true);
+  const done = () => {
+    S.mapEvents = (S.mapEvents || []).filter((e) => e.id !== ev.id);
+    S.mapSites = (S.mapSites || []).filter((s) => s.id !== ev.id);
+    G.world?.setPaused(false);
+  };
+  const leave = () => G.world?.setPaused(false);
+
+  if (ev._t === 'site') {
+    UI.modal({
+      title: 'A BATTLEFIELD',
+      tag: 'STILL SMOKING',
+      body: `<div class="prose">Somebody fought here and somebody lost. What is
+        left is not worth much, but it is worth stopping for.</div>`,
+      foot: `<button class="btn btn-major" data-x="take">PICK IT OVER</button>
+        <button class="btn" data-x="close">DRIVE ON</button>`,
+      onClose: leave,
+    });
+    document.querySelector('#modal [data-x="take"]').onclick = () => {
+      Audio.uiSelect();
+      UI.closeModal();
+      S.credits += ev.loot.credits;
+      S.cargo.salvage = (S.cargo.salvage || 0) + ev.loot.salvage;
+      UI.toast('SALVAGE', `${ev.loot.credits} credits, ${ev.loot.salvage} salvage`, 'good');
+      done();
+    };
+    return;
+  }
+
+  if (ev.kind === 'distress') {
+    UI.modal({
+      title: 'DISTRESS TRANSMISSION',
+      tag: 'SOURCE UNVERIFIED',
+      body: `<div class="prose">A repeating voice loop, thin with power. Somebody
+        needs help, or wants you to think so — the only way to know is to go in.</div>`,
+      foot: `<button class="btn btn-major" data-x="go">INVESTIGATE</button>
+        <button class="btn" data-x="close">NOT YOUR PROBLEM</button>`,
+      onClose: leave,
+    });
+    document.querySelector('#modal [data-x="go"]').onclick = () => {
+      Audio.uiSelect();
+      UI.closeModal();
+      const roll = ev.roll;
+      if (roll < 0.30) {
+        // Bait. The band is real and it is already stood up around you.
+        const p = State.spawnDistressAmbush(S, ev.x, ev.z);
+        done();
+        UI.toast('AMBUSH', 'The signal was bait', 'bad');
+        if (p) setTimeout(() => handleEncounter(p, { cornered: true }), 300);
+      } else if (roll < 0.55) {
+        S.credits += 120;
+        S.cargo.salvage = (S.cargo.salvage || 0) + 2;
+        done();
+        UI.toast('WRECK FOUND', 'Nobody alive. 120 credits and salvage in the hold', 'info');
+      } else if (roll < 0.8) {
+        const f = roll < 0.675 ? 'trust' : 'syndic';
+        S.rep[f] = (S.rep[f] || 0) + 2;
+        S.credits += 80;
+        done();
+        UI.toast('PATROL RECOVERED', `Their people owe you. ${f.toUpperCase()} +2, 80 credits`, 'good');
+      } else {
+        done();
+        S.morale = Math.min(100, (S.morale ?? 70) + 3);
+        S.credits += 60;
+        UI.toast('SURVIVOR', 'Walking wounded, grateful, and good for a reward', 'good');
+      }
+    };
+    return;
+  }
+
+  // oldsignal — the old regime does not explain itself.
+  UI.modal({
+    title: 'OLD REGIME TRANSPONDER',
+    tag: 'PROTOCOL UNKNOWN',
+    body: `<div class="prose">A carrier wave older than the Reach's records,
+      cycling an authentication nobody alive can answer.</div>`,
+    foot: `<button class="btn btn-major" data-x="go">APPROACH IT</button>
+      <button class="btn" data-x="close">LEAVE IT CYCLING</button>`,
+    onClose: leave,
+  });
+  document.querySelector('#modal [data-x="go"]').onclick = () => {
+    Audio.uiSelect();
+    UI.closeModal();
+    if (ev.roll < 0.5) {
+      S.credits += 300;
+      State.pushLog(S, 'A pre-charter cache, still sealed. Bracket does not ask twice.', 'good');
+      UI.toast('CACHE', '300 credits in old-regime scrip, still good', 'good');
+    } else {
+      S.cargo.optics = (S.cargo.optics || 0) + 2;
+      State.pushLog(S, 'The transponder guarded a survey vault. The optics alone paid for the detour.', 'good');
+      UI.toast('SURVEY VAULT', '2 optics recovered', 'good');
+    }
+    done();
+  };
 }
