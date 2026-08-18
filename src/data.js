@@ -1464,6 +1464,68 @@ export const POLICIES = {
 export const POLICY_LIST = Object.keys(POLICIES);
 
 /**
+ * Who you were before the charter had your name on it.
+ *
+ * M&B's creation questionnaire, cut to three questions: where you came up,
+ * what you did, and the day it went wrong. Every answer is a concrete
+ * adjustment to the start — the commander's origin (which feeds the same
+ * originMod every soldier's stats already run through), the ledger, the
+ * armoury, standing, the roster's regard. The first option in each group is
+ * the plain answer, and costs and grants nothing: you are allowed to be
+ * nobody in particular.
+ */
+export const BACKGROUNDS = {
+  origin: [
+    { id: 'freeborn', name: 'A free town, like a hundred others',
+      blurb: 'Nobody issued you anything, nobody owed you anything.', fx: {} },
+    { id: 'cantonment', name: 'A Trust cantonment',
+      blurb: 'Drilled young, issued everything. The Trust remembers its own; the Syndic remembers them too.',
+      fx: { cmdOrigin: 'trust', rep: { trust: 3, syndic: -2 } } },
+    { id: 'terraces', name: 'The Syndic terraces',
+      blurb: 'Fast, stubborn, used to fighting somebody better equipped. It shows both ways.',
+      fx: { cmdOrigin: 'syndic', rep: { syndic: 3, trust: -2 } } },
+    { id: 'openscour', name: 'The open Scour',
+      blurb: 'Hard country, cheap habits, luck where equipment should be.',
+      fx: { cmdOrigin: 'scour', credits: -80, morale: 4 } },
+    { id: 'anchorage', name: 'An anchorage deck',
+      blurb: 'Port work pays, and teaches you to read a manifest upside down.',
+      fx: { cmdOrigin: 'littoral', credits: 120 } },
+  ],
+  trade: [
+    { id: 'oddjobs', name: 'Whatever paid that week',
+      blurb: 'No trade, no tools, no debts.', fx: {} },
+    { id: 'convoy', name: 'Convoy guard',
+      blurb: 'You kept trucks alive for a living. Some of the kit came with you.',
+      fx: { armoury: { smg: 1 }, supplies: 4 } },
+    { id: 'clinic', name: 'Clinic runner',
+      blurb: 'You carried stock between infirmaries, and skimmed nothing. Almost nothing.',
+      fx: { medical: 3 } },
+    { id: 'clerk', name: 'Market clerk',
+      blurb: 'You know what a crate is worth in three towns, and you saved.',
+      fx: { credits: 250, cargo: { rations: 2 } } },
+    { id: 'pitfighter', name: 'Pit fighter',
+      blurb: 'Paid by the round. People remember your name; your ribs remember the work.',
+      fx: { renown: 40, cmdHp: 6 } },
+  ],
+  turn: [
+    { id: 'kept', name: 'Nothing went wrong. You just left',
+      blurb: 'The quietest reason is still a reason.', fx: {} },
+    { id: 'held', name: 'You held a line everyone else left',
+      blurb: 'It cost you everything but the story, and the story travels.',
+      fx: { morale: 8, renown: 15 } },
+    { id: 'ran', name: 'You ran, and lived',
+      blurb: 'You kept the pay and lost the sleep.',
+      fx: { credits: 150, morale: -5 } },
+    { id: 'buried', name: 'You buried your whole crew',
+      blurb: 'The ones who sign with you now know you carry your dead properly.',
+      fx: { regardAll: 10, medical: 2 } },
+    { id: 'took', name: 'You took what was owed',
+      blurb: 'Both powers have a file with your name in it. The money spent fine.',
+      fx: { credits: 300, rep: { trust: -2, syndic: -2 } } },
+  ],
+};
+
+/**
  * Companions: named people with a past, found drinking near the market of
  * whichever town the day's rotation puts them in. Each is a real soldier
  * with a fixed name, a role, and a price — the M&B shape: you meet them,

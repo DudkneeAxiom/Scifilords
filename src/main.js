@@ -80,9 +80,17 @@ document.querySelector('#title .title-menu').addEventListener('click', (e) => {
 });
 
 function startNew() {
-  State.clearSave();
-  G.campaign = State.newCampaign();
-  toWorld(true);
+  // Three questions before the charter gets a name on it. The plain answers
+  // are preselected, so signing straight through is the campaign the game
+  // has always started.
+  UI.backgroundPanel({ origin: 'freeborn', trade: 'oddjobs', turn: 'kept' }, {
+    onDone: (sel) => {
+      State.clearSave();
+      G.campaign = State.newCampaign();
+      State.applyBackground(G.campaign, sel);
+      toWorld(true);
+    },
+  });
 }
 
 function startLoaded() {

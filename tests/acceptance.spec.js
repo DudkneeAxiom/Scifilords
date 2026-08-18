@@ -18,7 +18,14 @@ async function boot(page) {
 /** Start a new campaign and clear the intro, commission and contract board. */
 async function newCampaign(page) {
   await page.click('button[data-act="new"]');
+  // The background questionnaire comes first; sign through on the plain
+  // answers so every test starts the campaign the game has always started.
   await page.waitForSelector('#modal .modal-title', { timeout: 15000 });
+  await page.click('#modal [data-x="close"]');
+  await page.waitForFunction(() => {
+    const t = document.querySelector('#modal .modal-title');
+    return t && !/BEFORE THE COMPANY/.test(t.textContent);
+  }, null, { timeout: 15000 });
   await page.click('#modal [data-x="close"]');
   // The commander's opening commission gates everything after it.
   await page.waitForSelector('#modal [data-perk]', { timeout: 15000 });
@@ -6643,4 +6650,42 @@ test('not every den is the same den: the Cut and the Boneyard both stand up', as
   expect(yard.obstacles).toBeGreaterThan(20);
   expect(yard.enemies).toBeGreaterThan(0);
   expect(yard.faction).toBe('raider');
+});
+
+test('who you were: three questions, and the start actually moves', async ({ page }) => {
+  await boot(page);
+  await page.click('button[data-act="new"]');
+  await page.waitForSelector('#modal .modal-title', { timeout: 15000 });
+  await expect(page.locator('#modal .modal-title')).toHaveText('BEFORE THE COMPANY');
+  // A Trust childhood, a clerk's savings, and a debt collected on the way out.
+  await page.click('#modal [data-x="origin:cantonment"]');
+  await page.click('#modal [data-x="trade:clerk"]');
+  await page.click('#modal [data-x="turn:took"]');
+  await page.click('#modal [data-x="close"]');
+  await page.waitForFunction(() => {
+    const t = document.querySelector('#modal .modal-title');
+    return t && !/BEFORE THE COMPANY/.test(t.textContent);
+  }, null, { timeout: 15000 });
+  await page.click('#modal [data-x="close"]');
+  await page.waitForTimeout(400);
+  const r = await page.evaluate(() => {
+    const { State } = window.KR.dev;
+    const S = window.KR.campaign;
+    const cmd = State.commander(S);
+    return {
+      bg: S.background,
+      origin: cmd.origin,
+      credits: S.credits,
+      repTrust: S.rep.trust, repSyndic: S.rep.syndic,
+      rations: (S.cargo || {}).rations || 0,
+    };
+  });
+  expect(r.bg).toEqual({ origin: 'cantonment', trade: 'clerk', turn: 'took' });
+  expect(r.origin).toBe('trust');
+  // 480 base + 250 clerk + 300 taken.
+  expect(r.credits).toBe(1030);
+  // +3 Trust childhood, -2 for the taking; -2 and -2 on the Syndic side.
+  expect(r.repTrust).toBe(1);
+  expect(r.repSyndic).toBe(-4);
+  expect(r.rations).toBe(2);
 });

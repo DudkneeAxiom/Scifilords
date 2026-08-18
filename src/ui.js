@@ -10,7 +10,7 @@ import * as Models from './models.js';
 import {
   ROLES, RANKS, COMMANDER_RANKS, WEAPONS, KIT, GOODS, GOODS_LIST, FACTIONS, LOCATIONS,
   MISSION_TYPES, HOLDING_UPGRADES, UPGRADE_LIST, PARTY_TIERS, ARMOUR, SLOTS,
-  POLICIES, POLICY_LIST, COMPANIONS, OFFICERS, RAPPORT,
+  POLICIES, POLICY_LIST, COMPANIONS, OFFICERS, RAPPORT, BACKGROUNDS,
 } from './data.js';
 import {
   portrait, label, rankOf, roleOf, weaponOf, effective, STATUS, woundInfo,
@@ -3075,6 +3075,48 @@ function wire(map) {
 }
 
 const onCloseWrap = (fn) => () => { closeModal(); };
+
+/**
+ * The three questions before the charter gets a name on it.
+ *
+ * Re-rendered whole on every pick — the same pattern every other panel uses
+ * for state, and it keeps the highlight honest. The plain answers are
+ * preselected, so signing straight through starts the campaign the game has
+ * always started.
+ */
+export function backgroundPanel(sel, cbs) {
+  const GROUPS = [
+    ['origin', 'WHERE YOU CAME UP'],
+    ['trade', 'WHAT YOU DID'],
+    ['turn', 'THE DAY IT CHANGED'],
+  ];
+  const row = (group, o) => `
+    <button class="btn bg-opt ${sel[group] === o.id ? 'btn-major' : ''}"
+      data-x="${group}:${o.id}" style="display:block;width:100%;text-align:left;margin:3px 0">
+      ${esc(o.name)}
+      <span class="dim" style="display:block;font-size:0.85em">${esc(o.blurb)}</span>
+    </button>`;
+  const body = GROUPS.map(([g, label]) => `
+    <div class="section-title">${label}</div>
+    ${BACKGROUNDS[g].map((o) => row(g, o)).join('')}`).join('');
+  modal({
+    title: 'BEFORE THE COMPANY',
+    tag: 'WHO YOU WERE',
+    body,
+    foot: '<button class="btn btn-major" data-x="close">SIGN THE CHARTER</button>',
+    onClose: () => cbs.onDone(sel),
+    wide: true,
+  });
+  // closeModal fires the modal's own onClose, which is what calls onDone —
+  // calling it here as well would sign the charter twice.
+  const map = { close: () => closeModal() };
+  for (const [g] of GROUPS) {
+    for (const o of BACKGROUNDS[g]) {
+      map[`${g}:${o.id}`] = () => backgroundPanel({ ...sel, [g]: o.id }, cbs);
+    }
+  }
+  wire(map);
+}
 
 /**
  * A battle in progress, arrived at: both sides named with their strengths,

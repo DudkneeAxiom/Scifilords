@@ -9,6 +9,7 @@ import {
   HOLDING_UPGRADES, UPGRADE_LIST, HOLDING_YIELD, TROOP_PATHS, RANKS, PARTY_TIERS, PARTY_TIER_LIST, renownTier,
   ARMOUR, ARMOUR_LIST, ORIGINS, originForLocation, CREEDS, REGARD_TIERS, FAVOURS,
   FIRST_NAMES, LAST_NAMES, POLICIES, POLICY_LIST, COMPANIONS, OFFICERS, RAPPORT, ERRANDS,
+  BACKGROUNDS,
 } from './data.js';
 import {
   startingCompany, makeSoldier, dayTick, STATUS, deployable, addXp, maxHpOf,
@@ -126,6 +127,49 @@ export const fallen = (S) => S.roster.filter((s) => s.status === STATUS.DEAD);
 export const stationed = (s) => !!s.garrison;
 export const ready = (S) => living(S).filter((s) => deployable(s) && !stationed(s));
 export const commander = (S) => S.roster.find((s) => s.isCommander);
+
+/**
+ * Stamp the chosen background onto a fresh campaign.
+ *
+ * Declarative on purpose: every answer's `fx` is a bag of adjustments this
+ * one function knows how to apply, so adding an answer to BACKGROUNDS never
+ * means adding code. The commander's origin swap rides originMod(), which
+ * every stat read already passes through — no new plumbing, the questionnaire
+ * just decides which table row the commander was born in.
+ */
+export function applyBackground(S, picks) {
+  if (!picks) return S;
+  S.background = { ...picks };
+  const cmd = commander(S);
+  for (const [group, id] of Object.entries(picks)) {
+    const def = (BACKGROUNDS[group] || []).find((o) => o.id === id);
+    if (!def) continue;
+    const fx = def.fx || {};
+    if (fx.credits) S.credits = Math.max(0, S.credits + fx.credits);
+    if (fx.supplies) S.supplies = (S.supplies || 0) + fx.supplies;
+    if (fx.medical) S.medical = (S.medical || 0) + fx.medical;
+    if (fx.renown) S.renown = Math.max(0, (S.renown || 0) + fx.renown);
+    if (fx.morale) S.morale = clamp((S.morale ?? 70) + fx.morale, 0, 100);
+    if (fx.rep) {
+      for (const [f, d] of Object.entries(fx.rep)) S.rep[f] = (S.rep[f] || 0) + d;
+    }
+    if (fx.cargo) {
+      for (const [g, q] of Object.entries(fx.cargo)) S.cargo[g] = (S.cargo[g] || 0) + q;
+    }
+    if (fx.armoury) {
+      for (const [w, q] of Object.entries(fx.armoury)) S.armoury[w] = (S.armoury[w] || 0) + q;
+    }
+    if (fx.regardAll) {
+      for (const s of S.roster) s.regard = clamp((s.regard || 0) + fx.regardAll, -100, 100);
+    }
+    if (cmd && fx.cmdOrigin) cmd.origin = fx.cmdOrigin;
+    if (cmd && fx.cmdHp) {
+      cmd.maxHp += fx.cmdHp;
+      cmd.hp += fx.cmdHp;
+    }
+  }
+  return S;
+}
 export const hasMedic = (S) => ready(S).some((s) => s.role === 'medic');
 export const awaitingAnyPerk = (S) =>
   S.roster.some((s) => s.status !== STATUS.DEAD && s.pendingPerks && s.pendingPerks.length);

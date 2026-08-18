@@ -889,6 +889,52 @@ Open, in rough priority order:
 
 ---
 
+## The partials sweep (most recent work)
+
+After the ten missing systems, the audit's PARTIAL column. Five of its
+eleven were already closed by the audit sweep (siege breach → culvert,
+settlement tiers → hamlets, diplomacy → declare war, lord defection →
+courts, tavern life → mercs + dice). The remaining six, one commit each:
+
+1. QUEST VARIETY (`e5ab91a`) — three new favour kinds on the existing
+   machinery: `deliver` (accepted here, paid at the far end on arrival via
+   `arrivalFavours` in the location-open hook), `debt` (the debtor's town
+   grows a doorstep verb; `collectDebt` is deterministic per favour per
+   day off renown+standing, `pressDebt` always lands and costs -8 there),
+   `train` (`runDrill` once/day via a button on the favour panel; +3
+   manpower on completion). Lords at court front favours 40% of the time
+   at 1.5x pay and +2 regard. Trap: a deliver favour NEVER reads ready at
+   its origin — it completes at the destination.
+2. COMPANION WEB (`1aad50f`) — `RAPPORT` bond/clash pairs drift regard ±1
+   daily (30%) through the same regard the resentment machinery watches;
+   `ERRANDS` fire once-ever at regard ≥20 (word → settles on arrival,
+   goods → settles anywhere once aboard, +25 regard). Roster card shows
+   the web. Both tick on own rng streams.
+3. FOOD VARIETY (`44ed7f0`) — `food: true` goods (dried_catch, vat_greens,
+   still_spirits) in the trade map; each distinct kind aboard adds morale
+   (cap +3), one unit eaten every other day, `S.plainDays` > 10 bleeds
+   -1.5. All inside the payday fed-and-paid block.
+4. ARMY COORDINATION (`75c637a`) — `marshalOf` picks a sticky writ-holder
+   per faction (wins-defeats, martial +2); columns go to the marshal and
+   carry their name. Launching calls ≤2 field warbands (`p.joinArmy`)
+   that fold in on contact (<22 units). `col.army.cohesion` 100 decays
+   7-13/day via `tickArmies`; dry = merged strength leaves, offensive
+   dies. Factions with ≥4 settlements run two columns.
+5. LAIR VARIETY (`922a586`) — `quarry` (THE CUT: stepped bench, stair
+   flights, funnelled ramp) and `wreckyard` (THE BONEYARD: wreck-row
+   lanes) join `compound`; picked per lair by hash of the party id in
+   main.js so a den keeps its shape. Trap in tests: entities use `!e.dead`
+   — there is no `.alive`.
+6. CHARACTER CREATION — `BACKGROUNDS` (origin/trade/turn, first option of
+   each group is neutral), `State.applyBackground` applies declarative
+   `fx` bags; the commander's origin swap rides `originMod` so stats need
+   no new plumbing. `UI.backgroundPanel` opens from `startNew`; **the
+   test helper `newCampaign()` now closes TWO modals** (questionnaire,
+   then intro) — any new test that hand-rolls the title flow must do the
+   same.
+
+---
+
 ## The summary artifact
 
 <https://claude.ai/code/artifact/9070868b-f320-47b9-818c-2e2cfa32745d>
