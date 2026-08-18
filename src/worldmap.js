@@ -755,7 +755,10 @@ export class WorldMap {
       // The people holding your things are named on the map rather than being
       // one more number among a dozen bands — you are meant to be able to spot
       // them from across the Reach.
-      lab.textContent = p.grudge ? `${p.commander || p.name} ${p.strength}` : String(p.strength);
+      // Rounded: battle attrition runs on fractions, and a band of
+      // 14.6564115676482837 is a debugger's number, not a scout's.
+      const shown = Math.max(1, Math.round(p.strength));
+      lab.textContent = p.grudge ? `${p.commander || p.name} ${shown}` : String(shown);
       lab.title = p.name;
 
       this._proj.set(p.x, regionHeight(p.x, p.z) + 34, p.z);

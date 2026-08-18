@@ -98,9 +98,51 @@ function rimAndBeyond(x, z, d) {
   return rim + outer;
 }
 
+// Interior ridges: the walls that make a route a route.
+//
+// The provinces were divided by rolling ranges that SLOWED a straight line
+// but never argued with one — every destination was its crow-flight bearing
+// with a speed tax. These are authored walls of high ground between the core
+// basin and the outer provinces, and the roads that cross them carve their
+// own passes (the same roadDistance carve the rim uses) — so the pass is
+// exactly where the road goes, a shortcut over the shoulder is slow and
+// blind, and "the long way around" is a phrase with geography in it.
+const RIDGES = [
+  { ax: 900, az: -600, bx: 1300, bz: 900, h: 120, w: 180 },    // core | Weal
+  { ax: -900, az: -300, bx: -1200, bz: 800, h: 110, w: 170 },  // core | Scour
+  { ax: -300, az: 1200, bx: 900, bz: 1500, h: 100, w: 160 },   // core | Littoral
+];
+
+function ridgeHeight(x, z) {
+  let h = 0;
+  for (const rg of RIDGES) {
+    const dx = rg.bx - rg.ax, dz = rg.bz - rg.az;
+    const len2 = dx * dx + dz * dz;
+    let t = len2 ? ((x - rg.ax) * dx + (z - rg.az) * dz) / len2 : 0;
+    t = t < 0 ? 0 : t > 1 ? 1 : t;
+    const px = rg.ax + dx * t, pz = rg.az + dz * t;
+    const d = Math.hypot(x - px, z - pz);
+    if (d > rg.w * 2.6) continue;
+    // Softened toward the ends so a ridge tapers into country instead of
+    // stopping like a wall someone forgot to finish.
+    const taper = 0.6 + 0.4 * Math.sin(Math.min(t, 1 - t) * Math.PI + 0.2);
+    h += rg.h * taper * Math.exp(-(d / rg.w) * (d / rg.w));
+  }
+  if (h <= 0) return 0;
+  // Roads cut their passes; towns keep their ground — every settlement sits
+  // in a cleared pocket, so a ridge tapering past one slows the country
+  // around it without standing in its streets.
+  let carve = clamp(1 - roadDistance(x, z) / 170, 0, 1);
+  for (const l of LOCATIONS) {
+    const w = clamp(1 - Math.hypot(x - l.x, z - l.z) / 340, 0, 1);
+    if (w > carve) carve = w;
+  }
+  return h * (1 - smooth01(carve) * 0.9);
+}
+
 export function regionHeight(x, z) {
   const d = Math.hypot(x, z) / HALF;
-  const rim = rimAndBeyond(x, z, d);
+  const rim = rimAndBeyond(x, z, d) + ridgeHeight(x, z);
   // Continental tilt: which half of the map is high country at all.
   const swell = Math.sin(x * 0.0011 + 0.7) * Math.cos(z * 0.0013 - 0.3) * 34;
   const rx1 = x * C1 - z * S1, rz1 = x * S1 + z * C1;
