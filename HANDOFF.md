@@ -592,6 +592,24 @@ Open, in rough priority order:
      `res.party` — a fixture with only `party` silently skips it, which is
      exactly how the first version of its acceptance test failed.
 
+**Companions are officers** (this session). The Mount & Blade party-role
+   layer: each hired companion changes how the COMPANY runs, not just how a
+   fireteam shoots. `OFFICERS` in data.js is the catalogue; `hasOfficer(S,
+   id)` in state.js is the single gate every effect reads (compId match with
+   a name fallback for pre-compId saves). Vex adds a named +0.08 factor in
+   `partySpeed`; Senna halves the carried-wounded drag AND adds +0.5 healMul
+   in the onNewDay `dayTick` call; Brik adds one piece to the field strip;
+   Perrin widens `intelRange()` 80→220, which is what the CONTACTS card's
+   exact-count gate now reads; Jorsa (+0.05 squad acc) and Okkam (×1.35
+   squad suppression power) resolve once per deployment into
+   `mission.officerFx`, like perks. Traps: a wounded soldier above 55% HP
+   still `deployable()`s, so the wounded-drag factor only counts genuinely
+   carried people — the first version of the acceptance test wounded someone
+   at full HP and measured nothing. And mission.js now imports from
+   state.js (no cycle — state never imports mission), which is new; if a
+   future refactor makes state.js import mission.js, break the officer
+   lookup out instead.
+
 ---
 
 ## The summary artifact

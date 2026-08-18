@@ -8,7 +8,7 @@ import {
   LOCATIONS, MISSION_TYPES, FACTIONS, REGION, REGIONS, WEAPONS, KIT, ROLES, GOODS, GOODS_LIST,
   HOLDING_UPGRADES, UPGRADE_LIST, HOLDING_YIELD, TROOP_PATHS, RANKS, PARTY_TIERS, PARTY_TIER_LIST, renownTier,
   ARMOUR, ARMOUR_LIST, ORIGINS, originForLocation, CREEDS, REGARD_TIERS, FAVOURS,
-  FIRST_NAMES, LAST_NAMES, POLICIES, POLICY_LIST, COMPANIONS,
+  FIRST_NAMES, LAST_NAMES, POLICIES, POLICY_LIST, COMPANIONS, OFFICERS,
 } from './data.js';
 import {
   startingCompany, makeSoldier, dayTick, STATUS, deployable, addXp, maxHpOf,
@@ -800,9 +800,18 @@ export function partySpeed(S) {
     factors.push({ label: `truck ${Math.min(100, Math.round(loadFrac * 100))}% loaded`, effect: f });
   }
   if (wounded > 0) {
-    const f = -Math.min(0.22, wounded * 0.05);
+    // Senna keeps the wounded fit to travel — half the drag, half the cap.
+    const surgeon = hasOfficer(S, 'senna');
+    const f = -Math.min(surgeon ? 0.11 : 0.22, wounded * (surgeon ? 0.025 : 0.05));
     mul += f;
-    factors.push({ label: `${wounded} carried wounded`, effect: f });
+    factors.push({
+      label: `${wounded} carried wounded${surgeon ? ' — Senna keeps them moving' : ''}`,
+      effect: f,
+    });
+  }
+  if (hasOfficer(S, 'vex')) {
+    mul += 0.08;
+    factors.push({ label: 'Vex knows the passes', effect: 0.08 });
   }
   // Hungry people walk slowly, and cheerful ones push on.
   if ((S.rations || 0) <= 0) {
@@ -881,7 +890,12 @@ function onNewDay(S, r) {
   const atMedical = !!restingAt?.services?.includes('medical');
   const mods = companyMods(S.roster);
   for (const s of S.roster) {
-    const rec = dayTick(s, { atMedical, healMul: 1 + mods.healRate + upgradeTotal(S, 'infirmary') });
+    const rec = dayTick(s, {
+      atMedical,
+      healMul: 1 + mods.healRate + upgradeTotal(S, 'infirmary')
+        // Senna's whole pitch: a hab quarter of four thousand through two sieges.
+        + (hasOfficer(S, 'senna') ? 0.5 : 0),
+    });
     if (rec) pushLog(S, `${s.name} is fit for deployment again.`, 'good');
   }
   // Expire and replenish contracts so the board is never empty or stale.
@@ -1779,7 +1793,9 @@ export function applyMissionResult(S, res) {
       }
       // Stripped off the bodies: weapons and armour, scaled to how many fell.
       const sr = rng((S.seed + S.day * 977 + S.stats.missions * 13) | 0);
-      const strip = Math.max(1, Math.round((party?.strength || 4) * 0.16));
+      // Brik opens the lockers the rest of the company walks past.
+      const strip = Math.max(1, Math.round((party?.strength || 4) * 0.16))
+        + (hasOfficer(S, 'brik') ? 1 : 0);
       res.fieldSpoils = res.fieldSpoils || [];
       for (let i = 0; i < strip; i++) {
         if (sr() < 0.45) {
@@ -4248,7 +4264,29 @@ export function hireCompanion(S, compId) {
     avoid: S.roster.map((x) => x.name),
   });
   s.companion = true;
+  s.compId = c.id;
   S.roster.push(s);
   pushLog(S, `${c.name} signed on with Bracket.`, 'good');
+  if (OFFICERS[c.id]) pushLog(S, OFFICERS[c.id].gift, 'world');
   return { ok: true, soldier: s };
+}
+
+/**
+ * Is this companion alive and on the roster? The single gate every officer
+ * effect reads. Matches by compId, with a name fallback for companions hired
+ * before compId was stamped on them — six authored names, no collisions.
+ */
+export function hasOfficer(S, compId) {
+  return (S.roster || []).some((s) => s.companion && s.status !== STATUS.DEAD
+    && (s.compId ? s.compId === compId
+      : COMPANIONS.find((c) => c.name === s.name)?.id === compId));
+}
+
+/**
+ * How close a party has to be before the contact report gives an exact count
+ * and a true name. Perrin listened to the whole Reach for the uplands relay,
+ * and mostly still does.
+ */
+export function intelRange(S) {
+  return hasOfficer(S, 'perrin') ? 220 : 80;
 }

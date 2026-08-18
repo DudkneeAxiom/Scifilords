@@ -1386,8 +1386,9 @@ export class WorldMap {
                   : p.siegeTarget ? 'MARCHING'
                   : (PARTY_TIERS[p.kind]?.static ? 'DUG IN' : 'PATROLLING');
         // Numbers harden as they close: a column at the edge of sight is an
-        // estimate, not a count.
-        const close = dist < 80;
+        // estimate, not a count — unless Perrin is on the roster, in which
+        // case the whole Reach is being listened to (State.intelRange).
+        const close = dist < State.intelRange(S);
         const est = close ? String(Math.round(p.strength))
           : `${Math.max(1, Math.floor(p.strength * 0.75))}–${Math.ceil(p.strength * 1.3)}`;
         return {

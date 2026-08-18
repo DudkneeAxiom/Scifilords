@@ -4891,3 +4891,93 @@ test('a companion is a find: one town, one story, one fee, one soldier', async (
   expect(r.companionFlag).toBe(true);
   expect(r.goneOrDifferent).toBe(true);
 });
+
+test('a companion is an officer: the company runs differently with them signed on', async ({ page }) => {
+  await boot(page);
+  await newCampaign(page);
+  const r = await page.evaluate(() => {
+    const { State } = window.KR.dev;
+    const S = window.KR.campaign;
+    S.credits = 50000;
+    // Vex the pathfinder: the map speed factor appears, named.
+    const base = State.partySpeed(S).mul;
+    State.hireCompanion(S, 'vex');
+    const withVex = State.partySpeed(S);
+    // Perrin the signals officer: contact reports harden at range.
+    const intelBefore = State.intelRange(S);
+    State.hireCompanion(S, 'perrin');
+    const intelAfter = State.intelRange(S);
+    // Senna the surgeon: carried wounded drag the truck half as much.
+    State.hireCompanion(S, 'senna');
+    const v = S.roster.find((x) => !x.isCommander && !x.companion);
+    const keep = { status: v.status, hp: v.hp };
+    // Carried, not walking: a wounded soldier above 55% HP still deploys, so
+    // the drag only counts them once they genuinely cannot march.
+    v.status = 'wounded';
+    v.hp = 1;
+    v.wound = { name: 'probe', days: 6 };
+    const woundFactor = State.partySpeed(S).factors
+      .find((f) => f.label.includes('carried wounded'));
+    v.status = keep.status; v.hp = keep.hp; v.wound = null;
+    // Brik the breacher: one more piece off the identical field.
+    S.seed = 12345;
+    const party = { id: 'offp', kind: 'scrappers', name: 'T', strength: 8, tier: 2,
+      quality: 0.6, faction: 'syndic' };
+    const run = () => {
+      S.day = 5; S.stats.missions = 5; S.prisoners = [];
+      const res = { success: true, type: 'skirmish', partyId: 'offp', party, kills: 6,
+        soldierResults: [], suppliesUsed: 0 };
+      State.applyMissionResult(S, res);
+      return (res.fieldSpoils || []).length;
+    };
+    const stripBefore = run();
+    State.hireCompanion(S, 'brik');
+    const stripAfter = run();
+    State.hireCompanion(S, 'jorsa');
+    State.hireCompanion(S, 'okkam');
+    return {
+      vexGain: withVex.mul - base,
+      vexNamed: withVex.factors.some((f) => f.label.includes('passes')),
+      intelBefore, intelAfter,
+      woundEffect: woundFactor?.effect,
+      woundNamed: !!woundFactor?.label.includes('Senna'),
+      stripBefore, stripAfter,
+    };
+  });
+  expect(r.vexGain).toBeGreaterThan(0.05);
+  expect(r.vexNamed).toBe(true);
+  expect(r.intelBefore).toBe(80);
+  expect(r.intelAfter).toBe(220);
+  // Half of the un-doctored 0.05-per-head drag, and it says who to thank.
+  expect(r.woundEffect).toBeCloseTo(-0.025, 3);
+  expect(r.woundNamed).toBe(true);
+  expect(r.stripAfter).toBe(r.stripBefore + 1);
+
+  // And the two combat officers reach the field: the deployment resolves them
+  // once, like perks, and the squad's numbers carry the difference.
+  await page.evaluate(async () => {
+    const { Mission } = await import('/src/mission.js');
+    const UI = await import('/src/ui.js');
+    const G = window.KR;
+    const S = G.campaign;
+    S.renown = 4000;
+    G.mission?.dispose();
+    G.world?.dispose(); G.world = null;
+    document.getElementById('viewport').innerHTML = '';
+    UI.show('hud');
+    G.mission = new Mission({
+      campaign: S,
+      spec: { type: 'skirmish', site: 'roadside', layout: 'roadside', siteName: 'O',
+        party: { id: 'o', kind: 'scrappers', name: 'O', strength: 5, tier: 2, quality: 0.6 } },
+      squad: S.roster.slice(0, 4),
+      container: document.getElementById('viewport'),
+      onHud: () => {}, onToast: () => {}, onIntro: () => {}, onWheel: () => {}, onEnd: () => {},
+    });
+    await G.mission.start();
+    G.mission.paused = true;
+  });
+  await page.waitForFunction(() => window.KR.mission?.player, null, { timeout: 40000 });
+  const fx = await page.evaluate(() => window.KR.mission.officerFx);
+  expect(fx.overwatch).toBe(true);
+  expect(fx.baseFire).toBe(true);
+});

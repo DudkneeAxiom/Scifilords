@@ -528,7 +528,10 @@ function handleTownArea(spec, area) {
     },
     companion: spec.companion ? {
       who: spec.companion.name,
-      line: spec.companion.line + ' The fee is ' + spec.companion.fee + ', once, and I stay hired.',
+      line: spec.companion.line + ' The fee is ' + spec.companion.fee + ', once, and I stay hired.'
+        // What they do for the COMPANY — the officer effect is the real pitch.
+        + (DATA.OFFICERS[spec.companion.id]
+          ? ` [${DATA.OFFICERS[spec.companion.id].title}: ${DATA.OFFICERS[spec.companion.id].gift}]` : ''),
       options: [{ id: 'hire', label: 'SIGN THEM ON (' + spec.companion.fee + ')', major: true }],
     } : null,
     gate: {

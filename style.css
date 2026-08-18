@@ -448,6 +448,8 @@ kbd {
 .spoils-grid { display: flex; flex-wrap: wrap; gap: 6px; }
 .spoils-grid .note { margin: 0; }
 .hint { margin-top: 6px; color: #7d7869; font-size: 10px; letter-spacing: 0.08em; }
+.sol-officer { margin-top: 2px; color: #c9a860; font-size: 9px; letter-spacing: 0.08em; }
+
 /* ---- troop advancement ------------------------------------------------ */
 .up-paths { display: flex; flex-direction: column; gap: 6px; }
 .up-path {

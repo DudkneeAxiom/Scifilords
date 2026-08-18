@@ -10,7 +10,7 @@ import * as Models from './models.js';
 import {
   ROLES, RANKS, COMMANDER_RANKS, WEAPONS, KIT, GOODS, GOODS_LIST, FACTIONS, LOCATIONS,
   MISSION_TYPES, HOLDING_UPGRADES, UPGRADE_LIST, PARTY_TIERS, ARMOUR, SLOTS,
-  POLICIES, POLICY_LIST,
+  POLICIES, POLICY_LIST, COMPANIONS, OFFICERS,
 } from './data.js';
 import {
   portrait, label, rankOf, roleOf, weaponOf, effective, STATUS, woundInfo,
@@ -1892,6 +1892,14 @@ function solRow(s) {
       <div class="sol-name"><span class="rk">${rk.abbr}</span>${esc(s.name)}${s.isCommander ? ' <span class="dim">— you</span>' : ''}
         ${s.pendingPerks?.length ? '<span class="pending">PROMOTION PENDING</span>' : ''}</div>
       <div class="sol-meta">${r.name.toUpperCase()} · ${esc(weaponOf(s).abbr)}${s.kit ? ` · ${esc(KIT[s.kit].abbr)}` : ''}${traits ? ` · ${traits}` : ''}</div>
+      ${(() => {
+    // A companion is an officer: what they do for the whole company sits on
+    // their card, because that effect is why the fee was worth paying.
+    if (!s.companion) return '';
+    const oid = s.compId || COMPANIONS.find((c) => c.name === s.name)?.id;
+    const off = oid && OFFICERS[oid];
+    return off ? `<div class="sol-officer">${esc(off.title)} — ${esc(off.gift)}</div>` : '';
+  })()}
       ${perks.length ? `<div class="sol-perks">${perks.map((p) => `<span>${esc(p)}</span>`).join('')}</div>` : ''}
       <div class="sol-hist">${esc(s.joinedHow)}, day ${s.joinedDay}${w ? ` — ${esc(w.name)}, ${w.days}d` : ''}</div>
       ${s.status !== STATUS.DEAD && !s.isCommander ? (() => {

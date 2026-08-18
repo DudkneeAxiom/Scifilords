@@ -1425,3 +1425,27 @@ export const COMPANIONS = [
       + 'blind ridge in the basin — that is why both of them still want me.',
   },
 ];
+
+/**
+ * What a companion does for the COMPANY, not just for a fireteam.
+ *
+ * Mount & Blade's party roles are the model: a scout is not a good archer, a
+ * scout is why the warband moves faster. Keyed by companion id; each effect
+ * is read where the relevant system already computes its number, and
+ * hasOfficer() in state.js is the single gate — a dead or never-hired
+ * companion contributes nothing.
+ */
+export const OFFICERS = {
+  vex: { title: 'PATHFINDER',
+    gift: 'The company moves faster on the map — Vex knows every pass and ford in the basin.' },
+  senna: { title: 'SURGEON',
+    gift: 'Wounds close half again as fast, and carried wounded slow the truck half as much.' },
+  brik: { title: 'BREACHER',
+    gift: 'One more piece stripped from every field — no locker stays shut on Brik.' },
+  perrin: { title: 'SIGNALS',
+    gift: 'Exact counts and true names on distant contacts, long before they close.' },
+  jorsa: { title: 'OVERWATCH',
+    gift: 'The squad shoots straighter with Jorsa calling corrections onto every target.' },
+  okkam: { title: 'BASE OF FIRE',
+    gift: 'Squad fire pins harder — Okkam holds the gun that holds the ground.' },
+};

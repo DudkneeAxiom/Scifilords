@@ -25,6 +25,7 @@ import {
   effective, weaponOf, roleOf, label, makeSoldier, STATUS, resolveCasualty,
 } from './roster.js';
 import { companyMods } from './perks.js';
+import { hasOfficer } from './state.js';
 import { clamp, lerp, rng, range, pick, irange, approachAngle, angleDelta } from './util.js';
 
 const EYE = 1.55;
@@ -152,6 +153,13 @@ export class Mission {
     // 70 is the settled default, so an ordinary company fights at exactly the
     // strength it always did and only real misery or real devotion moves it.
     this.moraleEdge = clamp(0.82 + ((campaign.morale ?? 70) / 100) * 0.26, 0.82, 1.08);
+    // Officers reach the field: resolved once per deployment, like perks.
+    // Jorsa calls corrections (squad accuracy), Okkam anchors the base of
+    // fire (squad suppression output). See OFFICERS in data.js.
+    this.officerFx = {
+      overwatch: hasOfficer(campaign, 'jorsa'),
+      baseFire: hasOfficer(campaign, 'okkam'),
+    };
     this.selection = new Set();   // squad indices under command; empty = all
     this.time = 0;
     this.over = false;
@@ -748,7 +756,8 @@ export class Mission {
         // devoted ones hold their nerve. Bounded on both sides, because a
         // company that cannot fight at all is a campaign you have already lost
         // and cannot recover from.
-        acc: e2.accuracy * this.moraleEdge,
+        acc: Math.min(0.95, e2.accuracy * this.moraleEdge
+          + (this.officerFx.overwatch ? 0.05 : 0)),
         speed: e2.speed,
         sight: e2.sight, aggression: roleOf(s).aggression, coverPref: e2.cover,
         eff: e2, name: s.name, tint: FACTIONS.player.accent,
@@ -2206,7 +2215,10 @@ export class Mission {
     // around there. So the ORDER has to be the thing that carries them over the
     // line, otherwise it is a 10% damage tweak nobody can feel. Measured over
     // 16 paired trials with tools/tactics.mjs.
-    const power = (shooter.eff?.suppressPower || 1) * (shooter.suppressOrder ? 2.1 : 1);
+    const power = (shooter.eff?.suppressPower || 1) * (shooter.suppressOrder ? 2.1 : 1)
+      // Okkam's base of fire: the squad's rounds pin harder. Squad only —
+      // the player's own fire is the player's own skill.
+      * (shooter.side === 'player' && !shooter.isPlayer && this.officerFx?.baseFire ? 1.35 : 1);
     const dx = bx - ax, dz = bz - az;
     const len2 = dx * dx + dz * dz;
     if (len2 < 0.01) return;
