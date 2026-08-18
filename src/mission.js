@@ -464,17 +464,47 @@ export class Mission {
    * it does not obscure the body, does not clutter the sky, and reads at the
    * shallow angle this camera actually looks along.
    */
-  makeFriendRing(color = 0x63d0f0) {
-    const ring = new THREE.Mesh(
-      new THREE.RingGeometry(0.42, 0.58, 16),
-      new THREE.MeshBasicMaterial({
-        color, transparent: true, opacity: 0.55,
+  /**
+   * Faction identity underfoot, Mount-and-Blade legible: your own people
+   * ring Bracket amber, Trust cyan, Syndic red, raiders violet. The kits are
+   * deliberately similar — the same surplus wars produced them — so the ring
+   * is the ONLY signal, and it never lies about a side.
+   *
+   * All rings are ONE InstancedMesh. Fifty separate ring meshes were fifty
+   * draw calls, and at army scale that was a meaningful slice of the frame's
+   * whole call budget for what is, visually, one repeated disc.
+   */
+  syncRings() {
+    if (!this.ringMesh) {
+      const geo = new THREE.RingGeometry(0.42, 0.58, 16);
+      geo.rotateX(-Math.PI / 2);
+      this.ringMesh = new THREE.InstancedMesh(geo, new THREE.MeshBasicMaterial({
+        color: 0xffffff, transparent: true, opacity: 0.55,
         side: THREE.DoubleSide, depthWrite: false,
-      }),
-    );
-    ring.rotation.x = -Math.PI / 2;
-    ring.renderOrder = 2;
-    return ring;
+      }), 160);
+      this.ringMesh.renderOrder = 2;
+      // Instances move every frame; a stale whole-mesh bounds culls them all.
+      this.ringMesh.frustumCulled = false;
+      this.scene.add(this.ringMesh);
+      this.ringM4 = new THREE.Matrix4();
+      this.ringCol = new THREE.Color();
+    }
+    let n = 0;
+    for (const e of this.entities) {
+      if (n >= 160) break;
+      if (e.isPlayer || e.dead) continue;
+      if (e.side !== 'player' && e.side !== 'enemy') continue;
+      this.ringM4.makeTranslation(e.x, Level.heightAt(e.x, e.z) + (e.elev || 0) + 0.06, e.z);
+      this.ringMesh.setMatrixAt(n, this.ringM4);
+      this.ringCol.setHex(e.side === 'player' ? 0xc08d3f
+        : e.faction === 'trust' ? 0x3fb8c4
+          : e.faction === 'syndic' ? 0xd8434f : 0xa855c8);
+      this.ringMesh.setColorAt(n, this.ringCol);
+      n++;
+    }
+    this.ringMesh.count = n;
+    this.ringMesh.instanceMatrix.needsUpdate = true;
+    if (this.ringMesh.instanceColor) this.ringMesh.instanceColor.needsUpdate = true;
   }
 
   makeMarker(color, scale = 1) {
@@ -2043,6 +2073,10 @@ export class Mission {
    * the routes ARE per frame — and torn down the moment the mode closes.
    */
   rtsSyncRoutes() {
+    // Rebuilt at 10Hz, not per frame: the routes barely move between frames
+    // and the rebuild allocates a geometry every time it runs.
+    if (this.rts && this.routeViz && this.time - (this.routeVizAt || 0) < 0.1) return;
+    this.routeVizAt = this.time;
     if (this.routeViz) {
       this.scene.remove(this.routeViz);
       this.routeViz.geometry.dispose();
@@ -4889,6 +4923,7 @@ export class Mission {
   }
 
   syncVisuals(dt) {
+    this.syncRings();
     for (const e of this.entities) {
       const y = Level.heightAt(e.x, e.z);
       e.y = y;
@@ -4901,29 +4936,17 @@ export class Mission {
       e.char.group.position.set(e.x, y + stance, e.z);
       e.char.group.rotation.y = e.yaw;
 
-      // Mark your own. Built lazily so nothing is allocated for the forty
-      // hostiles who will never need one.
-      // Faction identity underfoot, Mount-and-Blade legible: your own people
-      // ring Bracket amber, Trust cyan, Syndic red, raiders violet. The kits
-      // are deliberately similar — the same surplus wars produced them — so
-      // the ring is the ONLY signal, and it never lies about a side.
-      if (!e.isPlayer && !e.friendRing && !e.dead
-        && (e.side === 'player' || e.side === 'enemy')) {
-        const col = e.side === 'player' ? 0xc08d3f
-          : e.faction === 'trust' ? 0x3fb8c4
-            : e.faction === 'syndic' ? 0xd8434f : 0xa855c8;
-        e.friendRing = this.makeFriendRing(col);
-        this.scene.add(e.friendRing);
-      }
-      if (e.friendRing) {
-        e.friendRing.visible = !e.dead;
-        e.friendRing.position.set(e.x, y + (e.elev || 0) + 0.06, e.z);
-      }
       const aiming = !!(e.target && !e.down && !e.dead) || (e.isPlayer && this.aiming);
 
-      // Animation level of detail. A soldier eighty metres away in fog does not
-      // need a sixty-hertz gait, and at forty combatants that work adds up.
-      const dxc = e.x - this.player.x, dzc = e.z - this.player.z;
+      // Animation level of detail. A soldier eighty metres away in fog does
+      // not need a sixty-hertz gait, and at forty combatants that work adds
+      // up. Anchored to WHERE THE EYE IS: the player's body in the shoulder
+      // view, the tactical focus when commanding — measuring from the body
+      // while the camera was across the map put full-rate animation exactly
+      // where nobody was looking.
+      const anchorX = this.rts && this.rtsFocus ? this.rtsFocus.x : this.player.x;
+      const anchorZ = this.rts && this.rtsFocus ? this.rtsFocus.z : this.player.z;
+      const dxc = e.x - anchorX, dzc = e.z - anchorZ;
       const distSq = dxc * dxc + dzc * dzc;
       if (distSq > 55 * 55 && !e.isPlayer) {
         e.animSkip = (e.animSkip || 0) + 1;

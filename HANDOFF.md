@@ -706,7 +706,24 @@ Open, in rough priority order:
    route to it, and site `spread` now counts `allies`/`enemyArmy` so hosts
    get ground. Its `enemyFaction` fallback is REQUIRED in a site return —
    spawnEnemy derives soldier models from it and dies without one.
-   Phases still open: clickable minimap; perf before any cap raise.
+   Phase 4 (shipped): the field map — in tactical mode the radar becomes a
+   north-up map of the whole ground, and CLICKING it jumps `rtsFocus`; the
+   click mapping in `rtsMapClick` mirrors `drawFieldMap`'s (R-4)/bounds
+   scale exactly, change one change both.
+   Phase 5 (shipped): the perf pass, measured by `tools/perf.mjs` (now
+   takes a scene arg: `perf.mjs 400 field` runs THE APPROACHES at 50v60
+   from the tactical camera with routes rebuilding). Numbers on this
+   machine, field scene: draw calls 946→874, sim step mean 1.34→0.85ms,
+   worst spike 70→16ms. What changed: all faction rings are ONE
+   InstancedMesh (fifty rings were fifty calls; `frustumCulled=false`
+   because a stale whole-mesh bounds culls every instance); the
+   animation/shadow LOD anchors to the tactical focus instead of the
+   player's body (full-rate animation used to land wherever nobody was
+   looking); route lines rebuild at 10Hz not 60 (the rebuild allocates a
+   geometry — per-frame churn was the GC spikes). THE BUDGET: ~874 calls
+   at 50 combatants is dominated by per-character joint meshes (~6 per
+   body plus a weapon); raising the 34 FIELD_CAP further needs character
+   instancing or joint-count reduction, a round of its own.
 
 ---
 
