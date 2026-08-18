@@ -1380,7 +1380,8 @@ export class WorldMap {
           : p.chasing ? 'PURSUING YOU'
             : p.routed ? 'ROUTED'
               : p.reinforce ? 'MOVING TO A FIGHT'
-                : p.siegeTarget ? 'MARCHING'
+                : p.hunting ? 'ON A MANHUNT'
+                  : p.siegeTarget ? 'MARCHING'
                   : (PARTY_TIERS[p.kind]?.static ? 'DUG IN' : 'PATROLLING');
         // Numbers harden as they close: a column at the edge of sight is an
         // estimate, not a count.
