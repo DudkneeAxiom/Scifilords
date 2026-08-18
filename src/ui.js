@@ -262,7 +262,8 @@ export function renderMissionHud(h) {
   // keeping — you cannot shoot where it is pointing, and it moves because the
   // camera is flying itself rather than because you aimed.
   const ret = $('reticle');
-  ret.classList.toggle('hidden', !!h.inserting);
+  // The tactical view has a cursor, not a crosshair.
+  ret.classList.toggle('hidden', !!h.inserting || !!h.tactical);
   ret.classList.toggle('ads', h.aiming);
   ret.classList.toggle('hit', !!h.hit);
   $('hurt').style.opacity = String(h.hurt * 0.85);
@@ -312,6 +313,9 @@ export function renderMissionHud(h) {
   } else if (h.objNeed > 1) {
     sub = `${h.objProgress} OF ${h.objNeed}`;
   }
+  // An army-sized fight gets a war scoreboard: both sides' full strength,
+  // front rank plus everything still mustering behind it.
+  if (h.armies) sub = `YOURS ${h.armies.ours} — THEIRS ${h.armies.theirs}${sub ? ` · ${sub}` : ''}`;
   const subEl = $('obj-sub');
   subEl.textContent = sub;
   subEl.className = `obj-sub${urgent ? ' urgent' : ''}`;

@@ -244,6 +244,19 @@ export class Mission {
     this.camera = new THREE.PerspectiveCamera(62, w / h, 0.12, 400);
     this.camYaw = 0;
     this.camPitch = 0.09;
+    // The tactical camera: press T and the commander steps back from their
+    // own eyes. Top-down, pannable, click-to-select, right-click-to-order —
+    // and the commander's own body becomes one more unit on the board
+    // (playerAuto walks them to ordered points). No aiming and no trigger
+    // from up here: the view commands, it does not shoot.
+    this.rts = false;
+    this.rtsFocus = null;
+    this.rtsZoom = 46;
+    this.rtsYaw = 0;
+    this.rtsCursor = { x: 0, y: 0 };
+    this.rtsDrag = null;
+    this.playerSelected = false;
+    this.playerAuto = null;
 
     this.onResize = () => {
       const cw = this.container.clientWidth, ch = this.container.clientHeight;
@@ -1110,20 +1123,47 @@ export class Mission {
    */
   spawnAllies() {
     if (!this.spec.allies) return;
+    // The whole allied force. Only a front rank stands on the field at once —
+    // the rest are BEHIND you, and updateAlliedWaves() feeds them in as the
+    // rank thins. This is how a column of two hundred fights through a field
+    // cap of a few dozen: the battle is the army, the field is its front.
+    this.alliesTotal = Math.round(this.spec.allies);
+    const n = Math.min(12, this.alliesTotal);
+    for (let i = 0; i < n; i++) this.spawnAllyAt(i);
+    this.alliesCommitted = n;
+  }
+
+  spawnAllyAt(i) {
     const sp = this.level.playerSpawn;
-    const n = Math.min(8, Math.round(this.spec.allies));
+    const ent = this.spawnEntity({
+      id: `ally_`, side: 'player', faction: this.spec.allyFaction || 'syndic',
+      x: sp.x - 8 + (i % 4) * 5, z: sp.z + 4 + Math.floor(i / 4) * 4,
+      yaw: 0, hp: 80, weapon: i % 3 ? 'rifle' : 'smg',
+      model: this.spec.allyFaction === 'trust' ? 'soldier_trust' : 'soldier_syndic',
+      acc: 0.46, speed: 4.0, aggression: 0.55, coverPref: 0.6,
+      name: 'Allied fighter',
+    });
+    ent.militia = true;
+    this.squad.push(ent);
+    return ent;
+  }
+
+  /** Feed the rest of the allied force in as the front rank is destroyed. */
+  updateAlliedWaves() {
+    if (!this.alliesTotal) return;
+    const left = this.alliesTotal - (this.alliesCommitted || 0);
+    if (left <= 0) return;
+    const alive = this.squad.filter((s) => s.militia && !s.dead && !s.down).length;
+    if (alive >= 7) return;
+    const n = Math.min(6, left);
     for (let i = 0; i < n; i++) {
-      const ent = this.spawnEntity({
-        id: `ally_`, side: 'player', faction: this.spec.allyFaction || 'syndic',
-        x: sp.x - 8 + (i % 4) * 5, z: sp.z + 4 + Math.floor(i / 4) * 4,
-        yaw: 0, hp: 80, weapon: i % 3 ? 'rifle' : 'smg',
-        model: this.spec.allyFaction === 'trust' ? 'soldier_trust' : 'soldier_syndic',
-        acc: 0.46, speed: 4.0, aggression: 0.55, coverPref: 0.6,
-        name: 'Allied fighter',
-      });
-      ent.militia = true;
-      this.squad.push(ent);
+      const e = this.spawnAllyAt(i);
+      e.arriving = ARRIVE_GRACE;
     }
+    this.alliesCommitted += n;
+    Audio.uiSelect();
+    this.onToast('THE COLUMN COMMITS MORE',
+      `${this.alliesTotal - this.alliesCommitted} still behind you`, 'good');
   }
 
   /** Put a batch of hostiles on the field, arced across the approach. */
@@ -1154,14 +1194,28 @@ export class Mission {
    * plays a big enough hideout to hit it.
    */
   updateSkirmishWaves() {
-    if (this.spec.type !== 'skirmish' && this.spec.type !== 'lair') return;
+    const t = this.spec.type;
+    if (t !== 'skirmish' && t !== 'lair' && t !== 'siege') return;
+    if (!this.skirmishTotal) return;
     const alive = this.entities.filter((e) => e.side === 'enemy' && !e.dead).length;
     const left = this.skirmishTotal - (this.skirmishCommitted || 0);
     if (left > 0 && alive < Math.max(4, FIELD_CAP * 0.45)) {
       const n = Math.min(left, Math.round(FIELD_CAP * 0.5));
       const roles = PARTY_TIERS[this.spec.party?.kind]?.roles
         || ['rifleman', 'breacher', 'marksman'];
-      this.deployEnemyWave(n, roles, false);
+      if (t === 'siege') {
+        // Defenders muster INSIDE the walls. The arc spawner is for open
+        // ground — it would stand a garrison's reserve on the attacker's own
+        // approach, outside the thing they are defending.
+        for (let i = 0; i < n; i++) {
+          const e = this.reinforce(range(this.r, -18, 18), range(this.r, -46, -24),
+            pick(this.r, roles), 0);
+          e.state = 'guard';
+          e.alert = 0.6;
+        }
+      } else {
+        this.deployEnemyWave(n, roles, false);
+      }
       this.skirmishCommitted += n;
       Audio.uiAlert();
       this.onToast('THEY ARE COMMITTING MORE',
@@ -1262,6 +1316,14 @@ export class Mission {
     });
 
     this.spawnGarrison(['rifleman', 'rifleman', 'marksman', 'gunner'], 2);
+    // A defended TOWN is not a fort picket: when the spec names an army, the
+    // wall posts are only its front rank and the rest muster inside as the
+    // fight eats them — same streaming contract as a large skirmish.
+    if (this.spec.enemyArmy) {
+      const committed = this.entities.filter((e) => e.side === 'enemy').length;
+      this.skirmishTotal = Math.max(Math.round(this.spec.enemyArmy), committed);
+      this.skirmishCommitted = committed;
+    }
     // Answering a summons means storming the wall WITH the column, not for
     // it — the liege's troops cross the approach beside you.
     this.spawnAllies();
@@ -1303,8 +1365,13 @@ export class Mission {
 
   updateSiege(dt) {
     if (!this.breached) return;
-    // Phase two: the compound is yours when nobody is left holding it.
-    const left = this.entities.filter((e) => e.side === 'enemy' && !e.dead).length;
+    // Phase two: the compound is yours when nobody is left holding it — the
+    // whole army, not just the rank on the field. An army siege that ended
+    // when the front rank fell would declare victory with 150 defenders still
+    // mustering behind the habs.
+    const uncommitted = Math.max(0, (this.skirmishTotal || 0) - (this.skirmishCommitted || 0));
+    const left = this.entities.filter((e) => e.side === 'enemy' && !e.dead).length
+      + uncommitted;
     this.objective.progress = left === 0 ? 2 : 1;
     if (left === 0 && !this.objective.done) {
       this.completeObjective();
@@ -1683,6 +1750,7 @@ export class Mission {
       }
       if (k === 'c') this.crouchHeld = !this.crouchHeld;
       if (k === 'control') this.crouchHeld = true;
+      if (k === 't') this.toggleTactical();
       if (k === 'f') this.setSquadOrder('follow');
       if (k === 'h') this.setSquadOrder('hold');
       if (k === 'x') this.orderSuppress();
@@ -1708,21 +1776,47 @@ export class Mission {
     });
 
     add(el, 'mousedown', (e) => {
+      if (this.rts) {
+        if (e.button === 0) this.rtsDrag = { x0: e.clientX, y0: e.clientY, x1: e.clientX, y1: e.clientY };
+        if (e.button === 2) this.rtsOrderAt(e.clientX, e.clientY);
+        return;
+      }
       if (document.pointerLockElement !== el) { el.requestPointerLock(); return; }
       if (e.button === 0) this.mouse.down = true;
       if (e.button === 1) { e.preventDefault(); this.openWheel(); }
       if (e.button === 2) this.mouse.right = true;
     });
     add(window, 'mouseup', (e) => {
+      if (this.rts) {
+        if (e.button === 0 && this.rtsDrag) this.rtsFinishSelect();
+        return;
+      }
       if (e.button === 0) this.mouse.down = false;
       if (e.button === 1) this.closeWheel(true);
       if (e.button === 2) this.mouse.right = false;
+    });
+    // Zoom belongs to the tactical view; the shoulder view has no use for the
+    // wheel and Chrome would scroll the page.
+    add(el, 'wheel', (e) => {
+      if (!this.rts) return;
+      e.preventDefault();
+      this.rtsZoom = clamp(this.rtsZoom + Math.sign(e.deltaY) * 5, 22, 78);
     });
     // Chrome scrolls on middle-click without this, and a scrolling page under a
     // pointer-locked game is not something the player can undo.
     add(el, 'auxclick', (e) => { if (e.button === 1) e.preventDefault(); });
     add(el, 'contextmenu', (e) => e.preventDefault());
     add(document, 'mousemove', (e) => {
+      if (this.rts) {
+        this.rtsCursor = { x: e.clientX, y: e.clientY };
+        // Edge-pan only engages once the mouse has really moved in this mode
+        // — the cursor's stale (0,0) default reads as "parked in the corner"
+        // and quietly drives the camera off the battle.
+        this.rtsCursorLive = true;
+        if (this.rtsDrag) { this.rtsDrag.x1 = e.clientX; this.rtsDrag.y1 = e.clientY; }
+        this.rtsDrawBox();
+        return;
+      }
       if (document.pointerLockElement !== el) return;
       if (this.wheel?.open) { this.steerWheel(e.movementX, e.movementY); return; }
       const s = 0.0022 * (this.mouse.right ? 0.55 : 1);
@@ -1735,8 +1829,9 @@ export class Mission {
       if (document.pointerLockElement === el) { this.hadLock = true; return; }
       // Only auto-pause when a lock we actually held is lost. Pausing on any
       // "not locked" state meant a browser that never granted the lock froze
-      // the deployment on the first frame with no explanation.
-      if (this.hadLock && !this.over) this.paused = true;
+      // the deployment on the first frame with no explanation. The tactical
+      // camera releases the lock ON PURPOSE — that is not a pause.
+      if (this.hadLock && !this.over && !this.rts) this.paused = true;
     });
     this.canvasEl = el;
   }
@@ -1747,11 +1842,199 @@ export class Mission {
     }
   }
 
+  // ======================================================================
+  // Tactical camera
+  // ======================================================================
+
+  toggleTactical() {
+    if (this.over || this.intro?.active) return;
+    // The pit has no squad to command, and the crowd does not take orders.
+    if (this.spec.type === 'pit') return;
+    this.rts = !this.rts;
+    if (this.rts) {
+      this.rtsFocus = { x: this.player.x, z: this.player.z };
+      this.rtsYaw = this.camYaw;
+      this.rtsCursorLive = false;
+      this.mouse.down = false;
+      this.mouse.right = false;
+      if (document.pointerLockElement) document.exitPointerLock();
+      this.onToast('TACTICAL', 'Drag selects · right-click orders · T returns', 'order');
+    } else {
+      this.rtsDrag = null;
+      this.rtsDrawBox();
+      this.requestLock();
+    }
+  }
+
+  /** Screen point → the terrain under it, walked along the pick ray. */
+  screenToGround(mx, my) {
+    const rect = this.canvasEl.getBoundingClientRect();
+    const ndc = new THREE.Vector2(
+      ((mx - rect.left) / rect.width) * 2 - 1,
+      -((my - rect.top) / rect.height) * 2 + 1,
+    );
+    // The camera may have been posed this frame without a render between —
+    // project through fresh matrices or the pick is a frame stale.
+    this.camera.updateMatrixWorld();
+    const rc = new THREE.Raycaster();
+    rc.setFromCamera(ndc, this.camera);
+    const o = rc.ray.origin, d = rc.ray.direction;
+    if (d.y >= -0.02) return null;                 // looking at the sky
+    let t = 0;
+    for (let i = 0; i < 60; i++) {
+      const px = o.x + d.x * t, py = o.y + d.y * t, pz = o.z + d.z * t;
+      const h = Level.heightAt(px, pz);
+      if (py <= h + 0.15) return { x: px, z: pz };
+      t += Math.max(0.6, (py - h) * 0.7);
+      if (t > 700) break;
+    }
+    return null;
+  }
+
+  /** World position → screen pixels, or null when behind the camera. */
+  worldToScreen(x, z) {
+    const rect = this.canvasEl.getBoundingClientRect();
+    this.camera.updateMatrixWorld();
+    const v = new THREE.Vector3(x, Level.heightAt(x, z) + 1.1, z).project(this.camera);
+    if (v.z > 1) return null;
+    return {
+      x: rect.left + (v.x + 1) / 2 * rect.width,
+      y: rect.top + (1 - v.y) / 2 * rect.height,
+    };
+  }
+
+  /** Everyone the tactical view can command: the squad, and the commander. */
+  rtsFinishSelect() {
+    const d = this.rtsDrag;
+    this.rtsDrag = null;
+    this.rtsDrawBox();
+    if (!d) return;
+    const x0 = Math.min(d.x0, d.x1), x1 = Math.max(d.x0, d.x1);
+    const y0 = Math.min(d.y0, d.y1), y1 = Math.max(d.y0, d.y1);
+    const isClick = (x1 - x0) < 8 && (y1 - y0) < 8;
+    const commandable = this.squad.filter((s) => !s.dead && !s.down);
+
+    if (isClick) {
+      // Click: the nearest body under the cursor, commander included.
+      let best = null, bd = 30;
+      for (const s of [...commandable, this.player]) {
+        const sp = this.worldToScreen(s.x, s.z);
+        if (!sp) continue;
+        const dist = Math.hypot(sp.x - d.x1, sp.y - d.y1);
+        if (dist < bd) { bd = dist; best = s; }
+      }
+      this.selection.clear();
+      this.playerSelected = false;
+      if (best === this.player) this.playerSelected = true;
+      else if (best) this.selection.add(this.squad.indexOf(best));
+      this.onToast('', this.playerSelected ? 'SELECTED: COMMANDER'
+        : best ? `SELECTED: ${this.selectionLabel()}` : 'WHOLE SQUAD', 'order');
+      return;
+    }
+    // Box: everyone inside it, commander included.
+    this.selection.clear();
+    this.playerSelected = false;
+    for (const s of commandable) {
+      const sp = this.worldToScreen(s.x, s.z);
+      if (sp && sp.x >= x0 && sp.x <= x1 && sp.y >= y0 && sp.y <= y1) {
+        this.selection.add(this.squad.indexOf(s));
+      }
+    }
+    const pp = this.worldToScreen(this.player.x, this.player.z);
+    if (pp && pp.x >= x0 && pp.x <= x1 && pp.y >= y0 && pp.y <= y1) this.playerSelected = true;
+    this.onToast('', this.selection.size || this.playerSelected
+      ? `SELECTED: ${this.playerSelected ? 'COMMANDER + ' : ''}${this.selection.size || 'NOBODY'}`
+      : 'WHOLE SQUAD', 'order');
+  }
+
+  /** Right-click: context order at the ground point — move, or focus fire. */
+  rtsOrderAt(mx, my) {
+    const pt = this.screenToGround(mx, my);
+    if (!pt) return;
+    // An enemy near the click is a target, not a destination.
+    let foe = null, fd = 3.2;
+    for (const e of this.entities) {
+      if (e.side !== 'enemy' || e.dead) continue;
+      const dist = Math.hypot(e.x - pt.x, e.z - pt.z);
+      if (dist < fd) { fd = dist; foe = e; }
+    }
+    this.issueContextOrder(foe ? { x: foe.x, z: foe.z, entity: foe } : { x: pt.x, z: pt.z });
+    // The commander is a unit on this board like everybody else.
+    if (this.playerSelected) {
+      this.playerAuto = { x: pt.x, z: pt.z };
+      this.showMarker(pt.x, pt.z, 4);
+    }
+  }
+
+  /** The drag-select rectangle, drawn straight onto the container. */
+  rtsDrawBox() {
+    let box = this.rtsBoxEl;
+    if (!box) {
+      box = document.createElement('div');
+      box.style.cssText = 'position:fixed;border:1px solid #c08d3f;'
+        + 'background:rgba(192,141,63,0.12);pointer-events:none;z-index:40;display:none;';
+      document.body.appendChild(box);
+      this.rtsBoxEl = box;
+    }
+    const d = this.rtsDrag;
+    if (!d) { box.style.display = 'none'; return; }
+    box.style.display = 'block';
+    box.style.left = `${Math.min(d.x0, d.x1)}px`;
+    box.style.top = `${Math.min(d.y0, d.y1)}px`;
+    box.style.width = `${Math.abs(d.x1 - d.x0)}px`;
+    box.style.height = `${Math.abs(d.y1 - d.y0)}px`;
+  }
+
+  updateTacticalCamera(dt) {
+    const f = this.rtsFocus;
+    // WASD pans in view space; the screen edge pans too, RTS-fashion.
+    const sp = this.rtsZoom * 1.6 * dt;
+    let px = 0, pz = 0;
+    if (this.keys.has('w')) pz += 1;
+    if (this.keys.has('s')) pz -= 1;
+    if (this.keys.has('a')) px -= 1;
+    if (this.keys.has('d')) px += 1;
+    const rect = this.canvasEl?.getBoundingClientRect();
+    if (rect && !this.rtsDrag && this.rtsCursorLive) {
+      const m = 24;
+      if (this.rtsCursor.x < rect.left + m) px -= 1;
+      if (this.rtsCursor.x > rect.right - m) px += 1;
+      if (this.rtsCursor.y < rect.top + m) pz += 1;
+      if (this.rtsCursor.y > rect.bottom - m) pz -= 1;
+    }
+    const sin = Math.sin(this.rtsYaw), cos = Math.cos(this.rtsYaw);
+    f.x += (px * cos + pz * sin) * sp;
+    f.z += (-px * sin + pz * cos) * sp;
+    const b = this.level.bounds;
+    f.x = clamp(f.x, -b, b);
+    f.z = clamp(f.z, -b, b);
+
+    if (Math.abs(this.camera.fov - 52) > 0.01) {
+      this.camera.fov = 52;
+      this.camera.updateProjectionMatrix();
+    }
+    const ground = Level.heightAt(f.x, f.z);
+    this.camera.position.set(
+      f.x - sin * this.rtsZoom * 0.62,
+      ground + this.rtsZoom,
+      f.z - cos * this.rtsZoom * 0.62,
+    );
+    this.camera.lookAt(f.x, ground, f.z);
+    this.hidePlayerModel = false;
+    // Shadows still follow the commander, wherever the eye went.
+    const p = this.player;
+    this.sun.position.set(p.x - 46, 38, p.z + 30);
+    this.sun.target.position.set(p.x, 0, p.z);
+    this.sun.target.updateMatrixWorld();
+  }
+
   togglePause() {
     if (this.over) return;
     this.paused = !this.paused;
     if (this.paused && document.pointerLockElement) document.exitPointerLock();
-    else this.requestLock();
+    // Resuming into the tactical view must NOT grab the pointer — the whole
+    // mode runs unlocked, and yanking the lock would snap it back to shoulder.
+    else if (!this.rts) this.requestLock();
   }
 
   // ======================================================================
@@ -2611,6 +2894,58 @@ export class Mission {
     // No control during the insertion cinematic.
     if (this.intro?.active) { p.moveSpeed = 0; this.aiming = false; return; }
 
+    // A standing move order from the tactical board. Manual input always
+    // wins the argument — touching WASD in the shoulder view cancels it.
+    const manual = ['w', 'a', 's', 'd'].some((k) => this.keys.has(k));
+    if (manual && !this.rts) this.playerAuto = null;
+    if (this.playerAuto) {
+      const t = this.playerAuto;
+      const dist = Math.hypot(t.x - p.x, t.z - p.z);
+      if (dist < 1.2) {
+        this.playerAuto = null;
+        p.moveSpeed = 0;
+      } else {
+        const eff2 = effective(p.soldier);
+        const wx = (t.x - p.x) / dist, wz = (t.z - p.z) / dist;
+        const res = Level.resolveMove(this.level.obstacles, p.x, p.z,
+          p.x + wx * eff2.speed * dt, p.z + wz * eff2.speed * dt,
+          Level.heightAt(p.x, p.z) + this.airY);
+        const bb = this.level.bounds;
+        p.x = clamp(res.x, -bb, bb);
+        p.z = clamp(res.z, -bb, bb);
+        p.moveSpeed = eff2.speed;
+        p.yaw = approachAngle(p.yaw, Math.atan2(wx, wz), dt * 7);
+      }
+    }
+    // The tactical view commands; it does not aim, walk, or pull triggers
+    // FOR the commander — but the commander is not a mannequin while you are
+    // up there. They hold their own ground squaddie-fashion: face the
+    // nearest thing shooting at them and return fire through the same AI
+    // path the rest of the company uses. Standing inert made switching to
+    // tactical mid-firefight a free kill on you.
+    if (this.rts) {
+      this.aiming = false;
+      if (!this.playerAuto) p.moveSpeed = 0;
+      let foe = null, fd = (p.weapon?.range || 30) * 1.1;
+      for (const e of this.entities) {
+        if (e.side !== 'enemy' || e.dead || e.down) continue;
+        const d = Math.hypot(e.x - p.x, e.z - p.z);
+        if (d < fd) { fd = d; foe = e; }
+      }
+      if (foe && !p.down) {
+        if (!this.playerAuto) {
+          p.yaw = approachAngle(p.yaw, Math.atan2(foe.x - p.x, foe.z - p.z), dt * 6);
+        }
+        this.aiShoot(dt, p, foe, fd);
+      }
+      if (p.reloading > 0) {
+        p.reloading -= dt;
+        if (p.reloading <= 0) { p.ammo = p.weapon.mag; p.reloading = 0; }
+      }
+      p.cooldown = Math.max(0, p.cooldown - dt);
+      return;
+    }
+
     this.updateStance(dt);
     this.aiming = this.mouse.right;
     this.updateCover(dt);
@@ -2660,14 +2995,17 @@ export class Mission {
       p.x = clamp(res.x, -b, b);
       p.z = clamp(res.z, -b, b);
       p.moveSpeed = speed;
-    } else {
+    } else if (!this.playerAuto) {
       p.moveSpeed = 0;
     }
 
     // Body turns to face where the camera looks. When not aiming, it lags,
-    // which stops the character snapping around under the camera.
-    const targetYaw = this.camYaw + Math.PI;
-    p.yaw = this.aiming ? targetYaw : approachAngle(p.yaw, targetYaw, dt * 7);
+    // which stops the character snapping around under the camera. A standing
+    // tactical order owns the body until it arrives — it faces its path.
+    if (!this.playerAuto) {
+      const targetYaw = this.camYaw + Math.PI;
+      p.yaw = this.aiming ? targetYaw : approachAngle(p.yaw, targetYaw, dt * 7);
+    }
 
     if (p.reloading > 0) {
       p.reloading -= dt;
@@ -3870,7 +4208,12 @@ export class Mission {
 
     if (this.stages?.length && this.stageIndex >= 0) this.updateStages(dt);
     if (t === 'pit') this.updatePit(dt);
-    if (t === 'siege') this.updateSiege(dt);
+    if (t === 'siege') {
+      this.updateSiege(dt);
+      this.updateSkirmishWaves();
+    }
+    // Any mission fought with an army at your back feeds its ranks in.
+    this.updateAlliedWaves();
 
     if (t === 'lair' && !this.objective.done && this.objective.type !== 'stage') {
       const onField = this.entities.filter((e) => e.side === 'enemy' && !e.dead).length;
@@ -4183,6 +4526,9 @@ export class Mission {
       enemyFaction: this.level?.enemyFaction || this.spec.enemyFaction || null,
       // How many rounds were actually survived, which is what the pit pays on.
       pitRounds: this.pitBest || 0,
+      // The stake the commander put on themselves at the door. Already
+      // deducted; the campaign pays it out only if the whole card was cleared.
+      wager: this.spec.wager || 0,
     };
 
     setTimeout(() => this.onEnd(this.result), 1400);
@@ -4236,6 +4582,7 @@ export class Mission {
   }
 
   updateCamera(dt) {
+    if (this.rts && !this.intro?.active) { this.updateTacticalCamera(dt); return; }
     const p = this.player;
     const aim = this.aiming;
     // Over-the-shoulder, tighter and closer when aiming.
@@ -4545,6 +4892,17 @@ export class Mission {
         })),
       } : null,
 
+      // The army ticker: total strength either side of a big battle, front
+      // rank plus everything still mustering. Only when the fight is army-
+      // sized — a six-man skirmish does not need a war scoreboard.
+      armies: ((this.alliesTotal || 0) >= 20 || (this.skirmishTotal || 0) >= 20) ? {
+        ours: this.squad.filter((s) => !s.dead && !s.down).length
+          + Math.max(0, (this.alliesTotal || 0) - (this.alliesCommitted || 0)),
+        theirs: this.entities.filter((e) => e.side === 'enemy' && !e.dead).length
+          + Math.max(0, (this.skirmishTotal || 0) - (this.skirmishCommitted || 0)),
+      } : null,
+
+      tactical: this.rts,
       extract: this.extractArmed,
       extractBlocked: this.extractBlocked,
       extractDist: this.extractArmed
@@ -4656,6 +5014,7 @@ export class Mission {
     for (const [t, ev, fn] of this._boundHandlers) t.removeEventListener(ev, fn);
     this._boundHandlers = [];
     if (document.pointerLockElement) document.exitPointerLock();
+    if (this.rtsBoxEl?.parentNode) this.rtsBoxEl.parentNode.removeChild(this.rtsBoxEl);
     Audio.stopAmbience();
     // Frees what this mission built and leaves the model cache alone. Walking
     // the scene disposing everything took the shared assets with it, and the

@@ -637,6 +637,38 @@ Open, in rough priority order:
    already left). The by-the-round purse is untouched — it is the
    consolation; the wager is the tournament bet.
 
+**Army-scale battles** (this session). The player asked for "1000 v 1000".
+   What shipped is the Mount & Blade answer: armies of hundreds whose FIELD
+   presence is a front rank streamed through the cap, under a scoreboard
+   that counts the whole host. The pieces: `tryCapture` scales siege
+   columns ×3.2–4.6 into hosts (100–270); `specFor` gives a summoned siege
+   `allies: col.strength` and `enemyArmy: 0.85×` that; `buildSiege` seeds
+   `skirmishTotal` from `enemyArmy` (front rank = the wall garrison);
+   `updateSkirmishWaves` now serves sieges too but musters defender waves
+   INSIDE the walls via `reinforce()` (the arc spawner would put a
+   garrison's reserve on the attacker's approach); `spawnAllies` commits 12
+   and `updateAlliedWaves` feeds ranks of 6 whenever living militia < 7;
+   `updateSiege` counts uncommitted reserves in its "anybody left" check or
+   an army siege would declare victory when the first rank fell. The HUD
+   `armies` ticker (obj-sub line) appears only when either host ≥ 20.
+   Do NOT raise the 34 FIELD_CAP for this — ~50 combatants on field is the
+   perf envelope; scale lives in the totals, not the cap.
+
+**The tactical camera** (this session). T toggles a top-down command view:
+   WASD/edge pan (edge-pan gated on `rtsCursorLive` — the stale (0,0)
+   cursor default read as "parked in the corner" and drove the camera off
+   the battle in headless runs), wheel zoom 22–78, drag box or click to
+   select — the COMMANDER is selectable and commandable like any squaddie —
+   right-click issues the same `issueContextOrder` the wheel uses (enemy
+   near the click → focus fire, else move), and `playerAuto` walks the
+   commander's body to ordered points; touching WASD in shoulder view
+   cancels it. Traps: the mode runs UNLOCKED, so both the pointerlockchange
+   auto-pause and `togglePause`'s resume re-lock are gated on `!this.rts`;
+   `worldToScreen`/`screenToGround` must `camera.updateMatrixWorld()` first
+   (a posed-but-unrendered camera projects a frame stale — the acceptance
+   test caught it); the pit refuses the mode (no squad, and the crowd does
+   not take orders); the reticle hides via `hud.tactical`.
+
 ---
 
 ## The summary artifact

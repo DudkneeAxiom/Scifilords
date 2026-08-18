@@ -5178,3 +5178,151 @@ test('the siege curtain cannot be walked around', async ({ page }) => {
   expect(r.east).toBeGreaterThanOrEqual(r.bounds);
   expect(r.west).toBeLessThanOrEqual(-r.bounds);
 });
+
+test('an army fights through the field cap: ranks stream in, the ticker counts the host', async ({ page }) => {
+  await boot(page);
+  await newCampaign(page);
+  await page.evaluate(async () => {
+    const { Mission } = await import('/src/mission.js');
+    const UI = await import('/src/ui.js');
+    const G = window.KR;
+    const S = G.campaign;
+    S.renown = 4000;
+    G.mission?.dispose();
+    G.world?.dispose(); G.world = null;
+    document.getElementById('viewport').innerHTML = '';
+    UI.show('hud');
+    G.mission = new Mission({
+      campaign: S,
+      spec: { type: 'siege', site: 'fort', layout: 'fort', siteName: 'Gate',
+        enemyFaction: 'syndic', allies: 180, allyFaction: 'trust', enemyArmy: 150 },
+      squad: S.roster.slice(0, 4),
+      container: document.getElementById('viewport'),
+      onHud: () => {}, onToast: () => {}, onIntro: () => {}, onWheel: () => {}, onEnd: () => {},
+    });
+    await G.mission.start();
+    G.mission.paused = true;
+  });
+  await page.waitForFunction(() => window.KR.mission?.player, null, { timeout: 40000 });
+  const r = await page.evaluate(() => {
+    const m = window.KR.mission;
+    const militia = () => m.squad.filter((s) => s.militia && !s.dead && !s.down);
+    const enemies = () => m.entities.filter((e) => e.side === 'enemy' && !e.dead);
+    const before = {
+      // Only a front rank stands on the field...
+      alliedField: militia().length,
+      enemyField: enemies().length,
+      // ...but the scoreboard counts the whole host, both sides.
+      armies: m.buildHud().armies,
+    };
+    // The allied rank is shot down: the column feeds the next one in.
+    for (const s of militia().slice(0, 9)) s.dead = true;
+    m.updateAlliedWaves();
+    const alliedAfterWave = militia().length;
+    const committed = m.alliesCommitted;
+    // The garrison's front rank falls: the reserve musters inside the walls.
+    for (const e of enemies()) e.dead = true;
+    m.updateSkirmishWaves();
+    return {
+      before,
+      alliedAfterWave,
+      committed,
+      enemyAfterWave: enemies().length,
+      enemyCommitted: m.skirmishCommitted,
+      total: m.skirmishTotal,
+    };
+  });
+  // Front ranks, not armies, on the field.
+  expect(r.before.alliedField).toBeLessThanOrEqual(12);
+  expect(r.before.enemyField).toBeLessThanOrEqual(20);
+  // The ticker shows the whole weight of both hosts.
+  expect(r.before.armies.ours).toBeGreaterThan(160);
+  expect(r.before.armies.theirs).toBeGreaterThan(130);
+  // Both sides genuinely stream: fresh fighters after the rank falls.
+  expect(r.alliedAfterWave).toBeGreaterThan(3);
+  expect(r.committed).toBeGreaterThan(12);
+  expect(r.enemyAfterWave).toBeGreaterThan(0);
+  expect(r.enemyCommitted).toBeGreaterThan(r.before.enemyField);
+  expect(r.total).toBe(150);
+});
+
+test('the tactical camera commands the squad, and the commander is a unit too', async ({ page }) => {
+  await boot(page);
+  await newCampaign(page);
+  await page.evaluate(async () => {
+    const { Mission } = await import('/src/mission.js');
+    const UI = await import('/src/ui.js');
+    const G = window.KR;
+    const S = G.campaign;
+    S.renown = 4000;
+    G.mission?.dispose();
+    G.world?.dispose(); G.world = null;
+    document.getElementById('viewport').innerHTML = '';
+    UI.show('hud');
+    G.mission = new Mission({
+      campaign: S,
+      spec: { type: 'skirmish', site: 'roadside', layout: 'roadside', siteName: 'T',
+        party: { id: 't', kind: 'scrappers', name: 'T', strength: 6, tier: 2, quality: 0.6 } },
+      squad: S.roster.slice(0, 4),
+      container: document.getElementById('viewport'),
+      onHud: () => {}, onToast: () => {}, onIntro: () => {}, onWheel: () => {}, onEnd: () => {},
+    });
+    await G.mission.start();
+    const m = G.mission;
+    m.paused = true; m.hadLock = true;
+    if (m.intro) { m.intro.active = false; m.time = m.intro.graceUntil + 0.1; }
+  });
+  await page.waitForFunction(() => window.KR.mission?.player, null, { timeout: 40000 });
+  const r = await page.evaluate(() => {
+    const m = window.KR.mission;
+    m.toggleTactical();
+    const on = m.rts;
+    const hudFlag = m.buildHud().tactical;
+    // Put the camera in its tactical pose so screen-space picking has
+    // something honest to project through.
+    m.updateTacticalCamera(1 / 60);
+    // Box-select the whole screen: everyone in view, commander included.
+    const rect = m.canvasEl.getBoundingClientRect();
+    m.rtsDrag = { x0: rect.left, y0: rect.top, x1: rect.right, y1: rect.bottom };
+    m.rtsFinishSelect();
+    const boxed = { squad: m.selection.size, commander: m.playerSelected };
+    // Order the lot somewhere specific, via the same screen path a click uses.
+    const p = m.player;
+    const dest = { x: p.x + 12, z: p.z + 6 };
+    const sp = m.worldToScreen(dest.x, dest.z);
+    m.rtsOrderAt(sp.x, sp.y);
+    const ordered = m.squad.filter((s) => !s.dead && s.order === 'move').length;
+    const auto = m.playerAuto ? Math.hypot(m.playerAuto.x - dest.x, m.playerAuto.z - dest.z) : null;
+    // The commander actually walks there.
+    const before = Math.hypot(dest.x - p.x, dest.z - p.z);
+    for (let i = 0; i < 160; i++) m.updatePlayer(0.05);
+    const after = m.playerAuto
+      ? Math.hypot(m.playerAuto.x - p.x, m.playerAuto.z - p.z)
+      : Math.hypot(dest.x - p.x, dest.z - p.z);
+    // Self-defense: the commander is not a mannequin while you command.
+    // Park an enemy in front of them; they face it and return fire on their
+    // own, through the same AI path the rest of the company uses.
+    const foe = m.entities.find((e) => e.side === 'enemy' && !e.dead);
+    foe.x = p.x + 8; foe.z = p.z; foe.down = false;
+    m.playerAuto = null;
+    const shotsBefore = m.stats.shotsFired;
+    for (let i = 0; i < 240; i++) m.updatePlayer(0.05);
+    const defended = m.stats.shotsFired > shotsBefore;
+    m.toggleTactical();
+    return { on, hudFlag, boxed, ordered, auto, before, after, defended, off: !m.rts };
+  });
+  expect(r.on).toBe(true);
+  expect(r.hudFlag).toBe(true);
+  // The whole-screen box catches the squad AND the commander.
+  expect(r.boxed.squad).toBeGreaterThanOrEqual(3);
+  expect(r.boxed.commander).toBe(true);
+  // Right-click gave everyone a move order, commander included.
+  expect(r.ordered).toBeGreaterThanOrEqual(3);
+  expect(r.auto).not.toBeNull();
+  expect(r.auto).toBeLessThan(5);
+  // And the commander's body obeys the board: walked to (or into) the point.
+  expect(r.after).toBeLessThan(Math.max(2, r.before - 5));
+  // Left alone under fire, they defend themselves.
+  expect(r.defended).toBe(true);
+  expect(r.off).toBe(true);
+});
