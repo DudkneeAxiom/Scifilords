@@ -35,7 +35,11 @@ const BLEED_OUT = 55;      // seconds a downed soldier has before it is permanen
 // How many hostiles stand on the field at once. Larger parties commit the rest
 // in waves as the front rank falls, which is both how a big formation actually
 // fights and what keeps the frame budget honest.
-const FIELD_CAP = 34;
+// Raised from 34 after character instancing: fifty combatants used to cost
+// ~350 character draw calls and now cost the same ~30 pools regardless of
+// count (tools/perf.mjs field scene: 874 → 79 calls). The cap is now paid
+// in simulation, which measures ~0.8ms/step at this scale.
+const FIELD_CAP = 48;
 
 // How far a focus-fire mark survives. Past this the squad could not engage it
 // anyway, and a marker on someone nobody can shoot is worse than no marker.
@@ -751,10 +755,74 @@ export class Mission {
     e.char.group.position.set(e.x, Level.heightAt(e.x, e.z), e.z);
     e.char.group.rotation.y = e.yaw;
     this.scene.add(e.char.group);
+    // Soldiers render through the instanced pools; the Titan is one body and
+    // stays a plain mesh hierarchy.
+    if (opts.model !== 'titan') this.batchCharacter(e);
     // The player's own body is hidden from the head up when aiming so the
     // camera never looks through a skull; simplest fix is to keep the model.
     this.entities.push(e);
     return e;
+  }
+
+  // ======================================================================
+  // Character batching
+  // ======================================================================
+  //
+  // Every soldier used to be six or seven draw calls — one merged mesh per
+  // rig joint, plus a weapon — and at fifty combatants that was ~350 of the
+  // frame's ~900. All character meshes are hidden at spawn and drawn instead
+  // through per-geometry InstancedMesh pools: the joint hierarchy still
+  // exists and still animates (three.js computes matrices whether or not a
+  // node renders), and every frame the batcher copies each hidden mesh's
+  // matrixWorld into its pool slot. Draw calls become one per DISTINCT PART
+  // across the whole field, not per soldier — which is what makes raising
+  // the field cap affordable.
+
+  batchCharacter(e) {
+    this.charPools = this.charPools || new Map();
+    this.charOwners = this.charOwners || [];
+    this.charOwners.push(e);
+    e.char.group.traverse((o) => {
+      if (!o.isMesh) return;
+      o.visible = false;
+      const key = o.geometry.uuid;
+      let pool = this.charPools.get(key);
+      if (!pool) {
+        const im = new THREE.InstancedMesh(o.geometry, o.material, 160);
+        im.castShadow = true;
+        // Instances move every frame; a stale whole-mesh bound culls them
+        // all at once — same rule as the faction rings.
+        im.frustumCulled = false;
+        im.count = 0;
+        this.scene.add(im);
+        pool = { im, slots: [] };
+        this.charPools.set(key, pool);
+      }
+      pool.slots.push({ mesh: o, owner: e });
+    });
+  }
+
+  updateCharBatch() {
+    if (!this.charPools) return;
+    // Fresh matrices for every batched body: syncVisuals just posed them,
+    // and copying last frame's matrixWorld would trail the animation by one
+    // frame. Character subtrees only — the level is static and enormous.
+    for (const e of this.charOwners) {
+      if (e.char?.group && e.char.group.visible !== false) {
+        e.char.group.updateMatrixWorld(true);
+      }
+    }
+    for (const pool of this.charPools.values()) {
+      let n = 0;
+      for (const s of pool.slots) {
+        const g = s.owner.char?.group;
+        if (!g || g.visible === false) continue;
+        pool.im.setMatrixAt(n, s.mesh.matrixWorld);
+        n++;
+      }
+      pool.im.count = n;
+      pool.im.instanceMatrix.needsUpdate = true;
+    }
   }
 
   buildSquad() {
@@ -1172,7 +1240,7 @@ export class Mission {
     // rank thins. This is how a column of two hundred fights through a field
     // cap of a few dozen: the battle is the army, the field is its front.
     this.alliesTotal = Math.round(this.spec.allies);
-    const n = Math.min(12, this.alliesTotal);
+    const n = Math.min(16, this.alliesTotal);
     for (let i = 0; i < n; i++) this.spawnAllyAt(i);
     this.alliesCommitted = n;
   }
@@ -1198,8 +1266,8 @@ export class Mission {
     const left = this.alliesTotal - (this.alliesCommitted || 0);
     if (left <= 0) return;
     const alive = this.squad.filter((s) => s.militia && !s.dead && !s.down).length;
-    if (alive >= 7) return;
-    const n = Math.min(6, left);
+    if (alive >= 9) return;
+    const n = Math.min(8, left);
     for (let i = 0; i < n; i++) {
       const e = this.spawnAllyAt(i);
       e.arriving = ARRIVE_GRACE;
@@ -5343,6 +5411,7 @@ export class Mission {
     this.step(dt);
     this.updateEffects(dt);
     this.syncVisuals(this.paused ? 0 : dt);
+    this.updateCharBatch();
     this.updateCamera(dt);
     this.renderer.render(this.scene, this.camera);
     this.onHud(this.buildHud());
@@ -5356,6 +5425,9 @@ export class Mission {
     this._boundHandlers = [];
     if (document.pointerLockElement) document.exitPointerLock();
     if (this.rtsBoxEl?.parentNode) this.rtsBoxEl.parentNode.removeChild(this.rtsBoxEl);
+    // The pools' instance buffers are per-mission; their geometry and
+    // material are the shared cache and stay alive.
+    if (this.charPools) for (const p of this.charPools.values()) p.im.dispose();
     Audio.stopAmbience();
     // Frees what this mission built and leaves the model cache alone. Walking
     // the scene disposing everything took the shared assets with it, and the
