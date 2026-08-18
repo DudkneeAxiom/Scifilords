@@ -5347,3 +5347,261 @@ test('the tactical camera commands the squad, and the commander is a unit too', 
   expect(r.defended).toBe(true);
   expect(r.off).toBe(true);
 });
+
+test('route lines and control groups: the tactical board explains itself', async ({ page }) => {
+  await boot(page);
+  await newCampaign(page);
+  await page.evaluate(async () => {
+    const { Mission } = await import('/src/mission.js');
+    const UI = await import('/src/ui.js');
+    const G = window.KR;
+    const S = G.campaign;
+    S.renown = 4000;
+    G.mission?.dispose();
+    G.world?.dispose(); G.world = null;
+    document.getElementById('viewport').innerHTML = '';
+    UI.show('hud');
+    G.mission = new Mission({
+      campaign: S,
+      spec: { type: 'skirmish', site: 'roadside', layout: 'roadside', siteName: 'G',
+        party: { id: 'g', kind: 'scrappers', name: 'G', strength: 5, tier: 2, quality: 0.6 } },
+      squad: S.roster.slice(0, 4),
+      container: document.getElementById('viewport'),
+      onHud: () => {}, onToast: () => {}, onIntro: () => {}, onWheel: () => {}, onEnd: () => {},
+    });
+    await G.mission.start();
+    G.mission.paused = true;
+    if (G.mission.intro) { G.mission.intro.active = false; G.mission.time = G.mission.intro.graceUntil + 0.1; }
+  });
+  await page.waitForFunction(() => window.KR.mission?.player, null, { timeout: 40000 });
+  const r = await page.evaluate(() => {
+    const m = window.KR.mission;
+    m.toggleTactical();
+    m.updateTacticalCamera(1 / 60);
+    // Bind a group: one squaddie plus the commander.
+    m.selection.clear();
+    m.selection.add(0);
+    m.playerSelected = true;
+    m.assignGroup(2);
+    // Scatter the selection, then recall.
+    m.selection.clear();
+    m.playerSelected = false;
+    m.recallGroup(2);
+    const recalled = { sel: [...m.selection], player: m.playerSelected };
+    // A dead member does not answer the recall.
+    const bound = m.squad[0];
+    bound.dead = true;
+    m.recallGroup(2);
+    const afterDeath = { sel: [...m.selection], player: m.playerSelected };
+    bound.dead = false;
+    // Route lines: give everyone somewhere to be, and the board draws it.
+    m.selection.clear();
+    const p = m.player;
+    const sp = m.worldToScreen(p.x + 14, p.z + 8);
+    m.playerSelected = true;
+    m.rtsOrderAt(sp.x, sp.y);
+    m.rtsSyncRoutes();
+    const lines = m.routeViz
+      ? m.routeViz.geometry.getAttribute('position').count : 0;
+    // Leaving the mode tears the lines down.
+    m.toggleTactical();
+    const cleared = !m.routeViz;
+    return { recalled, afterDeath, lines, cleared };
+  });
+  expect(r.recalled.sel).toEqual([0]);
+  expect(r.recalled.player).toBe(true);
+  // The group survives, minus its dead.
+  expect(r.afterDeath.sel).toEqual([]);
+  expect(r.afterDeath.player).toBe(true);
+  // Move orders drew real geometry: at least a segment and a flag per unit.
+  expect(r.lines).toBeGreaterThan(8);
+  expect(r.cleared).toBe(true);
+});
+
+test('the tactical camera has weight: rotation, glide zoom, follow, jump to combat', async ({ page }) => {
+  await boot(page);
+  await newCampaign(page);
+  await page.evaluate(async () => {
+    const { Mission } = await import('/src/mission.js');
+    const UI = await import('/src/ui.js');
+    const G = window.KR;
+    const S = G.campaign;
+    S.renown = 4000;
+    G.mission?.dispose();
+    G.world?.dispose(); G.world = null;
+    document.getElementById('viewport').innerHTML = '';
+    UI.show('hud');
+    G.mission = new Mission({
+      campaign: S,
+      spec: { type: 'skirmish', site: 'roadside', layout: 'roadside', siteName: 'C2',
+        party: { id: 'c2', kind: 'scrappers', name: 'C2', strength: 5, tier: 2, quality: 0.6 } },
+      squad: S.roster.slice(0, 4),
+      container: document.getElementById('viewport'),
+      onHud: () => {}, onToast: () => {}, onIntro: () => {}, onWheel: () => {}, onEnd: () => {},
+    });
+    await G.mission.start();
+    G.mission.paused = true;
+    if (G.mission.intro) { G.mission.intro.active = false; G.mission.time = G.mission.intro.graceUntil + 0.1; }
+  });
+  await page.waitForFunction(() => window.KR.mission?.player, null, { timeout: 40000 });
+  const r = await page.evaluate(() => {
+    const m = window.KR.mission;
+    m.toggleTactical();
+    const step = (n) => { for (let i = 0; i < n; i++) m.updateTacticalCamera(1 / 60); };
+    // Q rotates while held.
+    const yaw0 = m.rtsYaw;
+    m.keys.add('q'); step(30); m.keys.delete('q');
+    const rotated = m.rtsYaw - yaw0;
+    // The wheel target glides, not snaps.
+    m.rtsZoomT = m.rtsZoom + 20;
+    const z0 = m.rtsZoom;
+    step(4);
+    const zMid = m.rtsZoom;
+    step(120);
+    const zEnd = m.rtsZoom;
+    // Momentum: pan input builds speed, and the eye coasts after release.
+    const fx0 = m.rtsFocus.x;
+    m.keys.add('d'); step(30); m.keys.delete('d');
+    const atRelease = m.rtsFocus.x;
+    step(12);
+    const afterCoast = m.rtsFocus.x;
+    step(200);
+    const settled = m.rtsFocus.x;
+    // Space follows the commander.
+    m.rtsFocus.x = m.player.x + 60; m.rtsFocus.z = m.player.z + 60;
+    m.rtsVel = { x: 0, z: 0 };
+    m.selection.clear(); m.playerSelected = false;
+    m.keys.add(' '); step(90); m.keys.delete(' ');
+    const followDist = Math.hypot(m.rtsFocus.x - m.player.x, m.rtsFocus.z - m.player.z);
+    // B jumps to the last exchange of fire.
+    m.lastCombat = { x: m.player.x - 40, z: m.player.z - 40, t: m.time };
+    m.jumpToCombat();
+    const jumped = { x: m.rtsFocus.x, z: m.rtsFocus.z };
+    m.toggleTactical();
+    return {
+      rotated, z0, zMid, zEnd,
+      panMoved: atRelease - fx0, coast: afterCoast - atRelease, settledDrift: settled - afterCoast,
+      followDist, jumped, at: { x: m.player.x - 40, z: m.player.z - 40 },
+    };
+  });
+  // Held Q turned the board a meaningful amount.
+  expect(Math.abs(r.rotated)).toBeGreaterThan(0.5);
+  // Zoom is a glide: partway after a few frames, arrived after many.
+  expect(r.zMid).toBeGreaterThan(r.z0 + 1);
+  expect(r.zMid).toBeLessThan(r.z0 + 19);
+  expect(Math.abs(r.zEnd - (r.z0 + 20))).toBeLessThan(1);
+  // The pan moved, kept coasting after release, then actually stopped.
+  expect(r.panMoved).toBeGreaterThan(5);
+  expect(r.coast).toBeGreaterThan(0.5);
+  expect(Math.abs(r.settledDrift)).toBeLessThan(6);
+  // Held Space carried the eye to the commander.
+  expect(r.followDist).toBeLessThan(4);
+  // B put the eye on the fight.
+  expect(Math.hypot(r.jumped.x - r.at.x, r.jumped.z - r.at.z)).toBeLessThan(1);
+});
+
+test('THE APPROACHES reads from above: a clear road, walled lanes, posts to hold', async ({ page }) => {
+  await boot(page);
+  await newCampaign(page);
+  await page.evaluate(async () => {
+    const { Mission } = await import('/src/mission.js');
+    const UI = await import('/src/ui.js');
+    const G = window.KR;
+    const S = G.campaign;
+    S.renown = 4000;
+    G.mission?.dispose();
+    G.world?.dispose(); G.world = null;
+    document.getElementById('viewport').innerHTML = '';
+    UI.show('hud');
+    G.mission = new Mission({
+      campaign: S,
+      spec: { type: 'skirmish', site: 'field', layout: 'field', siteName: 'The Approaches',
+        party: { id: 'f', kind: 'warband_syndic', name: 'F', strength: 40, tier: 4, quality: 0.9 },
+        allies: 30, allyFaction: 'trust' },
+      squad: S.roster.slice(0, 4),
+      container: document.getElementById('viewport'),
+      onHud: () => {}, onToast: () => {}, onIntro: () => {}, onWheel: () => {}, onEnd: () => {},
+    });
+    await G.mission.start();
+    G.mission.paused = true;
+  });
+  await page.waitForFunction(() => window.KR.mission?.player, null, { timeout: 40000 });
+  const r = await page.evaluate(() => {
+    const m = window.KR.mission;
+    const props = m.level.props;
+    return {
+      name: m.level.name,
+      // The one fast lane is genuinely clear — up to the compound's own
+      // sandbag line, which is the authored end of the road.
+      roadObstacles: m.level.obstacles.filter(
+        (o) => Math.abs(o.x) < 7 && o.z > -48 && o.z < 68).length,
+      // The lanes are walled from it by container trains, with gaps.
+      wallSegs: props.filter((p) => p.model === 'container'
+        && Math.abs(Math.abs(p.x) - 15) < 1).length,
+      towers: props.filter((p) => p.model === 'watchtower').length,
+      sandbags: props.filter((p) => p.model === 'sandbags').length,
+      // A host gets a big field: bounds grow with the armies on it.
+      bounds: m.level.bounds,
+      garrison: m.level.garrison?.length || 0,
+    };
+  });
+  expect(r.roadObstacles).toBe(0);
+  expect(r.wallSegs).toBeGreaterThanOrEqual(18);
+  expect(r.wallSegs).toBeLessThan(26);   // the crossover gaps exist
+  expect(r.towers).toBe(6);
+  expect(r.sandbags).toBeGreaterThanOrEqual(14);
+  expect(r.bounds).toBeGreaterThan(120);
+  expect(r.garrison).toBe(8);
+});
+
+test('the field map shows the whole ground in tactical mode, and a click steers the eye', async ({ page }) => {
+  await boot(page);
+  await newCampaign(page);
+  await page.evaluate(async () => {
+    const { Mission } = await import('/src/mission.js');
+    const UI = await import('/src/ui.js');
+    const G = window.KR;
+    const S = G.campaign;
+    S.renown = 4000;
+    G.mission?.dispose();
+    G.world?.dispose(); G.world = null;
+    document.getElementById('viewport').innerHTML = '';
+    UI.show('hud');
+    G.mission = new Mission({
+      campaign: S,
+      spec: { type: 'skirmish', site: 'roadside', layout: 'roadside', siteName: 'M',
+        party: { id: 'm', kind: 'scrappers', name: 'M', strength: 5, tier: 2, quality: 0.6 } },
+      squad: S.roster.slice(0, 4),
+      container: document.getElementById('viewport'),
+      onHud: () => {}, onToast: () => {}, onIntro: () => {}, onWheel: () => {}, onEnd: () => {},
+    });
+    await G.mission.start();
+    G.mission.paused = true;
+    if (G.mission.intro) { G.mission.intro.active = false; G.mission.time = G.mission.intro.graceUntil + 0.1; }
+  });
+  await page.waitForFunction(() => window.KR.mission?.player, null, { timeout: 40000 });
+  const r = await page.evaluate(() => {
+    const m = window.KR.mission;
+    // The shoulder view keeps its personal radar: no map payload.
+    const shoulderMap = m.buildHud().map;
+    m.toggleTactical();
+    const map = m.buildHud().map;
+    // A click on the map, addressed by the same scale the drawing uses,
+    // lands the eye on the world point it names.
+    const c = document.getElementById('radar');
+    const R = c.width / 2;
+    const scale = (R - 4) / m.level.bounds;
+    m.rtsMapClick(R + 30 * scale, R + -20 * scale);
+    const focus = { x: m.rtsFocus.x, z: m.rtsFocus.z };
+    m.toggleTactical();
+    return { shoulderMap, map: { bounds: map.bounds, blips: map.blips.length,
+      hasObjective: !!map.objective }, focus };
+  });
+  expect(r.shoulderMap).toBe(null);
+  expect(r.map.bounds).toBeGreaterThan(50);
+  // Squad, commander, and the hostile party are all on the board.
+  expect(r.map.blips).toBeGreaterThan(8);
+  expect(r.map.hasObjective).toBe(true);
+  expect(r.focus.x).toBeCloseTo(30, 0);
+  expect(r.focus.z).toBeCloseTo(-20, 0);
+});

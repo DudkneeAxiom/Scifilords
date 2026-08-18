@@ -674,6 +674,40 @@ Open, in rough priority order:
    reuses a stale route. `lastX` is snapshotted for every entity before
    updatePlayer, so `faceMotion` works for the player too.
 
+**RTS-first: the standing direction.** The player has said combat is
+   moving to the tactical view as its PRIMARY mode — third person remains
+   as the way you personally join the fight, but "RTS missions and map
+   layout plus camera movements and controls are going to be massive."
+   FRAMING GUARD, in the player's words: "this isnt an rts structed game
+   or combat. Its RTS controls similar to mount and blade but with guns."
+   No base building, no economy screens, no production queues, no
+   strategy-game fog rules — the tactical layer is a way of COMMANDING a
+   warband battle that still runs on bodies, morale, orders and the
+   commander's own rifle. Reject features that drift toward StarCraft;
+   accept features that drift toward Total War-style battle control or
+   M&B's order screen.
+   Phase 1 (shipped): route lines — `rtsSyncRoutes()` rebuilds one
+   LineSegments per frame from each commanded unit's remaining
+   path + goal + a vertical flag stroke, selected units only when a
+   selection exists, torn down on mode exit — and control groups —
+   Ctrl+digit binds selection BY ENTITY ID (`ctrlGroups`, ids not squad
+   indices: the squad array grows as allied waves stream in), bare digit
+   recalls in tactical mode only, dead members drop on recall, shoulder
+   view keeps digits as individual toggles.
+   Phase 2 (shipped): the camera has weight — Q/E rotate (held, per-frame;
+   Q's shoulder-swap is gated `!rts`), wheel sets `rtsZoomT` and the zoom
+   GLIDES, tilt rides on zoom (oblique close, top-down far), WASD/edge pan
+   drives a velocity with ease-in and coast, Space snaps-to/follows the
+   selection (gated `!rts` for cover/vault), B jumps to `lastCombat`
+   (stamped in applyDamage). Phase 3 (shipped): THE APPROACHES (`field`
+   layout) — clear reserved road, container-train lane walls with authored
+   crossover gaps, garrison posts at three depths, industrial west lane,
+   hab row east, compound north; army-sized map battles (≥24 combatants)
+   route to it, and site `spread` now counts `allies`/`enemyArmy` so hosts
+   get ground. Its `enemyFaction` fallback is REQUIRED in a site return —
+   spawnEnemy derives soldier models from it and dies without one.
+   Phases still open: clickable minimap; perf before any cap raise.
+
 ---
 
 ## The summary artifact

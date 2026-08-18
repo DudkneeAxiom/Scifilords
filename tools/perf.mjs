@@ -24,7 +24,9 @@ page.on('console', (m) => { if (m.type() === 'error') errors.push(m.text()); });
 await page.goto('http://localhost:8124/', { waitUntil: 'domcontentloaded' });
 await page.waitForSelector('#title:not(.hidden)', { timeout: 90000 });
 
-const out = await page.evaluate(async (FRAMES) => {
+const SCENE = process.argv[3] === 'field' ? 'field' : 'array';
+
+const out = await page.evaluate(async ({ FRAMES, SCENE }) => {
   const { Mission } = await import('/src/mission.js');
   const Level = await import('/src/level.js');
   const State = window.KR.dev.State;
@@ -34,8 +36,15 @@ const out = await page.evaluate(async (FRAMES) => {
 
   const m = new Mission({
     campaign: S,
-    // A heavy contract: the big field, the big garrison, the worst case.
-    spec: { type: 'sabotage', site: 'grellan', layout: 'array', strength: 60 },
+    // Two worst cases. 'array': the classic heavy contract. 'field': the
+    // RTS-first load — THE APPROACHES with hosts streaming both ways, which
+    // is where any future field-cap raise will be paid for.
+    spec: SCENE === 'field'
+      ? { type: 'skirmish', site: 'field', layout: 'field', siteName: 'PERF',
+        party: { id: 'pf', kind: 'warband_syndic', name: 'PF', strength: 60,
+          tier: 4, quality: 0.9 },
+        allies: 50, allyFaction: 'trust' }
+      : { type: 'sabotage', site: 'grellan', layout: 'array', strength: 60 },
     squad: State.ready(S).slice(0, 4),
     container: document.getElementById('viewport'),
     onHud() {}, onToast() {}, onIntro() {}, onWheel() {}, onEnd() {},
@@ -80,6 +89,19 @@ const out = await page.evaluate(async (FRAMES) => {
     const t = performance.now(); const v = realSync.apply(this, a);
     phase.visuals += performance.now() - t; return v;
   };
+
+  // The field scene is measured the way it will be PLAYED: from the
+  // tactical camera, with route lines rebuilding. Everyone gets a standing
+  // move order so rtsSyncRoutes has real geometry to rebuild per frame.
+  if (SCENE === 'field') {
+    m.rts = true;
+    m.rtsFocus = { x: 0, z: 0 };
+    m.rtsVel = { x: 0, z: 0 };
+    m.rtsZoom = 60; m.rtsZoomT = 60;
+    for (const s of m.squad) {
+      if (!s.dead) { s.order = 'move'; s.orderPoint = { x: s.x + 30, z: s.z - 40 }; }
+    }
+  }
 
   const stepMs = [];
   const drawMs = [];
@@ -127,7 +149,7 @@ const out = await page.evaluate(async (FRAMES) => {
       triangles: m.renderer.info.render.triangles,
     },
   };
-}, FRAMES);
+}, { FRAMES, SCENE });
 
 console.log(`\n${out.entities} combatants, ${out.obstacles} obstacles, ${out.covers} covers`);
 console.log(`\n  simulation   mean ${out.step.mean}ms  p50 ${out.step.p50}  p95 ${out.step.p95}  max ${out.step.max}`);

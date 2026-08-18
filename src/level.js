@@ -1215,6 +1215,92 @@ function siteArena(b) {
   };
 }
 
+/**
+ * THE APPROACHES — a battlefield authored for the tactical camera.
+ *
+ * Every older site was dressed for the shoulder view: cover that reads at
+ * eye height, scattered so any direction works. From above that is noise.
+ * This one is built to be READ from the tactical camera: a fast, exposed
+ * road up the middle; two cover-rich flank lanes walled off from it by
+ * container trains with deliberate crossover gaps; garrison posts at
+ * intervals a control group can be ordered to hold; and a compound at the
+ * north end that is unmistakably the objective. Lanes are decisions —
+ * which one, and when to cross — which is what a top-down battle is FOR.
+ */
+function siteField(b) {
+  // The road: a clear strip the whole length of the field. Reserved, so no
+  // dressing pass ever parks a crate on the one fast lane.
+  b.protect(0, 0, 8, 78);
+
+  // Container trains wall the road from the flank lanes. Every fourth bay
+  // is left open — the crossovers are where fights happen, so they are
+  // authored, not accidental.
+  for (let i = -6; i <= 6; i++) {
+    if (((i + 60) % 4) === 3) continue;               // the crossover gaps
+    b.prop('container', -15, i * 10.5, Math.PI / 2, BOX.container, 1.15);
+    b.prop('container', 15, i * 10.5 + 5, Math.PI / 2, BOX.container, 1.15);
+  }
+
+  // Garrison posts: a tower and a sandbag arc, both flanks, three depths.
+  // A post is somewhere a control group can be SENT — visible from high up,
+  // defensible when it gets there.
+  for (const pz of [-44, 2, 46]) {
+    for (const px of [-32, 32]) {
+      b.prop('watchtower', px, pz, 0, BOX.watchtower, 1);
+      b.prop('sandbags', px - 4, pz + 4, 0.4, BOX.sandbags, 1.2);
+      b.prop('sandbags', px + 4, pz + 4, -0.4, BOX.sandbags, 1.2);
+      b.prop('barrier', px, pz + 6, 0, BOX.barrier, 1);
+    }
+  }
+
+  // West lane: industrial wreckage — hard cover, tight sightlines.
+  b.prop('truck_wreck', -38, -20, 0.7, BOX.truck_wreck, 1);
+  b.prop('truck_wreck', -44, 24, -0.4, BOX.truck_wreck, 1);
+  b.prop('pipe_run', -40, -2, 0, BOX.pipe_run, 1);
+  b.prop('container', -48, -34, 0.3, BOX.container, 1);
+  b.prop('container', -34, 36, Math.PI / 2, BOX.container, 1);
+  b.scatter(['crate'], 8, -41, 0, 26, () => BOX.crate);
+
+  // East lane: a ruined hab row — rooms to clear, roofs to hold.
+  b.prop('hab_block', 38, -26, Math.PI / 2, BOX.hab_block, 1);
+  b.prop('hab_block', 44, 12, 0, BOX.hab_block, 1);
+  b.prop('hab_block', 36, 34, Math.PI / 2, BOX.hab_block, 1);
+  b.prop('generator', 42, -8, 0, BOX.generator, 1);
+  b.scatter(['crate'], 8, 41, 4, 26, () => BOX.crate);
+
+  // The compound: what the whole field is walked toward.
+  b.prop('bunker', 0, -64, 0, BOX.bunker, 1.15);
+  b.prop('comms_mast', -8, -68, 0, BOX.comms_mast, 1.2);
+  b.prop('sandbags', -6, -57, 0.5, BOX.sandbags, 1.3);
+  b.prop('sandbags', 6, -57, -0.5, BOX.sandbags, 1.3);
+  b.prop('barrier', 0, -55, 0, BOX.barrier, 1);
+  b.prop('fuel_tank', 10, -66, 0, BOX.fuel_tank, 1.2);
+
+  b.perimeter(80);
+
+  return {
+    name: 'THE APPROACHES',
+    palette: {
+      fog: 0x4a463c, ground: 0x585243, groundLow: 0x2c2921, acc: 0x505c46,
+      sky: 0x40424a, sun: 0xe6bc82, sunI: 2.9, amb: 0x687080, ambI: 2.0,
+    },
+    playerSpawn: { x: 0, z: 72, ry: 0 },
+    extraction: { x: 0, z: 74 },
+    objectivePoint: { x: 0, z: -62 },
+    enemyFaction: 'syndic',
+    // The posts and the compound, held from the start.
+    garrison: [
+      [-32, -44], [32, -44], [-32, 2], [32, 2],
+      [0, -58], [-8, -62], [8, -62], [0, -50],
+    ],
+    patrols: [
+      [[-32, -44], [-32, 46], [-32, -44]],
+      [[32, 46], [32, -44], [32, 46]],
+      [[0, -50], [0, -20], [0, -50]],
+    ],
+  };
+}
+
 // Keyed by layout, not by location: several places in the Reach share a layout
 // and every layout can host any mission template.
 const SITES = {
@@ -1227,6 +1313,7 @@ const SITES = {
   works: siteWorks,
   fort: siteFort,
   arena: siteArena,
+  field: siteField,
 };
 
 // --------------------------------------------------------------------------

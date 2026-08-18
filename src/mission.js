@@ -257,6 +257,12 @@ export class Mission {
     this.rtsDrag = null;
     this.playerSelected = false;
     this.playerAuto = null;
+    // Control groups: Ctrl+digit binds the current selection (commander
+    // included) to that digit; in tactical mode the plain digit recalls it.
+    // Stored by entity id, not squad index — the squad array grows as allied
+    // waves stream in, so an index snapshot goes stale mid-battle.
+    this.ctrlGroups = {};
+    this.routeViz = null;
 
     this.onResize = () => {
       const cw = this.container.clientWidth, ch = this.container.clientHeight;
@@ -273,7 +279,14 @@ export class Mission {
     // Bigger fights get more ground. Sized off the opposition rather than the
     // contract pay, because what makes a site feel cramped is the number of
     // people standing in it.
-    const weight = this.spec.party?.strength || MISSION_TYPES[this.spec.type]?.foes || 8;
+    // Armies count toward the ground they get: a summoned siege or a joined
+    // host battle sizes its site by the biggest force on it, not just the
+    // enemy party card.
+    const weight = Math.max(
+      this.spec.party?.strength || 0,
+      this.spec.enemyArmy || 0,
+      this.spec.allies || 0,
+    ) || MISSION_TYPES[this.spec.type]?.foes || 8;
     const spread = clamp(0.8 + weight / 90, 0.8, 1.75);
     this.level = Level.build(this.spec.layout || this.spec.site,
       this.S.seed + this.S.stats.missions, {
@@ -1740,14 +1753,20 @@ export class Mission {
       if (k === 'r') this.tryReload(this.player);
       if (k === 'e') this.interactStart = true;
       // Q swaps shoulders; the order wheel lives on the middle mouse button.
-      if (k === 'q') this.swapShoulder();
+      // In the tactical view Q/E rotate the board instead — held, not
+      // tapped, read per-frame in updateTacticalCamera.
+      if (k === 'q' && !this.rts) this.swapShoulder();
       // One context button, the way a cover shooter does it: it takes cover if
       // there is cover, leaves it if you are in it, and vaults otherwise. A
       // separate key for each would be three things to remember in a firefight.
-      if (k === ' ') {
+      // In the tactical view Space belongs to the camera: snap to the
+      // selection, follow while held — read per-frame like the rotation.
+      if (k === ' ' && !this.rts) {
         if (this.cover) this.leaveCover();
         else if (!this.takeCover()) this.tryJump();
       }
+      // B: jump the tactical eye to wherever the fighting last was.
+      if (k === 'b' && this.rts) this.jumpToCombat();
       if (k === 'c') this.crouchHeld = !this.crouchHeld;
       if (k === 'control') this.crouchHeld = true;
       if (k === 't') this.toggleTactical();
@@ -1757,9 +1776,15 @@ export class Mission {
       if (k === 'z') this.orderFlank();
       if (k === 'v') this.orderFallBack();
       if (k === 'g') this.orderTakeCover();
-      // Individual selection. This is what turns four orders into real
-      // tactics: pin with one soldier, move with another.
-      if (k >= '1' && k <= '5') this.toggleSelect(Number(k) - 1);
+      // Individual selection — and control groups. Ctrl+digit binds the
+      // current selection to the digit; in tactical mode the bare digit
+      // recalls the group. In the shoulder view digits keep their original
+      // meaning (toggle one squaddie), because that is muscle memory now.
+      if (k >= '1' && k <= '5') {
+        if (e.ctrlKey) { e.preventDefault(); this.assignGroup(Number(k)); }
+        else if (this.rts && this.ctrlGroups[Number(k)]) this.recallGroup(Number(k));
+        else this.toggleSelect(Number(k) - 1);
+      }
       if (k === '`' || k === '0') this.selectAll();
       if (k === 'escape') this.togglePause();
       if (k === 'tab') { e.preventDefault(); this.showRoster = true; }
@@ -1800,8 +1825,25 @@ export class Mission {
     add(el, 'wheel', (e) => {
       if (!this.rts) return;
       e.preventDefault();
-      this.rtsZoom = clamp(this.rtsZoom + Math.sign(e.deltaY) * 5, 22, 78);
+      // The wheel sets a TARGET; the camera glides to it per-frame.
+      this.rtsZoomT = clamp((this.rtsZoomT ?? this.rtsZoom) + Math.sign(e.deltaY) * 7, 22, 78);
     });
+    // The field map takes clicks in tactical mode: the eye goes where you
+    // point. Bound here rather than in the UI layer because the click is an
+    // input to the mission's camera, not a rendering concern.
+    const radar = document.getElementById('radar');
+    if (radar) {
+      add(radar, 'mousedown', (e) => {
+        if (!this.rts) return;
+        e.preventDefault();
+        e.stopPropagation();
+        const r = radar.getBoundingClientRect();
+        this.rtsMapClick(
+          (e.clientX - r.left) / r.width * radar.width,
+          (e.clientY - r.top) / r.height * radar.height,
+        );
+      });
+    }
     // Chrome scrolls on middle-click without this, and a scrolling page under a
     // pointer-locked game is not something the player can undo.
     add(el, 'auxclick', (e) => { if (e.button === 1) e.preventDefault(); });
@@ -1855,6 +1897,8 @@ export class Mission {
       this.rtsFocus = { x: this.player.x, z: this.player.z };
       this.rtsYaw = this.camYaw;
       this.rtsCursorLive = false;
+      this.rtsVel = { x: 0, z: 0 };
+      this.rtsZoomT = this.rtsZoom;
       this.mouse.down = false;
       this.mouse.right = false;
       if (document.pointerLockElement) document.exitPointerLock();
@@ -1862,6 +1906,7 @@ export class Mission {
     } else {
       this.rtsDrag = null;
       this.rtsDrawBox();
+      this.rtsSyncRoutes();   // rts is false now: this tears the lines down
       this.requestLock();
     }
   }
@@ -1966,6 +2011,83 @@ export class Mission {
     }
   }
 
+  /** Bind the current selection — commander included — to a digit. */
+  assignGroup(n) {
+    if (!this.selection.size && !this.playerSelected) { Audio.uiDeny(); return; }
+    this.ctrlGroups[n] = {
+      ids: [...this.selection].map((i) => this.squad[i]?.id).filter(Boolean),
+      player: this.playerSelected,
+    };
+    Audio.uiSelect();
+    this.onToast('', `GROUP ${n} SET — ${this.playerSelected ? 'COMMANDER + ' : ''}${this.selection.size}`, 'order');
+  }
+
+  /** Recall a bound group. The dead do not answer: they drop on recall. */
+  recallGroup(n) {
+    const g = this.ctrlGroups[n];
+    if (!g) return;
+    this.selection.clear();
+    for (const id of g.ids) {
+      const idx = this.squad.findIndex((s) => s.id === id && !s.dead);
+      if (idx >= 0) this.selection.add(idx);
+    }
+    this.playerSelected = !!g.player && !this.player.dead;
+    Audio.uiSelect();
+    this.onToast('', `GROUP ${n} — ${this.playerSelected ? 'COMMANDER + ' : ''}${this.selection.size}`, 'order');
+  }
+
+  /**
+   * Route lines: every commanded unit's remaining path, drawn on the ground,
+   * with a short flag at the destination. Selected units when there is a
+   * selection; everyone under orders when there is not. Rebuilt per frame —
+   * the routes ARE per frame — and torn down the moment the mode closes.
+   */
+  rtsSyncRoutes() {
+    if (this.routeViz) {
+      this.scene.remove(this.routeViz);
+      this.routeViz.geometry.dispose();
+      this.routeViz = null;
+    }
+    if (!this.rts) return;
+    const pts = [];
+    const seg = (ax, az, bx, bz) => {
+      pts.push(ax, Level.heightAt(ax, az) + 0.35, az,
+        bx, Level.heightAt(bx, bz) + 0.35, bz);
+    };
+    const addRoute = (e, goal) => {
+      if (!goal) return;
+      let cx = e.x, cz = e.z;
+      if (e.path && e.pathIdx < e.path.length) {
+        for (let i = e.pathIdx; i < e.path.length; i++) {
+          seg(cx, cz, e.path[i].x, e.path[i].z);
+          cx = e.path[i].x; cz = e.path[i].z;
+        }
+      }
+      seg(cx, cz, goal.x, goal.z);
+      // The flag: a short vertical stroke at the destination.
+      const gy = Level.heightAt(goal.x, goal.z);
+      pts.push(goal.x, gy + 0.35, goal.z, goal.x, gy + 2.4, goal.z);
+    };
+    const chosen = this.selection.size
+      ? this.squad.filter((s, i) => this.selection.has(i))
+      : this.squad;
+    for (const s of chosen) {
+      if (!s.dead && !s.down && s.order === 'move' && s.orderPoint) {
+        addRoute(s, s.orderPoint);
+      }
+    }
+    if (this.playerAuto && (this.playerSelected || !this.selection.size)) {
+      addRoute(this.player, this.playerAuto);
+    }
+    if (!pts.length) return;
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.Float32BufferAttribute(pts, 3));
+    this.routeMat = this.routeMat
+      || new THREE.LineBasicMaterial({ color: 0xc08d3f, transparent: true, opacity: 0.8 });
+    this.routeViz = new THREE.LineSegments(geo, this.routeMat);
+    this.scene.add(this.routeViz);
+  }
+
   /** The drag-select rectangle, drawn straight onto the container. */
   rtsDrawBox() {
     let box = this.rtsBoxEl;
@@ -1985,10 +2107,54 @@ export class Mission {
     box.style.height = `${Math.abs(d.y1 - d.y0)}px`;
   }
 
+  /** Where Space snaps the eye: the selection's centre, or the commander. */
+  rtsFollowTarget() {
+    const chosen = this.squad.filter((s, i) => this.selection.has(i) && !s.dead);
+    if (this.playerSelected || !chosen.length) {
+      return { x: this.player.x, z: this.player.z };
+    }
+    return {
+      x: chosen.reduce((a, s) => a + s.x, 0) / chosen.length,
+      z: chosen.reduce((a, s) => a + s.z, 0) / chosen.length,
+    };
+  }
+
+  /**
+   * A click on the field map, in canvas pixels → the eye goes there.
+   * The mapping mirrors drawFieldMap in ui.js exactly: (R - 4) px per
+   * bounds, centred — change one and you must change the other.
+   */
+  rtsMapClick(cx, cy) {
+    const c = document.getElementById('radar');
+    if (!c || !this.rts) return;
+    const R = c.width / 2;
+    const scale = (R - 4) / this.level.bounds;
+    const b = this.level.bounds;
+    this.rtsFocus.x = clamp((cx - R) / scale, -b, b);
+    this.rtsFocus.z = clamp((cy - R) / scale, -b, b);
+    this.rtsVel = { x: 0, z: 0 };
+    Audio.uiSelect();
+  }
+
+  /** B: the eye goes to the most recent exchange of fire, if it is fresh. */
+  jumpToCombat() {
+    const c = this.lastCombat;
+    if (!c || this.time - c.t > 30) { Audio.uiDeny(); return; }
+    this.rtsFocus.x = c.x;
+    this.rtsFocus.z = c.z;
+    this.rtsVel = { x: 0, z: 0 };
+    Audio.uiSelect();
+  }
+
   updateTacticalCamera(dt) {
     const f = this.rtsFocus;
-    // WASD pans in view space; the screen edge pans too, RTS-fashion.
-    const sp = this.rtsZoom * 1.6 * dt;
+    // Q/E rotate the board — held, smooth, around the focus.
+    if (this.keys.has('q')) this.rtsYaw += dt * 1.9;
+    if (this.keys.has('e')) this.rtsYaw -= dt * 1.9;
+
+    // WASD pans in view space; the screen edge pans too. Input drives a
+    // VELOCITY rather than the position, so the eye has weight: it eases in,
+    // and it coasts to a stop instead of freezing the frame it is released.
     let px = 0, pz = 0;
     if (this.keys.has('w')) pz += 1;
     if (this.keys.has('s')) pz -= 1;
@@ -2003,11 +2169,40 @@ export class Mission {
       if (this.rtsCursor.y > rect.bottom - m) pz -= 1;
     }
     const sin = Math.sin(this.rtsYaw), cos = Math.cos(this.rtsYaw);
-    f.x += (px * cos + pz * sin) * sp;
-    f.z += (-px * sin + pz * cos) * sp;
+    const maxSp = this.rtsZoom * 1.7;
+    const want = {
+      x: (px * cos + pz * sin) * maxSp,
+      z: (-px * sin + pz * cos) * maxSp,
+    };
+    this.rtsVel = this.rtsVel || { x: 0, z: 0 };
+    const k = 1 - Math.exp(-dt * ((px || pz) ? 9 : 4.5));
+    this.rtsVel.x = lerp(this.rtsVel.x, want.x, k);
+    this.rtsVel.z = lerp(this.rtsVel.z, want.z, k);
+    f.x += this.rtsVel.x * dt;
+    f.z += this.rtsVel.z * dt;
+
+    // Space: snap to the selection, and keep following while held.
+    if (this.keys.has(' ')) {
+      const t = this.rtsFollowTarget();
+      const fk = 1 - Math.exp(-dt * 10);
+      f.x = lerp(f.x, t.x, fk);
+      f.z = lerp(f.z, t.z, fk);
+      this.rtsVel.x *= 0.5;
+      this.rtsVel.z *= 0.5;
+    }
     const b = this.level.bounds;
     f.x = clamp(f.x, -b, b);
     f.z = clamp(f.z, -b, b);
+
+    // Zoom glides toward the wheel's target, and the TILT rides on it:
+    // pulled in close the view is oblique enough to read faces and cover;
+    // pulled out it steepens toward true top-down, where the battle is
+    // shapes and lanes and that is the point of being out there.
+    this.rtsZoomT = this.rtsZoomT ?? this.rtsZoom;
+    this.rtsZoom = lerp(this.rtsZoom, this.rtsZoomT, 1 - Math.exp(-dt * 7));
+    const flat = clamp((this.rtsZoom - 22) / (78 - 22), 0, 1);
+    const back = 0.9 - flat * 0.55;
+    const rise = 0.8 + flat * 0.5;
 
     if (Math.abs(this.camera.fov - 52) > 0.01) {
       this.camera.fov = 52;
@@ -2015,12 +2210,13 @@ export class Mission {
     }
     const ground = Level.heightAt(f.x, f.z);
     this.camera.position.set(
-      f.x - sin * this.rtsZoom * 0.62,
-      ground + this.rtsZoom,
-      f.z - cos * this.rtsZoom * 0.62,
+      f.x - sin * this.rtsZoom * back,
+      ground + this.rtsZoom * rise,
+      f.z - cos * this.rtsZoom * back,
     );
     this.camera.lookAt(f.x, ground, f.z);
     this.hidePlayerModel = false;
+    this.rtsSyncRoutes();
     // Shadows still follow the commander, wherever the eye went.
     const p = this.player;
     this.sun.position.set(p.x - 46, 38, p.z + 30);
@@ -2633,6 +2829,9 @@ export class Mission {
     if (target.side === source.side && !source.isPlayer) return;
     if (target.side === source.side && source.isPlayer) dmg *= 0.35;
 
+    // The tactical camera's B key needs to know where the war currently is.
+    this.lastCombat = { x: target.x, z: target.z, t: this.time };
+
     // Squads PIN, the player BREAKS. Friendly fire against an enemy who is
     // DUG IN trades at reduced damage — suppression at full strength — so an
     // exchange with an emplaced line is a firefight that HOLDS, and the shots
@@ -2897,24 +3096,27 @@ export class Mission {
     // A standing move order from the tactical board. Manual input always
     // wins the argument — touching WASD in the shoulder view cancels it.
     const manual = ['w', 'a', 's', 'd'].some((k) => this.keys.has(k));
-    if (manual && !this.rts) this.playerAuto = null;
+    if (manual && !this.rts) {
+      this.playerAuto = null;
+      p.path = null;
+      p.pathGoal = null;
+    }
     if (this.playerAuto) {
       const t = this.playerAuto;
       const dist = Math.hypot(t.x - p.x, t.z - p.z);
       if (dist < 1.2) {
         this.playerAuto = null;
         p.moveSpeed = 0;
+        p.path = null;
+        p.pathGoal = null;
       } else {
+        // The squad's navigation, not a straight line: the commander routes
+        // around buildings exactly the way a squaddie does — A* when the
+        // line is blocked, corners hugged, local avoidance — instead of
+        // rubbing along every wall between here and there.
         const eff2 = effective(p.soldier);
-        const wx = (t.x - p.x) / dist, wz = (t.z - p.z) / dist;
-        const res = Level.resolveMove(this.level.obstacles, p.x, p.z,
-          p.x + wx * eff2.speed * dt, p.z + wz * eff2.speed * dt,
-          Level.heightAt(p.x, p.z) + this.airY);
-        const bb = this.level.bounds;
-        p.x = clamp(res.x, -bb, bb);
-        p.z = clamp(res.z, -bb, bb);
-        p.moveSpeed = eff2.speed;
-        p.yaw = approachAngle(p.yaw, Math.atan2(wx, wz), dt * 7);
+        this.moveToward(dt, p, t.x, t.z, eff2.speed);
+        this.faceMotion(p, dt);
       }
     }
     // The tactical view commands; it does not aim, walk, or pull triggers
@@ -4903,6 +5105,21 @@ export class Mission {
       } : null,
 
       tactical: this.rts,
+      // The field map: in tactical mode the radar stops being a personal
+      // sensor and becomes the warband's map of the whole ground — fixed
+      // north, every living body, the objective, and where the eye is.
+      // Mount & Blade with guns, not an RTS strategy screen: it shows the
+      // battle, it does not run an economy.
+      map: this.rts ? {
+        bounds: this.level.bounds,
+        focus: { x: this.rtsFocus.x, z: this.rtsFocus.z },
+        zoom: this.rtsZoom,
+        objective: this.level.objectivePoint
+          ? { x: this.level.objectivePoint.x, z: this.level.objectivePoint.z } : null,
+        blips: this.entities.filter((e) => !e.dead).map((e) => ({
+          x: e.x, z: e.z, side: e.side, down: !!e.down, isPlayer: !!e.isPlayer,
+        })),
+      } : null,
       extract: this.extractArmed,
       extractBlocked: this.extractBlocked,
       extractDist: this.extractArmed

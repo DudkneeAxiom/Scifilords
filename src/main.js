@@ -1062,8 +1062,12 @@ function handleMapBattle(btl) {
       // The joined fight is the player's now: the sim releases its half.
       for (const p of [...friends, ...foes]) p.battle = null;
       S.mapBattles = (S.mapBattles || []).filter((x) => x.id !== btl.id);
+      // Army-sized engagements get ground authored for the tactical camera —
+      // lanes, posts, and room to maneuver. A patrol scrap keeps the roadside.
+      const big = allies + (target?.strength || 0) >= 24;
       openDeploy({
-        type: 'skirmish', site: 'roadside', layout: 'roadside',
+        type: 'skirmish', site: big ? 'field' : 'roadside',
+        layout: big ? 'field' : 'roadside',
         party: target, allies, allyFaction: friends[0]?.faction || null,
         late: (lateAllies || lateEnemies)
           ? { allies: lateAllies, enemies: lateEnemies, at: 50 } : null,

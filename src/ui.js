@@ -398,6 +398,46 @@ export function renderMissionHud(h) {
   drawRadar(h);
 }
 
+/**
+ * The field map: tactical mode's replacement for the personal radar. Fixed
+ * north, the whole ground, every living body, the objective, and a box for
+ * where the eye is. The click mapping in mission.js rtsMapClick mirrors the
+ * (R - 4) / bounds scale here exactly — change one, change both.
+ */
+function drawFieldMap(g, c, h) {
+  const S = c.width, R = S / 2;
+  const m = h.map;
+  const scale = (R - 4) / m.bounds;
+  const px = (x) => R + x * scale;
+  const pz = (z) => R + z * scale;
+
+  g.strokeStyle = '#242519';
+  g.lineWidth = 1;
+  g.strokeRect(3, 3, S - 6, S - 6);
+
+  if (m.objective) {
+    g.strokeStyle = '#c08d3f';
+    g.beginPath();
+    const ox = px(m.objective.x), oz = pz(m.objective.z);
+    g.moveTo(ox, oz - 4); g.lineTo(ox + 4, oz); g.lineTo(ox, oz + 4); g.lineTo(ox - 4, oz);
+    g.closePath();
+    g.stroke();
+  }
+  for (const b of m.blips) {
+    g.fillStyle = b.isPlayer ? '#c08d3f'
+      : b.side === 'enemy' ? (b.down ? '#4a2018' : '#b04a30')
+        : b.side === 'civil' ? '#8a8163' : (b.down ? '#7a5a20' : '#8a9a52');
+    const sz = b.isPlayer ? 4 : b.down ? 2 : 3;
+    g.fillRect(px(b.x) - sz / 2, pz(b.z) - sz / 2, sz, sz);
+  }
+  // Where the eye is: a view box scaled roughly to the zoom.
+  const half = Math.max(6, m.zoom * 0.75 * scale);
+  g.strokeStyle = '#9a958a';
+  g.strokeRect(px(m.focus.x) - half, pz(m.focus.z) - half * 0.7, half * 2, half * 1.4);
+
+  $('radar-lbl').textContent = 'FIELD MAP';
+}
+
 function drawRadar(h) {
   const c = $('radar');
   if (!c) return;
@@ -407,6 +447,11 @@ function drawRadar(h) {
   g.clearRect(0, 0, S, S);
   g.fillStyle = '#0b0c08';
   g.fillRect(0, 0, S, S);
+
+  // Tactical mode gets the whole ground, clickable; the shoulder view keeps
+  // its short-range rotating sensor.
+  c.parentElement?.classList.toggle('clickable', !!(h.tactical && h.map));
+  if (h.tactical && h.map) { drawFieldMap(g, c, h); return; }
 
   // Rings and cross — a piece of equipment, not a minimap.
   g.strokeStyle = '#242519';
