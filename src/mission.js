@@ -3782,6 +3782,36 @@ export class Mission {
       else this.guardAgainstStall(dt);
     }
 
+    // Reinforcements promised on the map arrive in the player's battle: the
+    // parties that were marching toward the fight when it was joined walk in
+    // late, on whichever side they were coming for.
+    if (this.spec.late && !this.lateDone && this.time > this.spec.late.at) {
+      this.lateDone = true;
+      const L = this.spec.late;
+      if (L.enemies) {
+        this.spawnReinforcements(Math.min(6, Math.round(L.enemies)));
+        this.onToast('CONTACTS', 'More of them arriving', 'bad');
+      }
+      if (L.allies) {
+        const sp = this.level.playerSpawn;
+        const n = Math.min(6, Math.round(L.allies));
+        for (let i = 0; i < n; i++) {
+          const ent = this.spawnEntity({
+            id: `late_ally_${i}`, side: 'player',
+            faction: this.spec.allyFaction || 'syndic',
+            x: sp.x - 10 + (i % 3) * 6, z: sp.z + 6 + Math.floor(i / 3) * 5,
+            yaw: 0, hp: 80, weapon: i % 2 ? 'rifle' : 'smg',
+            model: this.spec.allyFaction === 'trust' ? 'soldier_trust' : 'soldier_syndic',
+            acc: 0.46, speed: 4.0, aggression: 0.55, coverPref: 0.6,
+            name: 'Allied fighter',
+          });
+          ent.militia = true;
+          this.squad.push(ent);
+        }
+        this.onToast('REINFORCEMENTS', 'Friends arriving behind you', 'good');
+      }
+    }
+
     if (t === 'skirmish' && !this.objective.done && this.objective.type !== 'stage') {
       const onField = this.entities.filter((e) => e.side === 'enemy' && !e.dead).length;
       const killed = this.entities.filter((e) => e.side === 'enemy' && e.dead).length;

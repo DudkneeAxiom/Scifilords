@@ -1347,6 +1347,24 @@ function moveParties(S, hours, r) {
       continue;
     }
 
+    // A manhunt overrides everything below: the hunter closes on its named
+    // quarry across any distance until the hunt expires, the quarry dies, or
+    // they meet — at which point the battle system takes it from here.
+    if (p.hunting) {
+      const quarry = S.parties.find((q) => q.id === p.hunting);
+      if (!quarry || quarry.battle || S.day > (p.huntingUntil || 0)) {
+        p.hunting = null;
+      } else {
+        const dx = quarry.x - p.x, dz = quarry.z - p.z;
+        const d = Math.hypot(dx, dz) || 1;
+        const step = Math.min(d, Math.max(p.speed, 26) * 1.25 * hours * travelFactor(p.x, p.z));
+        p.x += (dx / d) * step;
+        p.z += (dz / d) * step;
+        p.heading = Math.atan2(dx, dz);
+        continue;
+      }
+    }
+
     // Predation is what makes parties MEET. A raider stalks the nearest
     // weaker non-raider within sight; a faction band runs down raiders it
     // outmatches. Without this, thirty parties on a six-kilometre map simply
@@ -4113,6 +4131,34 @@ export function tickMapEvents(S, r) {
       // The die is cast when the signal is BORN, not when it is answered —
       // saving and reloading in front of one changes nothing.
       roll: r(),
+    });
+  } else if (r() < 0.3
+    && S.parties.some((p) => (p.kind === 'deserters' || p.kind === 'scrappers') && !p.battle)) {
+    // A manhunt: a faction patrol takes up the hunt for a named band and
+    // walks it down across the map. The chase is real movement, the kill is
+    // the ordinary battle system, and the player can beat them to the folk
+    // being hunted — or watch it end on the CONTACTS card.
+    const quarry = S.parties.find((p) =>
+      (p.kind === 'deserters' || p.kind === 'scrappers') && !p.battle);
+    const hunter = S.parties.find((p) =>
+      (p.kind === 'patrol_trust' || p.kind === 'patrol_syndic') && !p.battle && !p.hunting);
+    if (quarry && hunter) {
+      hunter.hunting = quarry.id;
+      hunter.huntingUntil = S.day + 4;
+      if (Math.hypot(hunter.x - S.pos.x, hunter.z - S.pos.z) < 900) {
+        pushLog(S, hunter.name + ' has taken up the hunt for ' + quarry.name + '.');
+      }
+    }
+  } else if (r() < 0.22) {
+    // A checkpoint: a faction closes a stretch of road for a few days. The
+    // route is still there; passing it becomes a conversation.
+    const seg = ROADS_FOR_EVENTS[Math.floor(r() * ROADS_FOR_EVENTS.length)];
+    const t = 0.35 + r() * 0.3;
+    S.mapEvents.push({
+      id: uid('evt'), kind: 'checkpoint',
+      x: seg.ax + (seg.bx - seg.ax) * t, z: seg.az + (seg.bz - seg.az) * t,
+      faction: r() < 0.5 ? 'trust' : 'syndic',
+      day: S.day, expiresDay: S.day + 2 + Math.floor(r() * 3), roll: r(),
     });
   } else if (r() < 0.18) {
     // Old-regime hardware waking somewhere off the roads. Rare on purpose.

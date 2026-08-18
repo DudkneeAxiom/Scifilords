@@ -972,12 +972,24 @@ function handleMapBattle(btl) {
       const foes = side === 'a' ? b : a;
       const target = foes.slice().sort((x, y) => y.strength - x.strength)[0];
       const allies = friends.reduce((t, p) => t + p.strength, 0);
+      // Whoever was marching to this fight still arrives — into the PLAYER'S
+      // battle now, on whichever side they were coming for. The map's
+      // reinforcement promise carries across the instance boundary.
+      let lateAllies = 0, lateEnemies = 0;
+      for (const p of S.parties) {
+        if (p.reinforce !== btl.id) continue;
+        p.reinforce = null;
+        if (State.partiesHostile(S, p, target)) lateAllies += p.strength;
+        else lateEnemies += p.strength;
+      }
       // The joined fight is the player's now: the sim releases its half.
       for (const p of [...friends, ...foes]) p.battle = null;
       S.mapBattles = (S.mapBattles || []).filter((x) => x.id !== btl.id);
       openDeploy({
         type: 'skirmish', site: 'roadside', layout: 'roadside',
         party: target, allies, allyFaction: friends[0]?.faction || null,
+        late: (lateAllies || lateEnemies)
+          ? { allies: lateAllies, enemies: lateEnemies, at: 50 } : null,
       });
     },
   });
@@ -1055,6 +1067,46 @@ function handleMapEvent(ev) {
         S.credits += 60;
         UI.toast('SURVIVOR', 'Walking wounded, grateful, and good for a reward', 'good');
       }
+    };
+    return;
+  }
+
+  if (ev.kind === 'checkpoint') {
+    const f = ev.faction;
+    const liked = (S.rep?.[f] || 0) >= 0;
+    const toll = 40 + Math.floor(ev.roll * 80);
+    UI.modal({
+      title: `${f.toUpperCase()} CHECKPOINT`,
+      tag: 'ROAD CLOSED',
+      body: `<div class="prose">A barrier across the road and soldiers who are
+        not going anywhere. The route still exists; using it is a conversation
+        now.</div>
+        <div class="prose dim mt">${liked
+    ? 'They know the company. This should be a formality.'
+    : 'Bracket\'s name does not open their barriers lately.'}</div>`,
+      foot: `${liked ? '<button class="btn btn-major" data-x="pass">IDENTIFY AND PASS</button>' : ''}
+        <button class="btn" data-x="pay" ${S.credits < toll ? 'disabled' : ''}>PAY THE TOLL (${toll})</button>
+        <button class="btn" data-x="close">TURN BACK</button>`,
+      onClose: leave,
+    });
+    const through = () => {
+      // Through — and the checkpoint stays for the next traveller. An event
+      // outlives one interaction; only expiry removes it.
+      G.world?.eventSeen?.delete(ev.id);
+      G.world?.setPaused(false);
+    };
+    const p1 = document.querySelector('#modal [data-x="pass"]');
+    if (p1) p1.onclick = () => {
+      Audio.uiSelect(); UI.closeModal();
+      S.rep[f] = (S.rep[f] || 0) + 0.5;
+      UI.toast('WAVED THROUGH', 'The ledger remembers cooperation', 'good');
+      through();
+    };
+    document.querySelector('#modal [data-x="pay"]').onclick = () => {
+      Audio.uiSelect(); UI.closeModal();
+      S.credits -= toll;
+      UI.toast('TOLL PAID', `${toll} credits to use their road`, 'bad');
+      through();
     };
     return;
   }

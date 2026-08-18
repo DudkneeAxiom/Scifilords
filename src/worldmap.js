@@ -1055,6 +1055,16 @@ export class WorldMap {
     this.syncParties();
     this.syncEvents();
     this.checkProximity();
+
+    // The sound of somebody else's war: a battle within earshot rumbles
+    // occasionally — quiet, directionless, and only while it lives. Audio
+    // worldbuilding at one line per few seconds, not a soundtrack.
+    const nearBattle = (S.mapBattles || []).find((b2) =>
+      Math.hypot(b2.x - S.pos.x, b2.z - S.pos.z) < 700);
+    if (nearBattle && (!this._rumbleAt || performance.now() - this._rumbleAt > 4200)) {
+      this._rumbleAt = performance.now() + Math.random() * 2600;
+      Audio.explosion({ x: (nearBattle.x - S.pos.x) * 0.02, z: (nearBattle.z - S.pos.z) * 0.02 });
+    }
   }
 
   /**
@@ -1088,6 +1098,20 @@ export class WorldMap {
         m.scale.setScalar(6);
         m.rotation.y = (s.x * 7 + s.z) % 6.28;
         m.traverse((o) => { if (o.isMesh) { o.castShadow = false; o.receiveShadow = false; } });
+        // The smoke column is the tell: a battlefield should be visible as
+        // "something happened over there" from most of a province away,
+        // which is what makes driving toward it a choice. Two translucent
+        // dark slabs, tapering — PS1 smoke, and it reads.
+        const smokeMat = new THREE.MeshBasicMaterial({
+          color: 0x22201c, transparent: true, opacity: 0.34, depthWrite: false,
+        });
+        // Sized in PARENT space: the wreck is scaled 6x, and these ride it.
+        const s1 = new THREE.Mesh(new THREE.BoxGeometry(1.2, 10, 1.2), smokeMat);
+        s1.position.y = 5.6;
+        const s2 = new THREE.Mesh(new THREE.BoxGeometry(2.2, 6.6, 2.2), smokeMat.clone());
+        s2.material.opacity = 0.18;
+        s2.position.y = 11.6;
+        m.add(s1); m.add(s2);
         this.scene.add(m);
         this.eventMeshes.set(s.id, m);
       }
@@ -1097,16 +1121,21 @@ export class WorldMap {
       seen.add(e.id);
       let m = this.eventMeshes.get(e.id);
       if (!m) {
-        m = this.makeRing(e.kind === 'oldsignal' ? 0xa855c8 : 0xd8a83f, 22);
+        const col = e.kind === 'oldsignal' ? 0xa855c8
+          : e.kind === 'checkpoint' ? (TERRITORY_TINTS[e.faction] || 0x6a6458)
+            : 0xd8a83f;
+        m = this.makeRing(col, e.kind === 'checkpoint' ? 26 : 22);
         m.material.opacity = 0.6;
         this.scene.add(m);
         this.eventMeshes.set(e.id, m);
       }
       m.position.set(e.x, regionHeight(e.x, e.z) + 1.6, e.z);
-      // A beacon blinks; a transponder breathes. Different cadence, same glance.
+      // A beacon blinks; a transponder breathes; a checkpoint holds steady in
+      // its faction's colour. Different cadence, same glance.
       m.material.opacity = e.kind === 'oldsignal'
         ? 0.35 + Math.sin(performance.now() * 0.0012) * 0.25
-        : (Math.floor(performance.now() / 500) % 2 ? 0.75 : 0.2);
+        : e.kind === 'checkpoint' ? 0.6
+          : (Math.floor(performance.now() / 500) % 2 ? 0.75 : 0.2);
     }
     for (const [id, m] of this.eventMeshes) {
       if (!seen.has(id)) {
