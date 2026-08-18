@@ -267,6 +267,29 @@ export function declareFaction(S, name, colour) {
   return { ok: true };
 }
 
+/** The banner colours a declared power can fly. First is the old default. */
+export const BANNER_COLOURS = [
+  { id: 'ochre', name: 'Charter Ochre', hex: 0xc08d3f },
+  { id: 'rust', name: 'Basin Rust', hex: 0xb03636 },
+  { id: 'signal', name: 'Signal Blue', hex: 0x3f7fc0 },
+  { id: 'verdant', name: 'Vat Green', hex: 0x3fa060 },
+  { id: 'dusk', name: 'Dusk Violet', hex: 0x8f56c9 },
+  { id: 'bone', name: 'Reach Bone', hex: 0xd8d3c8 },
+];
+
+/**
+ * Restyle a declared banner: the name, the colour, or both. Free — the
+ * cost of a rebrand is that everyone keeps using the old name for a while,
+ * which the log cheerfully demonstrates.
+ */
+export function restyleFaction(S, name, colour) {
+  if (!S.ownFaction) return { ok: false, why: 'No banner to restyle.' };
+  const was = S.ownFaction.name;
+  if (name) S.ownFaction.name = name.slice(0, 34);
+  if (colour != null) S.ownFaction.colour = colour;
+  return { ok: true, was };
+}
+
 /**
  * The other kingdom action: choosing the war. Only a declared power does
  * this — a sworn company's wars belong to its liege, and a free company's

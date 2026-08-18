@@ -477,9 +477,12 @@ test('a corrupt save is discarded rather than blocking the game', async ({ page 
   await page.evaluate(() => localStorage.setItem('kettle_reach_save_v1', '{"nonsense":true'));
   await page.reload({ waitUntil: 'domcontentloaded' });
   await page.waitForSelector('#title:not(.hidden)', { timeout: 90000 });
-  // A broken save must never prevent starting a new company.
+  // A broken save must never prevent starting a new company. The campaign
+  // exists only after the charter is signed, so sign it.
   await page.click('button[data-act="new"]');
   await page.waitForSelector('#modal .modal-title', { timeout: 15000 });
+  await page.click('#modal [data-x="close"]');
+  await page.waitForFunction(() => !!window.KR.campaign, null, { timeout: 15000 });
   expect(await page.evaluate(() => window.KR.campaign.roster.length)).toBe(4);
 });
 
@@ -566,7 +569,12 @@ test('the commander picks an opening commission that applies company-wide', asyn
   await boot(page);
   await page.click('button[data-act="new"]');
   await page.waitForSelector('#modal .modal-title', { timeout: 15000 });
-  await page.click('#modal [data-x="close"]');
+  await page.click('#modal [data-x="close"]');           // sign the charter
+  await page.waitForFunction(() => {
+    const t = document.querySelector('#modal .modal-title');
+    return t && !/BEFORE THE COMPANY/.test(t.textContent);
+  }, null, { timeout: 15000 });
+  await page.click('#modal [data-x="close"]');           // close the intro
   await page.waitForSelector('#modal [data-perk]', { timeout: 15000 });
 
   const offered = await page.$$eval('#modal [data-perk]', (els) => els.map((e) => e.dataset.perk));
@@ -4312,6 +4320,11 @@ test('a required choice cannot be dismissed, and the Reach never stays paused', 
   const errors = await boot(page);
   await page.click('button[data-act="new"]');
   await page.waitForSelector('#modal .modal-title', { timeout: 15000 });
+  await page.click('#modal [data-x="close"]');           // sign the charter
+  await page.waitForFunction(() => {
+    const t = document.querySelector('#modal .modal-title');
+    return t && !/BEFORE THE COMPANY/.test(t.textContent);
+  }, null, { timeout: 15000 });
   await page.click('#modal [data-x="close"]');
   // The opening commission is the same panel a promotion uses.
   await page.waitForSelector('#modal [data-perk]', { timeout: 15000 });
@@ -6688,4 +6701,69 @@ test('who you were: three questions, and the start actually moves', async ({ pag
   expect(r.repTrust).toBe(1);
   expect(r.repSyndic).toBe(-4);
   expect(r.rations).toBe(2);
+});
+
+test('the hall and the banner: feasts gather the lords, colours get chosen', async ({ page }) => {
+  await boot(page);
+  await newCampaign(page);
+  const r = await page.evaluate(() => {
+    const { State, DATA, Dip, makeRng } = window.KR.dev;
+    const S = window.KR.campaign;
+    // Peace, and a bench of lords to gather.
+    Dip.setRelation(S, 'trust', 'syndic', 'peace', 60);
+    S.lords = [
+      { id: 'f_a', name: 'Avitte Corl', faction: 'trust', temper: 'martial', wins: 0, defeats: 0, captured: false, freeDay: 0 },
+      { id: 'f_b', name: 'Besk Maran', faction: 'trust', temper: 'cautious', wins: 0, defeats: 0, captured: false, freeDay: 0 },
+      { id: 'f_c', name: 'Cato Wrenn', faction: 'trust', temper: 'honorable', wins: 0, defeats: 0, captured: false, freeDay: 0 },
+    ];
+    S.feasts = {};
+    let feast = null;
+    for (let i = 0; i < 400 && !feast; i++) {
+      State.tickFeasts(S, makeRng(9000 + i));
+      feast = S.feasts.trust || null;
+    }
+    if (!feast) return { feast: false };
+    // The feast empties every other trust court...
+    const others = DATA.LOCATIONS.filter((l) => l.kind === 'settlement'
+      && State.ownerOf(S, l.id) === 'trust' && l.id !== feast.site);
+    const elsewhere = others.length ? State.lordAt(S, others[0].id) : null;
+    const atHall = State.feastLords(S, feast.site).length;
+    // ...and the door is watched.
+    S.rep.trust = 0;
+    const refused = State.joinFeast(S, feast.site);
+    S.rep.trust = 5;
+    const seated = State.joinFeast(S, feast.site);
+    const regard = State.lordById(S, 'f_a').regard || 0;
+    const again = State.joinFeast(S, feast.site);
+    // War ends it the morning it starts.
+    Dip.setRelation(S, 'trust', 'syndic', 'war', 30);
+    State.tickFeasts(S, makeRng(1));
+    const survived = !!S.feasts.trust;
+
+    // The banner: name and colour chosen at declaration, restylable after.
+    S.renown = 2000;
+    S.holdings = { vetch: {}, span: {}, grellan: {} };
+    const dec = Dip.declareFaction(S, 'The Long Table', 0xb03636);
+    const colour = Dip.factionColour(S, 'bracket');
+    const re = Dip.restyleFaction(S, 'The Redline Charter', 0x3f7fc0);
+    return {
+      feast: true, elsewhere, atHall,
+      refusedOk: refused.ok, seatedOk: seated.ok, regard, againOk: again.ok, survived,
+      decOk: dec.ok, colour, reOk: re.ok,
+      name: S.ownFaction.name, colour2: S.ownFaction.colour,
+    };
+  });
+  expect(r.feast).toBe(true);
+  expect(r.elsewhere).toBe(null);
+  expect(r.atHall).toBeGreaterThan(0);
+  expect(r.refusedOk).toBe(false);
+  expect(r.seatedOk).toBe(true);
+  expect(r.regard).toBe(1);
+  expect(r.againOk).toBe(false);
+  expect(r.survived).toBe(false);
+  expect(r.decOk).toBe(true);
+  expect(r.colour).toBe(0xb03636);
+  expect(r.reOk).toBe(true);
+  expect(r.name).toBe('The Redline Charter');
+  expect(r.colour2).toBe(0x3f7fc0);
 });

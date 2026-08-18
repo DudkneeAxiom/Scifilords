@@ -1080,6 +1080,7 @@ function onNewDay(S, r) {
   // see the note above about the shared day-tick rng.
   tickRapport(S, rng((S.seed ^ 0x4a9d) + S.day * 1249));
   maybeErrands(S, rng((S.seed ^ 0x1c57) + S.day * 2083));
+  tickFeasts(S, rng((S.seed ^ 0x6b21) + S.day * 383));
   tickGrudge(S);
   maybeSpawnLair(S, r);
   tickLairs(S, r);
@@ -4781,12 +4782,86 @@ export function rollDice(S, stake = 100) {
 export function lordAt(S, locId) {
   const owner = ownerOf(S, locId);
   if (owner !== 'trust' && owner !== 'syndic') return null;
+  // A feast empties every other court the faction has: the lords are all in
+  // one hall for its duration, which is precisely what makes it worth
+  // attending — and worth marching on, if you are the other side.
+  const feast = S.feasts?.[owner];
+  if (feast && feast.site !== locId) return null;
   const busy = new Set(S.parties.map((p) => p.lordId).filter(Boolean));
   const home = (S.lords || []).filter((l) => l.faction === owner
     && !l.captured && !busy.has(l.id) && !l.vassal);
   if (!home.length) return null;
   const h = (S.day * 31 + locId.length * 7 + locId.charCodeAt(0)) % home.length;
   return home[h];
+}
+
+// --------------------------------------------------------------------------
+// Feasts: what a faction does with a peace
+// --------------------------------------------------------------------------
+
+/** The feast being held at this settlement, if any. */
+export function feastAt(S, locId) {
+  for (const f of Object.values(S.feasts || {})) if (f.site === locId) return f;
+  return null;
+}
+
+/** The lords in the hall — the same pool a court draws from, first three. */
+export function feastLords(S, locId) {
+  const feast = feastAt(S, locId);
+  if (!feast) return [];
+  const busy = new Set(S.parties.map((p) => p.lordId).filter(Boolean));
+  return (S.lords || []).filter((l) => l.faction === feast.faction
+    && !l.captured && !busy.has(l.id) && !l.vassal).slice(0, 3);
+}
+
+/**
+ * Peacetime, and somebody declares a hall open. Three days, all the
+ * faction's lords under one roof. War ends it the morning it starts —
+ * nobody feasts while a column is on the road.
+ */
+export function tickFeasts(S, r) {
+  S.feasts = S.feasts || {};
+  for (const f of Dip.MAJOR_FACTIONS) {
+    const cur = S.feasts[f];
+    const atWar = Dip.enemiesOf(S, f).length > 0;
+    if (cur && (S.day > cur.until || atWar)) {
+      delete S.feasts[f];
+      pushLog(S, atWar && S.day <= cur.until
+        ? `The feast at ${locName(cur.site)} broke up — there is a war to get to.`
+        : `The hall at ${locName(cur.site)} has emptied. The feast is over.`, 'world');
+      continue;
+    }
+    if (cur || atWar) continue;
+    if (r() < 0.05) {
+      const towns = settlementsOf(S, f);
+      if (!towns.length) continue;
+      const site = towns[Math.floor(r() * towns.length)];
+      S.feasts[f] = { faction: f, site: site.id, until: S.day + 3, joined: false };
+      pushLog(S, `${FACTIONS[f].name} has called a feast at ${site.name}. Three days of it.`, 'world');
+    }
+  }
+}
+
+/**
+ * Walk into the hall. Standing gets you through the door — Friendly with
+ * the host, or their colours on your shoulder — and one evening buys what
+ * months of couriered gifts buy: regard with every lord in the room at
+ * once, and a company that remembers being somewhere warm.
+ */
+export function joinFeast(S, locId) {
+  const feast = feastAt(S, locId);
+  if (!feast) return { ok: false, why: 'No feast here' };
+  if (feast.joined) return { ok: false, why: 'One evening at the long table is a guest; two is a fixture.' };
+  const invited = S.allegiance === feast.faction || (S.rep[feast.faction] || 0) >= 4;
+  if (!invited) return { ok: false, why: 'The door is watched, and your name is not on the list.' };
+  feast.joined = true;
+  const lords = feastLords(S, locId);
+  for (const l of lords) l.regard = clamp((l.regard || 0) + 1, -10, 10);
+  S.rep[feast.faction] = (S.rep[feast.faction] || 0) + 2;
+  S.morale = clamp((S.morale ?? 70) + 5, 0, 100);
+  S.renown = (S.renown || 0) + 8;
+  pushLog(S, `Bracket sat at the long table at ${locName(locId)}. ${lords.length} lords will remember the evening.`, 'good');
+  return { ok: true, lords: lords.map((l) => l.name) };
 }
 
 /**

@@ -935,6 +935,28 @@ courts, tavern life → mercs + dice). The remaining six, one commit each:
 
 ---
 
+## Feasts and the banner (after the partials sweep)
+
+Two more from the audit's MISSING column:
+
+- FEASTS — `tickFeasts` (own rng stream in onNewDay): a faction at peace
+  rolls 5%/day to call a 3-day feast at one of its settlements
+  (`S.feasts[faction] = {site, until, joined}`); war ends it the morning
+  it starts. **During a feast, `lordAt` returns null everywhere except
+  the feast site** — the lords are all in one hall, which is also what
+  makes the site worth marching on. `feastLords` (first 3 of the court
+  pool), `joinFeast` (gated: allegiance or rep ≥ 4; once per feast;
+  +1 regard each lord present, +2 rep, +5 morale, +8 renown). Settlement
+  verb `feast` → `UI.feastPanel`.
+- BANNER — `Dip.BANNER_COLOURS` (six swatches), `Dip.restyleFaction`
+  (rename/recolour a declared banner, free). The diplomacy panel's
+  declare box grew a swatch row (DOM-state selection — `.sel` class read
+  back on commit, no re-render, so the typed name survives), and a
+  declared banner gets the same box with RESTYLE. `declareFaction`
+  already took a colour; now something passes it.
+
+---
+
 ## The summary artifact
 
 <https://claude.ai/code/artifact/9070868b-f320-47b9-818c-2e2cfa32745d>

@@ -1041,6 +1041,15 @@ export function diplomacyPanel(S, cbs) {
 
   const declare = Dip.canDeclare(S);
   const holds = Object.keys(S.holdings || {}).length;
+  const hex6 = (n) => `#${(n >>> 0).toString(16).padStart(6, '0')}`;
+  // The banner colours as clickable swatches. Selection is DOM state (the
+  // .sel class), read back when the button under them is pressed — the
+  // panel is not re-rendered per pick, so the typed name survives.
+  const bannerSwatches = (current) => Dip.BANNER_COLOURS.map((c) => `
+    <button class="swatch ${c.hex === current ? 'sel' : ''}" data-swatch="${c.hex}"
+      title="${esc(c.name)}" style="background:${hex6(c.hex)};width:26px;height:26px;
+      margin:2px;border-radius:3px;border:2px solid ${c.hex === current ? '#fff' : 'transparent'}">
+    </button>`).join('');
 
   const body = `
     <div class="dip-status">
@@ -1063,6 +1072,12 @@ export function diplomacyPanel(S, cbs) {
         Bracket flies its own colours as <span class="hl">${esc(S.ownFaction.name)}</span>,
         declared on day ${S.ownFaction.declaredDay}. Both established powers regard you
         as a rival, and your holdings are under permanent pressure because of it.
+      </div>
+      <div class="declare-box">
+        <input id="fac-name" class="fac-input" maxlength="34" placeholder="Rename your faction"
+          value="${esc(S.ownFaction.name)}">
+        <div class="swatch-row">${bannerSwatches(S.ownFaction.colour)}</div>
+        <button class="btn" data-x="restyle">RESTYLE THE BANNER</button>
       </div>`
     : `<div class="prose">
         A company with enough ground and enough name behind it can stop working for
@@ -1077,6 +1092,7 @@ export function diplomacyPanel(S, cbs) {
       ${declare.ok ? `<div class="declare-box">
         <input id="fac-name" class="fac-input" maxlength="34" placeholder="Name your faction"
           value="The Bracket Compact">
+        <div class="swatch-row">${bannerSwatches(0xc08d3f)}</div>
         <button class="btn btn-major btn-warn" data-x="declare">DECLARE INDEPENDENCE</button>
       </div>` : ''}`}
 
@@ -1177,7 +1193,9 @@ export function diplomacyPanel(S, cbs) {
     },
     declare: () => {
       const nameEl = $('fac-name');
-      const res = Dip.declareFaction(S, nameEl?.value || 'The Bracket Compact');
+      const sw = document.querySelector('#modal [data-swatch].sel');
+      const colour = sw ? Number(sw.dataset.swatch) : undefined;
+      const res = Dip.declareFaction(S, nameEl?.value || 'The Bracket Compact', colour);
       if (res.ok) {
         State.pushLog(S, `${S.ownFaction.name} has been declared.`, 'world');
         State.refreshHostility(S);
@@ -1185,7 +1203,31 @@ export function diplomacyPanel(S, cbs) {
         declarePanel(S, () => again());
       } else { Audio.uiDeny(); toastModal(res.why); }
     },
+    restyle: () => {
+      const nameEl = $('fac-name');
+      const sw = document.querySelector('#modal [data-swatch].sel');
+      const res = Dip.restyleFaction(S, nameEl?.value,
+        sw ? Number(sw.dataset.swatch) : undefined);
+      if (res.ok) {
+        if (res.was !== S.ownFaction.name) {
+          State.pushLog(S, `${res.was} flies new colours as ${S.ownFaction.name}. People will use the old name for a while.`, 'world');
+        }
+        Audio.uiSelect();
+        again();
+      } else { Audio.uiDeny(); toastModal(res.why); }
+    },
   });
+  // Swatch picks are local until a button commits them.
+  for (const el of document.querySelectorAll('#modal [data-swatch]')) {
+    el.onclick = () => {
+      for (const o of document.querySelectorAll('#modal [data-swatch]')) {
+        o.classList.remove('sel');
+        o.style.borderColor = 'transparent';
+      }
+      el.classList.add('sel');
+      el.style.borderColor = '#fff';
+    };
+  }
 }
 
 const clampN = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
@@ -2177,6 +2219,43 @@ export function debtPanel(S, loc, cbs) {
 }
 
 /**
+ * The hall during a feast: who is in it, and whether the door opens for you.
+ */
+export function feastPanel(S, loc, cbs) {
+  const feast = State.feastAt(S, loc.id);
+  if (!feast) { cbs.onClose?.(); return; }
+  const lords = State.feastLords(S, loc.id);
+  const invited = S.allegiance === feast.faction || (S.rep[feast.faction] || 0) >= 4;
+  const body = `
+    <div class="prose">${esc(FACTIONS[feast.faction].name)} holds the hall through
+      day ${feast.until}. ${lords.length ? 'At the long table: '
+    + lords.map((l) => `<span class="hl">${esc(l.name)}</span>`).join(', ') + '.' : ''}</div>
+    <div class="prose dim mt">${feast.joined
+    ? 'You have had your evening. A guest who lingers becomes a fixture.'
+    : invited
+      ? 'One evening at the long table buys what months of couriered gifts buy — regard with every lord in the room.'
+      : 'The door is watched. Friendly standing with the host, or their colours on your shoulder, is the list.'}</div>`;
+  modal({
+    title: 'A FEAST',
+    tag: esc(loc.name.toUpperCase()),
+    body,
+    foot: `${!feast.joined && invited
+      ? '<button class="btn btn-major" data-x="join">TAKE A SEAT</button>' : ''}
+      <button class="btn" data-x="close">BACK</button>`,
+    onClose: cbs.onClose,
+  });
+  wire({
+    close: onCloseWrap(cbs.onClose),
+    join: () => {
+      const res = State.joinFeast(S, loc.id);
+      if (res.ok) { Audio.deployTone(); toast('THE LONG TABLE', `${res.lords.length} lords will remember the evening`, 'good'); }
+      else { Audio.uiDeny(); toast('THE DOOR', res.why, ''); }
+      cbs.onDone();
+    },
+  });
+}
+
+/**
  * Somebody who buys people.
  *
  * The rate is shown against what the prisoner's own faction would pay, because
@@ -2258,6 +2337,13 @@ export function settlementMenu(S, loc, cbs) {
   // creditor's. If they live here, the door is on the list.
   const debt = State.debtorApproach(S, loc.id);
   if (debt) verb('debt', `Find ${esc(debt.debtor)}`, `They owe ${debt.amount} to ${esc(debt.who)}`, 'warn');
+  // A feast in this hall: every lord the faction has, one roof, three days.
+  const feast = State.feastAt(S, loc.id);
+  if (feast) {
+    verb('feast', 'Go up to the hall',
+      feast.joined ? 'You have had your evening' : `${esc(FACTIONS[feast.faction].name)} is feasting — until day ${feast.until}`,
+      feast.joined ? '' : 'major');
+  }
   // On foot, Mount-and-Blade style: the same town the company would fight
   // over, walked as a place, with the services standing where the layout put
   // them. Only offered where the layout has authored streets to walk.

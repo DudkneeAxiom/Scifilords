@@ -379,6 +379,10 @@ function enterLocation() {
           UI.debtPanel(S, loc, { onClose: () => openMenu(), onDone: () => openMenu() });
           return;
         }
+        if (verb === 'feast') {
+          UI.feastPanel(S, loc, { onClose: () => openMenu(), onDone: () => openMenu() });
+          return;
+        }
         if (verb === 'holdings') {
           UI.holdingsPanel(S, { onClose: () => openMenu() });
           return;
