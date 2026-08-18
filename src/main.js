@@ -764,10 +764,16 @@ function handleEncounter(party, opts = {}) {
       // see until it is on top of you.
       const boss = party.kind === 'titan';
       const lair = party.kind === 'lair';
+      // Not every den is the same den. Keyed off the party id so a given
+      // lair keeps its shape for as long as it stands — scouting it twice
+      // shows the same ground twice.
+      let lh = 0;
+      for (let i = 0; i < party.id.length; i++) lh = (lh * 31 + party.id.charCodeAt(i)) | 0;
+      const lairSite = ['compound', 'quarry', 'wreckyard'][Math.abs(lh) % 3];
       openDeploy({
         type: boss ? 'titan' : lair ? 'lair' : 'skirmish',
-        site: lair ? 'compound' : 'roadside',
-        layout: lair ? 'compound' : 'roadside',
+        site: lair ? lairSite : 'roadside',
+        layout: lair ? lairSite : 'roadside',
         // One way in. You cannot bring the company.
         squadCap: lair ? 4 : undefined,
         party,

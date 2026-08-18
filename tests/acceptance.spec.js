@@ -6595,3 +6595,52 @@ test('an army is a perishable thing: marshals, the call, and cohesion', async ({
   expect(r.spent.off).toBe(null);
   expect(r.spent.army).toBe(null);
 });
+
+test('not every den is the same den: the Cut and the Boneyard both stand up', async ({ page }) => {
+  await boot(page);
+  await newCampaign(page);
+  const probe = async (site) => {
+    await page.evaluate(async (siteId) => {
+      const { Mission } = await import('/src/mission.js');
+      const UI = await import('/src/ui.js');
+      const G = window.KR;
+      const S = G.campaign;
+      G.mission?.dispose();
+      G.world?.dispose(); G.world = null;
+      document.getElementById('viewport').innerHTML = '';
+      UI.show('hud');
+      G.mission = new Mission({
+        campaign: S,
+        spec: { type: 'lair', site: siteId, layout: siteId, squadCap: 4 },
+        squad: S.roster.slice(0, 4),
+        container: document.getElementById('viewport'),
+        onHud: () => {}, onToast: () => {}, onIntro: () => {}, onWheel: () => {}, onEnd: () => {},
+      });
+      await G.mission.start();
+      G.mission.paused = true;
+    }, site);
+    await page.waitForFunction(() => window.KR.mission?.player, null, { timeout: 40000 });
+    return page.evaluate(() => {
+      const m = window.KR.mission;
+      return {
+        name: m.level.name,
+        obstacles: m.level.obstacles.length,
+        stairs: (m.level.stairs || []).length,
+        enemies: m.entities.filter((e) => e.side === 'enemy' && !e.dead).length,
+        faction: m.level.enemyFaction,
+      };
+    });
+  };
+  const quarry = await probe('quarry');
+  const yard = await probe('wreckyard');
+  expect(quarry.name).toBe('THE CUT');
+  expect(quarry.obstacles).toBeGreaterThan(20);
+  // The bench has a stair flight up each end — the high road is reachable.
+  expect(quarry.stairs).toBeGreaterThanOrEqual(2);
+  expect(quarry.enemies).toBeGreaterThan(0);
+  expect(quarry.faction).toBe('raider');
+  expect(yard.name).toBe('THE BONEYARD');
+  expect(yard.obstacles).toBeGreaterThan(20);
+  expect(yard.enemies).toBeGreaterThan(0);
+  expect(yard.faction).toBe('raider');
+});

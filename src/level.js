@@ -778,6 +778,108 @@ function siteRoadside(b) {
   };
 }
 
+function siteQuarry(b) {
+  // THE CUT — a worked quarry the raiders squat in. The camp sits on the
+  // floor; the working face is a stepped bench of container-rock on the
+  // north with a stair flight up each end, so the fight has a high road and
+  // a low road and the lair's lookouts start on the better one. One vehicle
+  // ramp in from the south, funnelled by barriers: the front door is a
+  // shooting gallery, the benches are the flank.
+  const face = [[-16, -18], [-8, -20], [0, -21], [8, -20], [16, -18]];
+  face.forEach(([x, z], i) => b.prop('container', x, z, i % 2 ? 0.12 : -0.1, BOX.container, 1.25));
+  b.steps(-22, -14, 3.1, 0.8, -0.6);              // west flight up the bench
+  b.steps(22, -14, 3.1, -0.8, -0.6);              // east flight
+  b.prop('watchtower', 0, -26, 0, BOX.watchtower, 1);
+
+  // The camp on the floor.
+  b.prop('checkpoint', -4, 2, 0.4, 'auto', 1);
+  b.prop('generator', 3, -2, 0, BOX.generator, 1);
+  b.prop('fuel_tank', 8, 3, 0, BOX.fuel_tank, 0.9);
+  b.prop('truck_wreck', -10, 6, 1.9, BOX.truck_wreck, 1);
+  b.prop('crate', -2, -6, 0.2, BOX.crate, 1);
+  b.prop('crate', -0.8, -5.2, 1.0, BOX.crate, 1);
+  b.prop('crate', 5, -7, 0.5, BOX.crate, 1);
+  b.prop('sandbags', 0, 8, 0, BOX.sandbags, 1.2);
+
+  // The ramp road south, walled by barriers so it reads as the one way a
+  // truck ever came in or out.
+  for (let i = 0; i < 4; i++) {
+    b.prop('barrier', -5, 14 + i * 6, 0, BOX.barrier, 1.15);
+    b.prop('barrier', 5, 14 + i * 6, 0, BOX.barrier, 1.15);
+  }
+  b.prop('checkpoint_boom', 0, 14, 0, null, 1);
+
+  // Spoil heaps: the quarry's own rubble, closing the east and west edges.
+  b.scatter(['rock_0', 'rock_1', 'rock_2', 'rock_3'], 20, -30, 0, 14);
+  b.scatter(['rock_0', 'rock_1', 'rock_2', 'rock_3'], 20, 30, 0, 14);
+  b.scatter(['rock_0', 'rock_2'], 10, 0, -34, 12);
+  b.perimeter(56);
+
+  return {
+    name: 'THE CUT',
+    // Quarry light: pale stone dust over everything, sky washed out.
+    palette: { fog: 0x5a564a, ground: 0x5c5644, groundLow: 0x333026, acc: 0x6a6252, sky: 0x545048, sun: 0xe8d8a8, sunI: 3.0, amb: 0x686458, ambI: 1.9 },
+    playerSpawn: { x: 0, z: 34, ry: 0 },
+    extraction: { x: 0, z: 36 },
+    enemyFaction: 'raider',
+    objectivePoint: { x: 0, z: 0 },
+    garrison: [[-4, 0], [6, -4], [-9, -19], [9, -19], [0, -24], [-8, 8]],
+    patrols: [
+      [[-16, -16], [16, -16], [-16, -16]],        // the bench walk
+      [[-8, 12], [8, 12], [8, 2], [-8, 2], [-8, 12]],
+    ],
+  };
+}
+
+function siteWreckyard(b) {
+  // THE BONEYARD — dead vehicles in rows, and the crew that strips them.
+  // Wreck rows run north-south with tight lanes between; the camp is the
+  // cleared square at the middle where the crusher sits. Every approach is
+  // a lane, every lane has a wreck to break it — the depot's long-lethal-
+  // lanes idea at raider scale, with crate stacks to get above it.
+  const rows = [-20, -10, 10, 20];
+  rows.forEach((x, ri) => {
+    for (let i = 0; i < 4; i++) {
+      const z = -21 + i * 12 + (ri % 2 ? 4 : 0);
+      if (Math.abs(z) < 8 && Math.abs(x) < 14) continue;   // the cleared middle
+      if ((ri + i) % 3 === 2) b.prop('truck_wreck', x, z, (ri + i) * 0.9, BOX.truck_wreck, 1);
+      else b.prop('container', x, z, ri % 2 ? 0.06 : Math.PI / 2, BOX.container, 1);
+    }
+  });
+
+  // The camp: crusher, fuel, and the stacked crates that are the yard's
+  // watchtower — a two-box climb the verticality rules make a real post.
+  b.prop('generator', 0, 0, 0.2, BOX.generator, 1.3);      // the crusher
+  b.prop('fuel_tank', -6, 4, 0, BOX.fuel_tank, 0.85);
+  b.prop('checkpoint', 6, -5, -0.5, 'auto', 1);
+  b.prop('crate', -3, -5, 0.2, BOX.crate, 1);
+  b.prop('crate', -3, -5, 0.2, BOX.crate, 1, 0.95);
+  b.prop('crate', -1.9, -4.4, 0.8, BOX.crate, 1);
+  b.prop('sandbags', 3, 5, 0.9, BOX.sandbags, 1.2);
+  b.prop('barrier', -8, -2, Math.PI / 2, BOX.barrier, 1);
+
+  // Stripped hulks on the fringe, going to scatter.
+  b.scatter(['truck_wreck'], 5, 0, 0, 40, () => BOX.truck_wreck);
+  b.scatter(['rock_0', 'rock_1', 'rock_3'], 14, 0, 0, 46);
+  b.scatter(['dead_tree'], 6, 0, 0, 42);
+  b.perimeter(56);
+
+  return {
+    name: 'THE BONEYARD',
+    // Rust and old oil: everything browned, the sky greasy.
+    palette: { fog: 0x4e4438, ground: 0x4a3e30, groundLow: 0x2a221a, acc: 0x6a4630, sky: 0x484038, sun: 0xe0aa70, sunI: 2.9, amb: 0x5c5448, ambI: 1.8 },
+    playerSpawn: { x: 0, z: 34, ry: 0 },
+    extraction: { x: 0, z: 36 },
+    enemyFaction: 'raider',
+    objectivePoint: { x: 0, z: 0 },
+    garrison: [[-4, -3], [5, 2], [-14, -14], [14, 12], [0, -14], [10, -8]],
+    patrols: [
+      [[-15, -15], [-15, 15], [-15, -15]],        // west lane
+      [[15, -17], [15, 13], [15, -17]],           // east lane
+    ],
+  };
+}
+
 function siteDepot(b) {
   // A supply depot: rows of stacked containers with wide lanes between them,
   // a fuel farm on one flank and a hard core of blast doors. The lanes are the
@@ -1455,6 +1557,8 @@ const SITES = {
   outpost: siteRampart,
   reclaimer: sitePerran,
   roadside: siteRoadside,
+  quarry: siteQuarry,
+  wreckyard: siteWreckyard,
   depot: siteDepot,
   settlement: siteSettlement,
   works: siteWorks,
