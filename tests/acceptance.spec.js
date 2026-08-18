@@ -5605,3 +5605,60 @@ test('the field map shows the whole ground in tactical mode, and a click steers 
   expect(r.focus.x).toBeCloseTo(30, 0);
   expect(r.focus.z).toBeCloseTo(-20, 0);
 });
+
+test('THE BASTION: a laned approach, one gate in a full-span curtain, streets behind it', async ({ page }) => {
+  await boot(page);
+  await newCampaign(page);
+  await page.evaluate(async () => {
+    const { Mission } = await import('/src/mission.js');
+    const UI = await import('/src/ui.js');
+    const G = window.KR;
+    const S = G.campaign;
+    S.renown = 4000;
+    G.mission?.dispose();
+    G.world?.dispose(); G.world = null;
+    document.getElementById('viewport').innerHTML = '';
+    UI.show('hud');
+    // Army scale on purpose: spread rides the host size, and the curtain
+    // must still out-reach the bounds the armies buy.
+    G.mission = new Mission({
+      campaign: S,
+      spec: { type: 'siege', site: 'bastion', layout: 'bastion', siteName: 'Bastion',
+        enemyFaction: 'syndic', allies: 160, allyFaction: 'trust', enemyArmy: 150 },
+      squad: S.roster.slice(0, 4),
+      container: document.getElementById('viewport'),
+      onHud: () => {}, onToast: () => {}, onIntro: () => {}, onWheel: () => {}, onEnd: () => {},
+    });
+    await G.mission.start();
+    G.mission.paused = true;
+  });
+  await page.waitForFunction(() => window.KR.mission?.player, null, { timeout: 40000 });
+  const r = await page.evaluate(() => {
+    const m = window.KR.mission;
+    const wall = m.level.obstacles.filter((o) => Math.abs(o.z - -10) < 3 && o.hw > 3);
+    return {
+      bounds: m.level.bounds,
+      east: Math.max(...wall.map((o) => o.x + o.hw)),
+      west: Math.min(...wall.map((o) => o.x - o.hw)),
+      gate: m.level.props.some((p) => p.model === 'gate'),
+      // The road to the gate, and the avenue behind it, both genuinely open.
+      roadObstacles: m.level.obstacles.filter(
+        (o) => Math.abs(o.x) < 7 && o.z > 6 && o.z < 70).length,
+      avenueObstacles: m.level.obstacles.filter(
+        (o) => Math.abs(o.x) < 6 && o.z > -44 && o.z < -16).length,
+      stagingTowers: m.level.props.filter(
+        (p) => p.model === 'watchtower' && p.z > 10).length,
+      objectiveDepth: m.level.objectivePoint.z,
+    };
+  });
+  // Armies bought a big field, and the curtain still out-reaches it.
+  expect(r.bounds).toBeGreaterThan(180);
+  expect(r.east).toBeGreaterThanOrEqual(r.bounds);
+  expect(r.west).toBeLessThanOrEqual(-r.bounds);
+  expect(r.gate).toBe(true);
+  expect(r.roadObstacles).toBe(0);
+  expect(r.avenueObstacles).toBe(0);
+  expect(r.stagingTowers).toBe(4);
+  // The gate is the beginning, not the end.
+  expect(r.objectiveDepth).toBeLessThan(-50);
+});

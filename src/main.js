@@ -735,7 +735,11 @@ function specFor(loc, contract) {
   return {
     type: contract.type,
     site: loc.id,
-    layout: loc.layout || 'array',
+    // A summoned army siege is fought on ground built for it — THE BASTION,
+    // not whatever layout the town happens to have. Other contracts keep
+    // the location's own ground.
+    layout: (contract.type === 'siege' && contract.summons)
+      ? 'bastion' : (loc.layout || 'array'),
     siteName: loc.name,
     // A faction's own ground is defended by that faction; neutral sites by
     // whoever is squatting there.

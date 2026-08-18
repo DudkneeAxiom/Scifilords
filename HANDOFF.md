@@ -725,6 +725,21 @@ Open, in rough priority order:
    body plus a weapon); raising the 34 FIELD_CAP further needs character
    instancing or joint-count reduction, a round of its own.
 
+**THE BASTION** (this session). The army siege map, in THE APPROACHES'
+   grammar: a laned approach half (reserved road, container-train lane
+   walls with crossover gaps, four staging posts out of the wall's best
+   arcs), a FULL-SPAN curtain whose segments reach ±198 — spread caps at
+   1.75 so the largest possible bounds is ±196, and the fort's curtain was
+   quietly flankable again the moment army sieges started sizing sites by
+   the host; both curtains now out-reach the cap — one gate with towers
+   and a wall walk (stairs inside only), and an inside authored as streets
+   around an inner keep so the post-breach clearance reads from the
+   tactical camera. Summoned sieges route here via specFor (`siege` +
+   `summons` → layout 'bastion'); other contracts keep the location's own
+   ground. The acceptance test runs it AT ARMY SCALE (allies 160,
+   enemyArmy 150) deliberately — a small-spec test was how the fort's
+   regression stayed invisible.
+
 ---
 
 ## The summary artifact

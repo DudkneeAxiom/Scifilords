@@ -1074,11 +1074,13 @@ function siteFort(b) {
   // simply walk through, which quietly undid the entire point of the layout.
   // The wall sampling in the siege test ran along the rampart line and never
   // looked at the flanks.
-  // The curtain runs PAST the playable bounds (±112) on both flanks. It used
-  // to stop at ±72, which left forty open metres either side — the player
-  // could simply walk around the "castle", and every word this layout says
-  // about walls was a lie. A wall that can be flanked on foot is scenery.
-  for (let i = -13; i <= 13; i++) {
+  // The curtain runs PAST the largest bounds any fight can have — spread
+  // caps at 1.75, so ±112 × 1.75 ≈ ±196, and the segments reach ±198. It
+  // used to stop at ±72 (walk around the castle), was fixed to ±117, and
+  // then army sieges started sizing the site by the host (spread from
+  // enemyArmy) — which made ±117 flankable again at exactly the scale where
+  // walls matter most. A wall that can be flanked on foot is scenery.
+  for (let i = -22; i <= 22; i++) {
     if (i === 0) continue;                            // the gate stands here
     b.prop('rampart', i * 9.0, WALL_Z, 0, BOX.rampart, 1);
   }
@@ -1301,6 +1303,113 @@ function siteField(b) {
   };
 }
 
+/**
+ * THE BASTION — the army siege map, authored like THE APPROACHES.
+ *
+ * A summoned siege used to play on whatever layout the town happened to
+ * have. This is ground built for the thing itself: an approach half with
+ * lanes and staging posts the attacker maneuvers a host up, a full-span
+ * curtain with one gate that is genuinely the only way in, and an inside
+ * laid out as streets around an inner keep so the post-breach clearance
+ * reads from the tactical camera too. The siege is two battles — getting
+ * to the wall, and what is behind it — and the map says so.
+ */
+function siteBastion(b) {
+  const WALL_Z = -10;
+
+  // ---- the approach half -------------------------------------------------
+  // The road to the gate: clear, fast, and watched by the whole wall.
+  b.protect(0, 30, 8, 46);
+  // Container trains wall the road from the flank lanes, crossovers every
+  // fourth bay — same grammar as THE APPROACHES, so a commander who learned
+  // one map has learned the other.
+  for (let i = 1; i <= 6; i++) {
+    if ((i % 4) === 3) continue;
+    b.prop('container', -15, 4 + i * 10.5, Math.PI / 2, BOX.container, 1.15);
+    b.prop('container', 15, 9 + i * 10.5, Math.PI / 2, BOX.container, 1.15);
+  }
+  // Staging posts: where the attacker forms up OUT of the wall's best arcs.
+  for (const [px, pz] of [[-36, 22], [36, 22], [-36, 58], [36, 58]]) {
+    b.prop('watchtower', px, pz, 0, BOX.watchtower, 1);
+    b.prop('sandbags', px - 4, pz + 4, 0.4, BOX.sandbags, 1.2);
+    b.prop('sandbags', px + 4, pz + 4, -0.4, BOX.sandbags, 1.2);
+    b.prop('barrier', px, pz + 6, 0, BOX.barrier, 1);
+  }
+  b.prop('truck_wreck', -44, 40, 0.6, BOX.truck_wreck, 1);
+  b.prop('truck_wreck', 46, 44, -0.5, BOX.truck_wreck, 1);
+  b.scatter(['crate'], 6, -42, 40, 18, () => BOX.crate);
+  b.scatter(['crate'], 6, 42, 40, 18, () => BOX.crate);
+
+  // ---- the curtain ---------------------------------------------------------
+  // Full span past the largest possible bounds (spread caps at 1.75 →
+  // ±196; segments reach ±198). One gate. That is the whole argument.
+  for (let i = -22; i <= 22; i++) {
+    if (i === 0) continue;
+    b.prop('rampart', i * 9.0, WALL_Z, 0, BOX.rampart, 1);
+  }
+  b.prop('gate', 0, WALL_Z, 0, 'auto', 1);
+  b.prop('gate_tower', -7.6, WALL_Z, 0, BOX.gate_tower, 1);
+  b.prop('gate_tower', 7.6, WALL_Z, 0, BOX.gate_tower, 1);
+  b.prop('watchtower', -24, WALL_Z - 3, 0, BOX.watchtower, 1);
+  b.prop('watchtower', 24, WALL_Z - 3, 0, BOX.watchtower, 1);
+  // The wall walk, and stairs up from INSIDE only.
+  const WALK = 4.1;
+  for (let i = -8; i <= 8; i++) {
+    if (i === 0) continue;
+    b.deck('catwalk', i * 9.0, WALL_Z + 2.2, 0, BOX.catwalk, 1.1, WALK);
+  }
+  b.stairsTo([[-18, WALL_Z + 3.4, 0, -1], [-27, WALL_Z + 3.4, 0, -1]], WALK);
+  b.stairsTo([[18, WALL_Z + 3.4, 0, -1], [27, WALL_Z + 3.4, 0, -1]], WALK);
+
+  // ---- inside: streets, then the keep -------------------------------------
+  // The avenue continues the road so the breach pours somewhere legible.
+  b.protect(0, -34, 7, 24);
+  for (const [hx, hz, r] of [
+    [-14, -24, Math.PI / 2], [14, -26, Math.PI / 2],
+    [-16, -40, 0], [16, -42, 0],
+    [-13, -56, Math.PI / 2], [14, -55, Math.PI / 2],
+  ]) {
+    b.prop('hab_block', hx, hz, r, BOX.hab_block, 1);
+  }
+  b.prop('generator', -24, -33, 0, BOX.generator, 1);
+  b.prop('container', 26, -30, 0.2, BOX.container, 1);
+  b.prop('container', -26, -48, Math.PI / 2, BOX.container, 1);
+  // The keep: the reason the town matters, ringed and defended.
+  b.prop('bunker', 0, -72, 0, BOX.bunker, 1.2);
+  b.prop('comms_mast', -9, -76, 0, BOX.comms_mast, 1.2);
+  b.prop('fuel_tank', 10, -74, 0, BOX.fuel_tank, 1.2);
+  b.prop('sandbags', -6, -64, 0.5, BOX.sandbags, 1.3);
+  b.prop('sandbags', 6, -64, -0.5, BOX.sandbags, 1.3);
+  b.prop('barrier', 0, -62, 0, BOX.barrier, 1);
+  b.scatter(['rock_0', 'rock_2'], 8, 0, 78, 26);
+  b.perimeter(86);
+
+  return {
+    name: 'THE BASTION',
+    palette: {
+      fog: 0x46423a, ground: 0x544e40, groundLow: 0x2a2720, acc: 0x4c5844,
+      sky: 0x3e4046, sun: 0xe8bc84, sunI: 2.9, amb: 0x667080, ambI: 2.0,
+    },
+    playerSpawn: { x: 0, z: 74, ry: 0 },
+    extraction: { x: 0, z: 76 },
+    // Deep inside: the gate is the beginning, the keep is the end.
+    objectivePoint: { x: 0, z: -70 },
+    enemyFaction: 'syndic',
+    // Wall posts make the approach expensive; street and keep posts make
+    // the breach expensive. Same doctrine as the fort, twice the depth.
+    garrison: [
+      [-9, -12], [9, -12], [-18, -12], [18, -12],
+      [0, -20], [-14, -33], [14, -34], [0, -46],
+      [-10, -60], [10, -60], [0, -66], [-6, -72], [6, -72],
+    ],
+    patrols: [
+      [[-20, -22], [20, -22], [-20, -22]],
+      [[0, -30], [0, -56], [0, -30]],
+      [[-14, -64], [14, -64], [-14, -64]],
+    ],
+  };
+}
+
 // Keyed by layout, not by location: several places in the Reach share a layout
 // and every layout can host any mission template.
 const SITES = {
@@ -1314,6 +1423,7 @@ const SITES = {
   fort: siteFort,
   arena: siteArena,
   field: siteField,
+  bastion: siteBastion,
 };
 
 // --------------------------------------------------------------------------
