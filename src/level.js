@@ -561,7 +561,13 @@ const BOX = {
   antenna_small: [0.5, 0.5, 1.0],
   // Tall enough that nothing shoots over it and nobody walks through it. The
   // wall is the whole reason a siege is a different problem from a firefight.
-  rampart: [4.6, 0.9, 6.2],
+  // Height is the CAP, not the merlon tops: collision at 6.2 made the wall
+  // walk blind — a defender's eye at walk+1.55 sat inside the "wall" and no
+  // sightline ever cleared the parapet. At 5.3 the crenellation is real:
+  // troops on the walk fire over the cap, troops below stare at concrete.
+  rampart: [4.6, 0.9, 5.3],
+  // A run of earth-filled gabions: the lane wall that reads as fortification.
+  hesco_line: [4.7, 0.9, 2.2],
   gate: [3.6, 1.2, 6.4],
   gate_tower: [1.3, 1.3, 7.2],
 };
@@ -1098,7 +1104,9 @@ function siteFort(b) {
   // is what makes taking the gate worth doing, because the defenders shooting
   // down at the approach have to be dealt with rather than waited out — and
   // once you are through, the walk is yours to hold against the compound.
-  const WALK = 4.1;
+  // 4.9, not 4.1: the walk has to put a standing eye ABOVE the 5.3 parapet
+  // cap, or everyone posted up there is walled off from their own war.
+  const WALK = 4.9;
   for (let i = -8; i <= 8; i++) {
     if (i === 0) continue;
     b.deck('catwalk', i * 9.0, WALL_Z + 2.2, 0, BOX.catwalk, 1.1, WALK);
@@ -1234,13 +1242,13 @@ function siteField(b) {
   // dressing pass ever parks a crate on the one fast lane.
   b.protect(0, 0, 8, 78);
 
-  // Container trains wall the road from the flank lanes. Every fourth bay
-  // is left open — the crossovers are where fights happen, so they are
-  // authored, not accidental.
+  // Gabion lines wall the road from the flank lanes — built fortification,
+  // not a freight yard. Every fourth bay is left open: the crossovers are
+  // where fights happen, so they are authored, not accidental.
   for (let i = -6; i <= 6; i++) {
     if (((i + 60) % 4) === 3) continue;               // the crossover gaps
-    b.prop('container', -15, i * 10.5, Math.PI / 2, BOX.container, 1.15);
-    b.prop('container', 15, i * 10.5 + 5, Math.PI / 2, BOX.container, 1.15);
+    b.prop('hesco_line', -15, i * 10.5, Math.PI / 2, BOX.hesco_line, 1.05);
+    b.prop('hesco_line', 15, i * 10.5 + 5, Math.PI / 2, BOX.hesco_line, 1.05);
   }
 
   // Garrison posts: a tower and a sandbag arc, both flanks, three depths.
@@ -1320,13 +1328,13 @@ function siteBastion(b) {
   // ---- the approach half -------------------------------------------------
   // The road to the gate: clear, fast, and watched by the whole wall.
   b.protect(0, 30, 8, 46);
-  // Container trains wall the road from the flank lanes, crossovers every
+  // Gabion lines wall the road from the flank lanes, crossovers every
   // fourth bay — same grammar as THE APPROACHES, so a commander who learned
   // one map has learned the other.
   for (let i = 1; i <= 6; i++) {
     if ((i % 4) === 3) continue;
-    b.prop('container', -15, 4 + i * 10.5, Math.PI / 2, BOX.container, 1.15);
-    b.prop('container', 15, 9 + i * 10.5, Math.PI / 2, BOX.container, 1.15);
+    b.prop('hesco_line', -15, 4 + i * 10.5, Math.PI / 2, BOX.hesco_line, 1.05);
+    b.prop('hesco_line', 15, 9 + i * 10.5, Math.PI / 2, BOX.hesco_line, 1.05);
   }
   // Staging posts: where the attacker forms up OUT of the wall's best arcs.
   for (const [px, pz] of [[-36, 22], [36, 22], [-36, 58], [36, 58]]) {
@@ -1352,8 +1360,9 @@ function siteBastion(b) {
   b.prop('gate_tower', 7.6, WALL_Z, 0, BOX.gate_tower, 1);
   b.prop('watchtower', -24, WALL_Z - 3, 0, BOX.watchtower, 1);
   b.prop('watchtower', 24, WALL_Z - 3, 0, BOX.watchtower, 1);
-  // The wall walk, and stairs up from INSIDE only.
-  const WALK = 4.1;
+  // The wall walk, and stairs up from INSIDE only. 4.9 puts a standing eye
+  // above the 5.3 parapet cap — see the fort for the whole argument.
+  const WALK = 4.9;
   for (let i = -8; i <= 8; i++) {
     if (i === 0) continue;
     b.deck('catwalk', i * 9.0, WALL_Z + 2.2, 0, BOX.catwalk, 1.1, WALK);

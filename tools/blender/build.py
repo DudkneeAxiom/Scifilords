@@ -868,6 +868,31 @@ def prop_blast_door():
     export("blast_door")
 
 
+def prop_hesco_line():
+    """
+    A run of earth-filled gabion baskets — the fortification you build in a
+    day. Replaces the shipping containers the laned battlefields were first
+    dressed with: a lane wall should read as defensive works, not freight.
+    Three baskets with jittered heights, wire frames, and spilled fill, so a
+    hundred metres of it reads as a built line rather than a copy stamp.
+    """
+    clear()
+    root = empty("root")
+    for i in range(3):
+        x = (i - 1) * 3.05
+        h = 2.0 + (i % 2) * 0.18
+        box(f"basket{i}", (2.9, 1.5, h), (x, 0, h / 2),
+            "canvas" if i % 2 else "dirt_lt", root, rot=(0, 0, (i * 5) % 7 - 3))
+        box(f"rim{i}", (2.98, 1.58, 0.14), (x, 0, h - 0.06), "steel_dk", root)
+        box(f"fill{i}", (2.5, 1.15, 0.34), (x, 0, h + 0.08),
+            "dirt" if i % 2 else "dirt_lt", root)
+        box(f"post{i}", (0.10, 1.60, h), (x - 1.45, 0, h / 2), "steel_dk", root)
+    box("postend", (0.10, 1.60, 2.0), (4.55, 0, 1.0), "steel_dk", root)
+    box("spill", (8.6, 0.6, 0.32), (0, -1.05, 0.16), "dirt", root)
+    box("scuff", (5.2, 0.05, 0.7), (-0.8, 0.78, 0.9), "rust", root)
+    export("hesco_line")
+
+
 def prop_rampart():
     """
     A length of curtain wall. Tall enough that nobody walks over it, with a
@@ -1356,6 +1381,7 @@ def main():
     prop_container()
     prop_crate()
     prop_barrier()
+    prop_hesco_line()
     prop_sandbags()
     prop_fuel_tank()
     prop_generator()

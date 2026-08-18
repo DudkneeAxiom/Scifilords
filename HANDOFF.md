@@ -758,6 +758,40 @@ Open, in rough priority order:
    stays the liege's, the column dies, +3 rep — same summons block in
    `applyMissionResult`, now typed on siege vs defense.
 
+**Character instancing, and the cap raise it bought** (this session).
+   Every soldier was ~6 merged joint meshes plus a weapon — per-soldier
+   draw calls. Now `batchCharacter(e)` (spawnEntity, non-titan) hides every
+   mesh in the char subtree and registers it in per-geometry-uuid
+   InstancedMesh pools (`charPools`, capacity 160, `frustumCulled=false`);
+   `updateCharBatch()` runs in the loop AFTER syncVisuals, calls
+   `updateMatrixWorld(true)` per visible char subtree (matrices must be
+   fresh or the render trails the animation by a frame) and copies each
+   hidden mesh's matrixWorld into its pool slot. Joints still animate —
+   three.js computes matrices for invisible nodes. Pool geometry/material
+   are the SHARED cache (`userData.shared` protects them from
+   disposeScene); the pools' own instance buffers are disposed in
+   Mission.dispose. Measured: field scene 874 → 79 calls at 50 combatants;
+   164 at 68. That bought FIELD_CAP 34→48 and allied front rank 12→16
+   (waves 8, refill under 9). Traps: `hidePlayerModel` works because the
+   batcher skips owners whose `char.group.visible === false`; the Titan is
+   excluded (one body, own path); per-character shadow LOD no longer
+   applies to bodies (pools cast as a whole).
+
+**Battlefield polish, from playtest** (this session). Two reports, two
+   fixes. "The walls for sieges aren't walkable for height": the rampart's
+   collision box was the MERLON top (6.2), so a defender on the 4.1 walk
+   had their eye at 5.65 — inside the wall as far as LOS was concerned,
+   blind to their own siege. The box now stops at the CAP (5.3, in
+   BOX.rampart with the why) and WALK rose to 4.9 in both fort and
+   bastion: a standing eye clears the parapet, attackers below still
+   stare at concrete, and stairsTo() just grows the flights. "The line of
+   crates looks really bad": the container-train lane walls are replaced
+   by `hesco_line` — a new authored kit piece (three earth-filled gabion
+   baskets, jittered heights, steel posts, spilled fill; the three-place
+   registration rule applied: build.py, MODELS, BOX) — in both THE
+   APPROACHES and THE BASTION. Containers remain only as west-lane
+   industrial dressing.
+
 ---
 
 ## The summary artifact

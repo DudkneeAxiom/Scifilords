@@ -5232,15 +5232,16 @@ test('an army fights through the field cap: ranks stream in, the ticker counts t
       total: m.skirmishTotal,
     };
   });
-  // Front ranks, not armies, on the field.
-  expect(r.before.alliedField).toBeLessThanOrEqual(12);
+  // Front ranks, not armies, on the field (rank sizes rose with the
+  // instanced-character cap raise: 16 allied, FIELD_CAP 48).
+  expect(r.before.alliedField).toBeLessThanOrEqual(16);
   expect(r.before.enemyField).toBeLessThanOrEqual(20);
   // The ticker shows the whole weight of both hosts.
   expect(r.before.armies.ours).toBeGreaterThan(160);
   expect(r.before.armies.theirs).toBeGreaterThan(130);
   // Both sides genuinely stream: fresh fighters after the rank falls.
   expect(r.alliedAfterWave).toBeGreaterThan(3);
-  expect(r.committed).toBeGreaterThan(12);
+  expect(r.committed).toBeGreaterThan(16);
   expect(r.enemyAfterWave).toBeGreaterThan(0);
   expect(r.enemyCommitted).toBeGreaterThan(r.before.enemyField);
   expect(r.total).toBe(150);
@@ -5535,8 +5536,8 @@ test('THE APPROACHES reads from above: a clear road, walled lanes, posts to hold
       // sandbag line, which is the authored end of the road.
       roadObstacles: m.level.obstacles.filter(
         (o) => Math.abs(o.x) < 7 && o.z > -48 && o.z < 68).length,
-      // The lanes are walled from it by container trains, with gaps.
-      wallSegs: props.filter((p) => p.model === 'container'
+      // The lanes are walled from it by gabion lines, with gaps.
+      wallSegs: props.filter((p) => p.model === 'hesco_line'
         && Math.abs(Math.abs(p.x) - 15) < 1).length,
       towers: props.filter((p) => p.model === 'watchtower').length,
       sandbags: props.filter((p) => p.model === 'sandbags').length,

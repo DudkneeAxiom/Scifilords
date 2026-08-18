@@ -22,7 +22,7 @@ export const MODELS = [
   'bunker', 'hab_block', 'town_house', 'town_house_2', 'town_hall',
   'market_stall', 'town_wall', 'gate_tower', 'town_arch',
   'watchtower', 'comms_mast', 'radar_dish', 'container',
-  'crate', 'barrier', 'sandbags', 'fuel_tank', 'generator', 'truck_wreck',
+  'crate', 'barrier', 'sandbags', 'fuel_tank', 'generator', 'truck_wreck', 'hesco_line',
   'blast_door', 'pipe_run', 'landing_pad', 'checkpoint', 'checkpoint_boom', 'catwalk', 'antenna_small',
   'dead_tree', 'rock_0', 'rock_1', 'rock_2', 'rock_3',
   'wm_settlement_trust', 'wm_settlement_syndic', 'wm_settlement_neutral',
