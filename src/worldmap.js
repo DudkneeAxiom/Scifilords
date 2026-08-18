@@ -700,7 +700,7 @@ export class WorldMap {
       const x = (this._proj.x * 0.5 + 0.5) * w;
       const y = (-this._proj.y * 0.5 + 0.5) * h;
       // Only worth showing when zoomed out far enough to see a province.
-      const show = !behind && this.zoom > 1.5 && x > 0 && x < w && y > 40 && y < h - 60;
+      const show = !behind && (this.zoomView ?? this.zoom) > 1.5 && x > 0 && x < w && y > 40 && y < h - 60;
       node.style.display = show ? 'block' : 'none';
       if (show) { node.style.left = `${x}px`; node.style.top = `${y}px`; }
     }
@@ -737,7 +737,7 @@ export class WorldMap {
     for (const p of this.S.parties) {
       if (p.strength <= 0) continue;
       const d = Math.hypot(p.x - this.S.pos.x, p.z - this.S.pos.z);
-      if (d > (this.zoom > 1.5 ? 2600 : 1500)) continue;
+      if (d > ((this.zoomView ?? this.zoom) > 1.5 ? 2600 : 1500)) continue;
       seen.add(p.id);
       let lab = this.partyLabels.get(p.id);
       if (!lab) {
@@ -800,7 +800,7 @@ export class WorldMap {
       const y = (-this._proj.y * 0.5 + 0.5) * h;
       // At province zoom the settlement names collide into an unreadable mass;
       // the region names carry the map instead.
-      const zoomedOut = this.zoom > 1.5;
+      const zoomedOut = (this.zoomView ?? this.zoom) > 1.5;
       const onScreen = !behind && !zoomedOut
         && x > -60 && x < w + 60 && y > -20 && y < h - 40;
       L.el.style.display = onScreen ? 'block' : 'none';
@@ -1242,9 +1242,15 @@ export class WorldMap {
     // horizon, so the frame fills with terrain LAYERS — near country sharp,
     // the rim silhhouetted, the outer steppe dissolving in haze — instead of
     // a top-down plate. The horizon is what sells that the world continues.
-    const flat = clamp((this.zoom - 0.9) / 1.0, 0, 1);
-    const dist = (1250 + flat * 420) * this.zoom;
-    const height = (1400 - flat * 560) * this.zoom;
+    // The view is smoothed; the world never is. Wheel notches write a zoom
+    // TARGET and the camera eases toward it — a 12% instant step per notch
+    // read as a cut, not a zoom. The eased value drives everything the eye
+    // sees; S.pos and this.zoom stay exact for the simulation and the input.
+    this.zoomView = lerp(this.zoomView ?? this.zoom, this.zoom, 1 - Math.exp(-dt * 6));
+    const zv = this.zoomView;
+    const flat = clamp((zv - 0.9) / 1.0, 0, 1);
+    const dist = (1250 + flat * 420) * zv;
+    const height = (1400 - flat * 560) * zv;
     // Fixed fog distances made a zoomed-out map dissolve into flat haze.
     const eye = Math.hypot(dist, height);
     // Fog begins past the ground being looked at, not on top of it. At 0.55 the
@@ -1266,10 +1272,18 @@ export class WorldMap {
     // wherever the company happens to be standing and buries the view in a hill.
     const cy = regionHeight(cx, cz);
 
-    const want = new THREE.Vector3(cx, cy + height, cz + dist);
+    // The look-target lags the company through the same easing as the
+    // position: aiming the lens at the exact pixel every frame made ground
+    // undulation bob the horizon and every course change snap the view.
+    if (!this.focus || !this.camInit) this.focus = { x: cx, y: cy, z: cz };
+    const kf = 1 - Math.exp(-dt * 5);
+    this.focus.x = lerp(this.focus.x, cx, kf);
+    this.focus.y = lerp(this.focus.y, cy, kf);
+    this.focus.z = lerp(this.focus.z, cz, kf);
+    const want = new THREE.Vector3(this.focus.x, this.focus.y + height, this.focus.z + dist);
     if (!this.camInit) { this.camera.position.copy(want); this.camInit = true; }
     else this.camera.position.lerp(want, 1 - Math.exp(-dt * 4.5));
-    this.camera.lookAt(cx, cy + 8, cz);
+    this.camera.lookAt(this.focus.x, this.focus.y + 8, this.focus.z);
 
     this.sun.position.set(S.pos.x - 260, 300, S.pos.z + 180);
     this.sun.target.position.set(S.pos.x, 0, S.pos.z);
@@ -1282,10 +1296,24 @@ export class WorldMap {
     const inside = !!this.inside;
     this.playerToken.visible = !inside;
     this.playerHalo.visible = !inside;
-    this.playerToken.position.set(S.pos.x, y, S.pos.z);
+    // The token is drawn at a render-side smoothed position: per-frame
+    // terrain speed jitter (travelFactor changes every metre) never reaches
+    // the eye, while S.pos itself stays exact for pursuit and encounters.
+    if (!this.tokenPos) this.tokenPos = { x: S.pos.x, z: S.pos.z };
+    // A jump no truck could make is a teleport (tests, probes, panels moving
+    // the company) — snap, or the token glides across half the continent.
+    if (Math.hypot(S.pos.x - this.tokenPos.x, S.pos.z - this.tokenPos.z) > 400) {
+      this.tokenPos.x = S.pos.x; this.tokenPos.z = S.pos.z;
+      if (this.focus) { this.focus.x = S.pos.x + this.camPan.x; this.focus.z = S.pos.z + this.camPan.z; }
+    }
+    const kt = 1 - Math.exp(-dt * 10);
+    this.tokenPos.x = lerp(this.tokenPos.x, S.pos.x, kt);
+    this.tokenPos.z = lerp(this.tokenPos.z, S.pos.z, kt);
+    const ty = regionHeight(this.tokenPos.x, this.tokenPos.z);
+    this.playerToken.position.set(this.tokenPos.x, ty, this.tokenPos.z);
     this.playerToken.rotation.y = lerp(
       this.playerToken.rotation.y, this.playerHeading || 0, 1 - Math.exp(-dt * 6));
-    this.playerHalo.position.set(S.pos.x, y + 1.0, S.pos.z);
+    this.playerHalo.position.set(this.tokenPos.x, ty + 1.0, this.tokenPos.z);
     this.playerHalo.material.opacity = 0.42 + Math.sin(performance.now() * 0.002) * 0.14;
   }
 
