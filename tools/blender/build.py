@@ -547,6 +547,58 @@ def weapon(kind):
         box("grip", (0.05, 0.08, 0.16), (0, 0.16, -0.12), "steel_dk", root)
         box("stock", (0.06, 0.20, 0.14), (0, 0.34, -0.02), "bone", root)
 
+    # ----------------------------------------------------------------------
+    # The melee era: ancient-future arms cut from the old world's leavings.
+    # Same convention as the guns — authored at origin, business end -Y —
+    # so the hand attach and the aim math keep working unchanged.
+    # ----------------------------------------------------------------------
+    elif kind == "sword":  # a metre of cut industrial plate, edge ground on
+        taper("blade", (0.016, 0.66, 0.11), (0, -0.46, 0.02), "steel_lt", root,
+              top=(1.0, 0.35), bottom=(1.0, 1.0))
+        box("spine_rib", (0.024, 0.50, 0.02), (0, -0.38, 0.065), "rust", root)
+        box("guard", (0.10, 0.035, 0.16), (0, -0.11, 0.0), "steel_dk", root)
+        cyl("grip", 0.024, 0.22, (0, 0.02, 0.0), "black", root, rot=(90, 0, 0), verts=6)
+        cyl("pommel", 0.038, 0.04, (0, 0.15, 0.0), "rust", root, rot=(90, 0, 0), verts=6)
+        box("charm", (0.015, 0.04, 0.025), (0.03, 0.13, -0.03), "amber", root, emissive=0.8)
+    elif kind == "spear":  # composite head on two and a half metres of mast section
+        cyl("shaft", 0.020, 2.30, (0, -0.55, 0.0), "olive_dk", root, rot=(90, 0, 0), verts=6)
+        taper("head", (0.030, 0.34, 0.055), (0, -1.82, 0.0), "steel_lt", root,
+              top=(0.12, 0.25), bottom=(1.0, 1.0), rot=(90, 0, 0))
+        cyl("collar", 0.030, 0.10, (0, -1.62, 0.0), "rust", root, rot=(90, 0, 0), verts=6)
+        cyl("wrap_a", 0.026, 0.16, (0, 0.10, 0.0), "black", root, rot=(90, 0, 0), verts=6)
+        cyl("wrap_b", 0.026, 0.10, (0, 0.55, 0.0), "black", root, rot=(90, 0, 0), verts=6)
+        box("pennant", (0.005, 0.14, 0.09), (0.0, -1.50, 0.06), "ochre", root)
+    elif kind == "heavy":  # breaker maul — a girder offcut on a pipe haft
+        cyl("haft", 0.026, 1.10, (0, -0.20, 0.0), "steel_dk", root, rot=(90, 0, 0), verts=6)
+        box("head", (0.13, 0.22, 0.15), (0, -0.78, 0.0), "rust", root)
+        box("face", (0.15, 0.05, 0.17), (0, -0.90, 0.0), "steel_lt", root)
+        box("claw", (0.05, 0.12, 0.06), (0, -0.70, 0.13), "steel_dk", root, rot=(35, 0, 0))
+        cyl("wrap", 0.030, 0.20, (0, 0.22, 0.0), "black", root, rot=(90, 0, 0), verts=6)
+        box("charm", (0.02, 0.05, 0.03), (0.04, -0.60, -0.09), "amber", root, emissive=0.6)
+    elif kind == "bow":  # laminated recurve off antenna battens, string and all
+        box("riser", (0.035, 0.055, 0.30), (0, 0.0, 0.0), "olive_dk", root)
+        taper("limb_top", (0.028, 0.045, 0.55), (0, -0.03, 0.40), "beige", root,
+              top=(0.5, 0.6), bottom=(1.0, 1.0), rot=(-12, 0, 0))
+        taper("limb_bot", (0.028, 0.045, 0.55), (0, -0.03, -0.40), "beige", root,
+              top=(1.0, 1.0), bottom=(0.5, 0.6), rot=(12, 0, 0))
+        cyl("string", 0.004, 1.24, (0, 0.10, 0.0), "black", root, verts=4)
+        box("arrow_rest", (0.05, 0.03, 0.02), (0.02, -0.04, 0.03), "rust", root)
+        box("charm", (0.012, 0.03, 0.02), (0, 0.02, -0.14), "amber", root, emissive=0.7)
+    elif kind == "blade":  # the archer's backup — a sharpened bracket, hardly a sword
+        taper("blade", (0.012, 0.30, 0.06), (0, -0.22, 0.01), "steel_lt", root,
+              top=(1.0, 0.3), bottom=(1.0, 1.0))
+        box("guard", (0.06, 0.025, 0.09), (0, -0.05, 0.0), "steel_dk", root)
+        cyl("grip", 0.020, 0.14, (0, 0.04, 0.0), "black", root, rot=(90, 0, 0), verts=6)
+    elif kind == "shield":  # a door of machine plating, boss from a pump housing
+        box("plate", (0.46, 0.045, 0.72), (0, 0, 0), "steel_dk", root)
+        box("plate_patch", (0.20, 0.05, 0.26), (-0.10, -0.005, 0.18), "rust", root)
+        box("plate_patch2", (0.16, 0.05, 0.20), (0.12, -0.005, -0.22), "olive_dk", root)
+        cyl("boss", 0.09, 0.07, (0, -0.045, 0.0), "steel_lt", root, rot=(90, 0, 0), verts=8)
+        box("rim_t", (0.46, 0.05, 0.035), (0, 0, 0.375), "rust", root)
+        box("rim_b", (0.46, 0.05, 0.035), (0, 0, -0.375), "rust", root)
+        box("strap", (0.05, 0.06, 0.30), (0, 0.05, 0.0), "black", root)
+        box("marking", (0.18, 0.005, 0.18), (0.08, -0.052, 0.10), "ochre", root)
+
     export(f"wpn_{kind}")
 
 
@@ -1360,7 +1412,8 @@ def main():
     for f in ("bracket", "trust", "syndic", "commander", "prisoner",
               "scour", "littoral"):
         character(f)
-    for w in ("rifle", "smg", "shotgun", "dmr", "lmg", "relic"):
+    for w in ("rifle", "smg", "shotgun", "dmr", "lmg", "relic",
+              "sword", "spear", "heavy", "bow", "blade", "shield"):
         weapon(w)
     titan()
     titan_plate()

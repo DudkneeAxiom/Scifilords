@@ -1018,6 +1018,54 @@ export const WEAPONS = {
     range: 120, recoil: 1.1, auto: true, price: 0, pierce: true,
     note: 'Pre-charter. No maker mark, no serial, and the cell has never needed filling.',
   },
+
+  // ------------------------------------------------------------------------
+  // The melee era. Ancient-future arms: everything below is cut, ground or
+  // laminated out of the old world's leavings, and nothing below burns a
+  // cartridge. Gun-era fields are kept where the engine still reads them
+  // (rpm = swings/volleys per minute → cooldown; range = reach, which the
+  // AI standoff band happens to read correctly; mag 999 so reload never
+  // fires). Melee-only fields: melee/bow flags, reach, arc, stagger weight,
+  // shieldMul (damage vs shield HP), brace/inside (spears), flight/dmgFar
+  // (bows).
+  // ------------------------------------------------------------------------
+  sword: {
+    id: 'sword', name: 'Plate Sword', abbr: 'SWD', model: 'wpn_sword', melee: true,
+    damage: 26, reach: 2.2, arc: 1.6, stagger: 1, shieldMul: 1,
+    rpm: 109, mag: 999, reload: 0, spread: 0, adsSpread: 0, range: 2.2,
+    recoil: 0, auto: false, price: 220,
+    note: 'A metre of hull plate with an edge ground on. The charter stamp is still legible near the guard.',
+  },
+  spear: {
+    id: 'spear', name: 'Mast Spear', abbr: 'SPR', model: 'wpn_spear', melee: true,
+    damage: 24, reach: 3.6, arc: 0.7, stagger: 1, shieldMul: 1,
+    brace: 2.0, insideMin: 1.2, insideMul: 0.6,
+    rpm: 86, mag: 999, reload: 0, spread: 0, adsSpread: 0, range: 3.6,
+    recoil: 0, auto: false, price: 190,
+    note: 'A composite head on a mast section. Held in a line it is a wall; let someone inside the point and it is a walking stick.',
+  },
+  heavy: {
+    id: 'heavy', name: 'Breaker Maul', abbr: 'MAUL', model: 'wpn_heavy', melee: true,
+    damage: 48, reach: 2.6, arc: 1.9, stagger: 2, shieldMul: 3, noBlockWindup: true,
+    rpm: 55, mag: 999, reload: 0, spread: 0, adsSpread: 0, range: 2.6,
+    recoil: 0, auto: false, price: 340,
+    note: 'A girder offcut on a pipe haft. Shields are a suggestion it declines.',
+  },
+  bow: {
+    id: 'bow', name: 'Batten Bow', abbr: 'BOW', model: 'wpn_bow', bow: true,
+    damage: 30, dmgFar: 16, reach: 1.2, arc: 0, stagger: 0, shieldMul: 0.07,
+    flight: 28, volley: 4.0,
+    rpm: 15, mag: 999, reload: 0, spread: 0.008, adsSpread: 0.004, range: 60,
+    recoil: 0, auto: false, price: 300,
+    note: 'Laminated antenna battens, drawn deliberate. The arrows come back off the field, mostly.',
+  },
+  blade: {
+    id: 'blade', name: 'Bracket Blade', abbr: 'BLD', model: 'wpn_blade', melee: true,
+    damage: 14, reach: 1.6, arc: 1.4, stagger: 0, shieldMul: 0.5,
+    rpm: 130, mag: 999, reload: 0, spread: 0, adsSpread: 0, range: 1.6,
+    recoil: 0, auto: false, price: 60,
+    note: 'A sharpened shelf bracket. What an archer holds when the day has gone badly.',
+  },
 };
 
 // --------------------------------------------------------------------------
@@ -1139,6 +1187,17 @@ export const KIT = {
     id: 'stim', name: 'Trauma Stim', abbr: 'STM', price: 300,
     desc: 'Bleeds out far more slowly, and gets up with more left.',
     mods: { bleedMul: 2.4, hp: 8 },
+  },
+  shield: {
+    id: 'shield', name: 'Plate Shield', abbr: 'SHD', price: 180,
+    desc: 'A door of machine plating with a pump-housing boss. Carried on the off arm; '
+      + 'stops arrows dead and turns a sword, until it does not.',
+    // Held item, not armour: blockArc is the protected frontage in radians,
+    // shieldHp the plate's own pool (melee dmg/2 per hit, arrows a scratch,
+    // a maul three times its weight). Breaks visibly and is gone for the
+    // rest of the field.
+    shield: true, shieldHp: 120, blockArc: 2.1,
+    mods: { speed: -0.04 },
   },
   lightweight: {
     id: 'lightweight', name: 'Stripped Webbing', abbr: 'LGT', price: 190,

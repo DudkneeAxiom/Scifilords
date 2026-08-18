@@ -981,6 +981,88 @@ one town; `disguisedAt(S, otherTown)` is false.
 
 ---
 
+## THE COMBAT OVERHAUL (directive of day 2026-08-18 — supersedes gun combat)
+
+The user has retired the shooter. Kettle Reach becomes: build an army on
+the map, then personally lead it from inside formation battles — swords,
+spears, bows and shields forged from salvage. Ancient-future warfare in
+the same low-poly retro world. Full directive in the conversation; the
+memory file `scifilords-combat-overhaul` has the priority order. Rules
+that bind every phase: player is ONE grounded soldier (not a floating
+RTS camera, not a superhero); formations must actually hold spacing (no
+cosmetic formations, no blob); campaign army = battlefield army;
+casualties/experience persist; NOT generic medieval fantasy.
+
+### Design contract (build against this)
+
+WEAPON CLASSES (`MELEE`/`BOWS` tables in data.js, replacing gun stats):
+- sword: reach 2.2, swing 0.55s, dmg 26, versatile, pairs with shield.
+- spear: reach 3.6, thrust 0.7s, dmg 24, +brace vs chargers (2x dmg to
+  a target moving toward the wielder above walk speed), -40% dmg when
+  target inside 1.2m ("inside the reach").
+- heavy (breaker maul / cut-down girder axe): reach 2.6, swing 1.1s,
+  dmg 48, shield-shred (x3 vs shield HP), wielder cannot block during
+  windup.
+- bow: projectile with gravity arc, flight ~28 m/s, dmg 30 falling to
+  16 at range, volley cadence ~4s aimed; useless in melee (switch to
+  short blade dmg 14).
+- shield: held item, not a weapon: block arc 120°, shield HP 120
+  (arrows 8/hit, melee weapon dmg/2, heavy x3); breaks visibly.
+
+PLAYER MELEE: LMB swing (hold to feint is OUT — keep simple), direction
+from mouse movement at swing start (overhead/left/right/thrust — 4-way,
+falls back to auto if unreadable), RMB block (directional match not
+required v1 — timed block: active 0.6s, 0.3s recovery), F kick (breaks
+a block, 1.2m), sprint drains a short stamina bar that also gates
+consecutive swings (3 before slow).
+
+RESOLUTION: melee hit = arc sweep test at swing apex (90° arc, weapon
+reach, nearest valid target); no hitscan. Damage through armour uses
+the existing armour slots (they're environmental-suit plates already —
+they stay). Stagger: hit while swinging cancels the swing (higher
+weight wins ties).
+
+FORMATION MODEL: three standing groups — INFANTRY (sword+shield),
+SPEARS, RANGED — each with a formation shape (line 1-rank, wall
+2-rank tight, loose 2.5m scatter) generating SLOTS; soldiers steer to
+their slot via existing nav, fight from it, and RE-SEEK it when
+displaced >3m and not engaged. Commands (keys 1/2/3/4 select ALL/INF/
+SPEAR/RANGED, then): F follow, MMB-click move-there (existing ground
+marker), H hold, C charge, V advance (walk forward facing), B fall
+back, plus per-group toggles: fire-at-will/hold-fire (ranged), wall/
+line/loose. Reuse the entire existing order pipeline + RTS layer;
+the RTS cam stays as the optional command view.
+
+BATTLE ARC: approach (enemy AI walks its line into position, no
+contact) → volleys → engagement → break (morale) → rout (losers flee
+to map edge; victory declared when cohesion < threshold, no hunting).
+MORALE per soldier: base by rank, -casualties nearby, -routing allies,
++commander within 20m, collapse = rout state. Veterans resist.
+
+ENEMY COMMANDER: one brain per side reading composition: ranged
+superiority → hold ridge and force approach; melee-heavy → advance
+under shields; player archers exposed → detach fast group at them;
+losing badly → withdraw/rout.
+
+REINFORCEMENTS: existing wave streaming stays but arrives from the
+army's map edge in formation, never center-spawned.
+
+KEEP: nav/A* + verticality, instancing (batchCharacter), entity/roster
+persistence, applyMissionResult, capture, RTS camera, THE APPROACHES-
+scale fields (regrade for ridges/chokes), palettes, HUD shell.
+DISAPPEAR: hitscan, recoil/ADS, ammo/reload, suppression-as-shooting,
+cover-seeking-to-shoot, gun audio, crosshair; guns keep existing only
+as rare relic props, not combat.
+
+### Phase status
+
+1. INSPECT — two Explore agents mapped mission.js combat + data
+   plumbing (reports land in this session; fold conclusions here).
+2. PLAYER MELEE — next.
+3-10. per task list #55-#64.
+
+---
+
 ## The summary artifact
 
 <https://claude.ai/code/artifact/9070868b-f320-47b9-818c-2e2cfa32745d>

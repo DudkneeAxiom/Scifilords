@@ -19,6 +19,7 @@ export const MODELS = [
   'titan', 'titan_plate', 'titan_core',
   'rampart', 'gate',
   'wpn_rifle', 'wpn_smg', 'wpn_shotgun', 'wpn_dmr', 'wpn_lmg', 'wpn_relic',
+  'wpn_sword', 'wpn_spear', 'wpn_heavy', 'wpn_bow', 'wpn_blade', 'wpn_shield',
   'bunker', 'hab_block', 'town_house', 'town_house_2', 'town_hall',
   'market_stall', 'town_wall', 'gate_tower', 'town_arch',
   'watchtower', 'comms_mast', 'radar_dish', 'container',

@@ -1,0 +1,110 @@
+# THE COMBAT OVERHAUL — working reference
+
+Guns out, Bannerlord in. The design contract lives in HANDOFF.md ("THE
+COMBAT OVERHAUL" section); this file is the code map that drives the
+rewrite. Line numbers surveyed at commit b71f96c — they will drift as the
+rewrite lands, but the names won't.
+
+## The shooting pipeline (what dies)
+
+One muzzle: `fire()` mission.js:2889-2969 — gates (cooldown/reload/
+arriving), ammo decrement, `e.char.kick()`, player recoil pre-kick,
+spread formula, per-pellet `rayHit` hitscan, `spawnTracer`,
+`applyDamage`, `applySuppression`, muzzle flash, `Audio.shot`,
+`raiseAlarm`, post-shot recoil. Player trigger at :3498-3509; AI
+trigger `aiShoot` :4435-4522 (reaction → ranging-in → burst →
+spread → burstRest). Reload :2876-2881 + ticks :3489/:4074.
+Suppression :2976-3010 (+decay :4073). Cover-shooter: `coverPref`,
+`Level.findCover` re-picks :4176-4182/:4318-4330, `coverPenalty`
+:4417-4433, player cover-snap :582-656.
+
+## REMAIN (engine — build on it)
+
+- Movement: `moveToward` :4573-4697 (A*, corners, avoidance,
+  separation-at-1.55m, elevation stepper), `faceMotion`, `updateStance`
+  (crouch/gravity/landing), `tryJump`, nav.js, level.js surfaces.
+- Bodies: `spawnEntity` :698-765, `buildSquad` :828-922, `spawnEnemy`
+  :959-981, `bodyCapsule` :76-84 (becomes the melee reach volume).
+- Rendering: `batchCharacter`/`updateCharBatch` :781-826, `syncVisuals`
+  LOD :5216-5337, `syncRings`.
+- Waves: FIELD_CAP :42, `deployEnemyWave` :1305, `updateSkirmishWaves`
+  :1331-1363, allied waves :1287-1302, `reinforce`/`spawnPointFor`.
+- Command plumbing: `ORDERS` :1890-1915, wheel :1917-1977, `issueOrder`
+  :1997, selection/control groups :2518-2564/:2284-2306, full RTS layer
+  :2160-2498.
+- `rayHit` :2821-2874 stays — it is load-bearing for camera collision
+  (:5157) and RTS picking, NOT just bullets.
+- `applyDamage` :3099-3170 shell (lastCombat stamp, flinch, hurtFrom,
+  retaliation), `downEntity`/bleed :3236-3270, loot.
+- HUD envelope `buildHud` :5356-5493 + ui.js consumers; camera rig
+  :5111-5214; audio module + `relPos`.
+
+## CHANGE (keep the seam, replace the interior)
+
+- `acquire` :4088-4103 — add engagement pairing (who fights whom).
+- `updateEnemy` engage :4167-4200 — standoff band `w.range*0.35..0.8`
+  becomes close-and-strike (reach-valued range makes this nearly free).
+- `updateFriendly` :4203-4348 — order skeleton stays; charge behaviour
+  :4236-4257 becomes the default engaged state.
+- `aiShoot` :4435-4522 — delete ballistics, KEEP the pacing shape:
+  reaction/windup/recovery map onto swing timing.
+- `FORMATIONS` :106-135 + slot math :4305-4314 — line becomes primary,
+  spacing tightens (current line gap 2.4m is too wide for a wall).
+- `fire()` — signature/gating right, interior replaced by `strike()`
+  (arc sweep at apex over `bodyCapsule`s within reach).
+- `tuck` :4054-4069 → guard/brace posture. `actionOf` :5340 verb table.
+- WEAPONS schema: melee fields added (done — see data.js melee block).
+- models.js pose :522-562 — authored for a shouldered rifle; needs
+  carry/swing poses per class (polearm, bow draw, shield arm).
+
+## DISAPPEAR
+
+Hitscan interior of fire() :2929-2953; recoil (:2905-2911, :2961-2967);
+ADS (:3429, :2932, :3444, FOV pose :5119-5121); ammo/reload everywhere
+(:2876-2881, :718-719, :3489, :4074, HUD ui.js:362-366); suppression
+system entire (:2976-3010, :2567-2582, :4383-4405, vignette/bloom);
+cover-shooter behaviour (:730, :4176, :4318, :4417, :2649, :582-656);
+ranging-in/burst discipline (:59-60, :4459-4476, :4499-4502); tracers/
+muzzle flash :3276-3305; crosshair hit-tick; `Audio.shot/dryFire/reload`
+call sites; `char.kick()` recoil anim; weapon-range movement decisions.
+
+Gotcha: `charge` advertises key R (:1896) but R is bound to reload
+(:2022) — the key frees up when reload dies.
+
+## Data plumbing (from the data survey)
+
+- WEAPONS consumed fields: rpm (cooldown 60/rpm), pellets, spread/
+  adsSpread, range (AI standoff + ray length), damage, id (audio), mag/
+  reload/auto, model, price, abbr/name. Dead: scope, pierce;
+  `effective().reloadMul` computed but never consumed (quickdraw perk
+  is currently a no-op — dies with reload anyway).
+- ROLES: six ids are load-bearing across saves, TROOP_PATHS, hireCost
+  map (state.js:3459 HARDCODED), wageOf map (state.js:4110 HARDCODED),
+  garrison arrays (14 sites), perk affinities, ORIGINS[*].roles.
+  THE REMAP KEEPS THE IDS and changes meaning:
+  rifleman→Swordsman(sword) · breacher→Heavy(heavy) ·
+  marksman→Archer(bow) · gunner→Spearman(spear) ·
+  medic→Field Medic(blade) · signals→Signalist(blade).
+  Flip happens WITH the melee AI, not before.
+- effective() stat keys that stay meaningful: accuracy (=melee skill),
+  aggression, speed, sight, luck, closeDmg (promotes into core),
+  interactSpeed, bleedMul, maxHp. Die with their systems: suppressPower/
+  Resist, rangeAcc, burstBonus/Rest, magMul, reloadMul, cover/coverRange
+  (repurpose cover→guard discipline later).
+- Weapon mesh attach: `makeCharacter` models.js:419-423 → rig.hand_r;
+  shield needs hand_l/forearm attach (new). Preview ui.js:1309-1313
+  ignores lineage (known divergence).
+- New-weapon checklist (18 steps) validated: data entry → MODELS
+  manifest → build.py branch → role weapon → hireCost/wageOf maps →
+  audio voice → fire/AI branches → HUD → tests.
+
+## Asset state
+
+wpn_sword / wpn_spear / wpn_heavy / wpn_bow / wpn_blade / wpn_shield
+exported (build.py weapon() branches, -Y forward like the guns).
+WEAPONS entries live in data.js with compat fields (rpm/range/mag keep
+old readers working; melee/bow flags + reach/arc/stagger/shieldMul/
+brace/inside/flight/volley are the new schema). Shield is a KIT entry
+(id 'shield', shieldHp 120, blockArc 2.1) riding the existing gear
+slot. Nothing points at any of it yet — the flip comes with the
+runtime.
