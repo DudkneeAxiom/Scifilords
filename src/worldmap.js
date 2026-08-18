@@ -1048,7 +1048,52 @@ export class WorldMap {
     State.advanceTime(S, hours);
 
     this.syncParties();
+    this.syncEvents();
     this.checkProximity();
+  }
+
+  /**
+   * Battles and battlefields, drawn where they are happening. A fight is a
+   * pulsing ring you can see across the basin and steer toward or around; a
+   * finished one leaves wreckage on the ground for a few days. The world
+   * showing its own events is the entire difference between a map you watch
+   * and a list you read.
+   */
+  syncEvents() {
+    this.eventMeshes = this.eventMeshes || new Map();
+    const seen = new Set();
+    const S = this.S;
+    for (const b of S.mapBattles || []) {
+      seen.add(b.id);
+      let m = this.eventMeshes.get(b.id);
+      if (!m) {
+        m = this.makeRing(0xd8434f, 30);
+        m.material.opacity = 0.55;
+        this.scene.add(m);
+        this.eventMeshes.set(b.id, m);
+      }
+      m.position.set(b.x, regionHeight(b.x, b.z) + 1.4, b.z);
+      m.material.opacity = 0.35 + Math.sin(performance.now() * 0.004) * 0.2;
+    }
+    for (const s of S.mapSites || []) {
+      seen.add(s.id);
+      let m = this.eventMeshes.get(s.id);
+      if (!m) {
+        m = Models.get('truck_wreck');
+        m.scale.setScalar(6);
+        m.rotation.y = (s.x * 7 + s.z) % 6.28;
+        m.traverse((o) => { if (o.isMesh) { o.castShadow = false; o.receiveShadow = false; } });
+        this.scene.add(m);
+        this.eventMeshes.set(s.id, m);
+      }
+      m.position.set(s.x, regionHeight(s.x, s.z), s.z);
+    }
+    for (const [id, m] of this.eventMeshes) {
+      if (!seen.has(id)) {
+        this.scene.remove(m);
+        this.eventMeshes.delete(id);
+      }
+    }
   }
 
   syncParties() {

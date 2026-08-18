@@ -821,7 +821,7 @@ export function advanceTime(S, hours) {
     onNewDay(S, rng((S.seed + S.day * 7919) | 0));
   }
   moveParties(S, hours, r);
-  tickPartyBattles(S, r);
+  tickPartyBattles(S, hours, r);
 }
 
 function onNewDay(S, r) {
@@ -937,11 +937,191 @@ function maintainParties(S, r) {
       spawnParty(S, r, partyTypeFor(r, reg), pick(r, homes).id);
     } else if (here.length > want + 2) {
       // Trim the one furthest from the player so nothing vanishes on screen.
-      const victim = here.slice().sort((a, b) =>
-        Math.hypot(b.x - S.pos.x, b.z - S.pos.z) - Math.hypot(a.x - S.pos.x, a.z - S.pos.z))[0];
+      // Never anyone mid-battle or marching to one: culling a combatant makes
+      // the fight's other half win by garbage collection.
+      const victim = here.slice().filter((p) => !p.battle && !p.reinforce)
+        .sort((a, b) =>
+          Math.hypot(b.x - S.pos.x, b.z - S.pos.z) - Math.hypot(a.x - S.pos.x, a.z - S.pos.z))[0];
       if (victim) S.parties = S.parties.filter((p) => p !== victim);
     }
   }
+}
+
+// --------------------------------------------------------------------------
+// Parties fighting each other
+//
+// The map's bands used to be blind to everything except the player: a raider
+// walked past a Trust patrol as if neither existed, which quietly said the
+// whole world was scenery arranged around one company. Now hostile parties
+// that meet FIGHT — slowly, in world time, so a battle is an event on the map
+// with a before (reinforcements marching toward it), a during (the player can
+// arrive, watch, or pick a side), and an after (a battlefield you can pick
+// over). Nobody waits for the player.
+// --------------------------------------------------------------------------
+
+const BATTLE_RANGE = 26;        // close enough that a meeting becomes a fight
+const REINFORCE_RANGE = 300;    // how far the sound of one carries
+const BATTLE_BREAK = 0.4;       // a party routs below this share of its start
+
+/** May this party be drawn into a field battle at all? */
+function canFieldBattle(p) {
+  const def = PARTY_TIERS[p.kind] || {};
+  // Hideouts do not march, walkers are a problem for a different scale of
+  // answer, the player's caravans have their own being-taken rule, and
+  // empty-handed refugees have nothing to stand and fight with.
+  return !def.static && !def.boss && !p.owner && (p.strength || 0) > 0;
+}
+
+function partyPower(p) {
+  return Math.max(1, p.strength) * (p.quality || 0.7)
+    * (1 + (p.armour || 0) * 0.25 + (p.vehicles || 0) * 0.15);
+}
+
+function sideOf(battle, p) {
+  return battle.a.includes(p.id) ? 'a' : battle.b.includes(p.id) ? 'b' : null;
+}
+
+function joinBattle(S, battle, p, side) {
+  battle[side].push(p.id);
+  battle.starts[p.id] = p.strength;
+  p.battle = battle.id;
+  p.reinforce = null;
+  p.chasing = false;
+  p.target = null;
+}
+
+/** Every member party of one side, still alive and still in it. */
+function sideParties(S, battle, side) {
+  return battle[side].map((id) => S.parties.find((p) => p.id === id))
+    .filter((p) => p && p.battle === battle.id);
+}
+
+function routParty(S, battle, p) {
+  p.battle = null;
+  p.routed = 20;                 // hours of running before anything else matters
+  p.routFrom = { x: battle.x, z: battle.z };
+  p.target = null;
+}
+
+function tickMapBattles(S, hours, r) {
+  S.mapBattles = S.mapBattles || [];
+  S.mapSites = S.mapSites || [];
+  const destroyed = new Set();
+
+  // New meetings. O(n^2) over a few dozen parties, once per world tick.
+  for (let i = 0; i < S.parties.length; i++) {
+    for (let j = i + 1; j < S.parties.length; j++) {
+      const a = S.parties[i], b = S.parties[j];
+      if (a.battle || b.battle || !canFieldBattle(a) || !canFieldBattle(b)) continue;
+      if (!partiesHostile(S, a, b)) continue;
+      if (Math.hypot(a.x - b.x, a.z - b.z) > BATTLE_RANGE) continue;
+      const battle = {
+        id: uid('btl'), x: (a.x + b.x) / 2, z: (a.z + b.z) / 2,
+        a: [], b: [], starts: {}, hours: 0,
+      };
+      joinBattle(S, battle, a, 'a');
+      joinBattle(S, battle, b, 'b');
+      S.mapBattles.push(battle);
+      // Only worth telling the player about if they could plausibly have
+      // seen or heard it — a feed of distant skirmishes is noise, not news.
+      if (Math.hypot(battle.x - S.pos.x, battle.z - S.pos.z) < 420) {
+        pushLog(S, `${a.name} and ${b.name} are fighting near ${nearestLocName(S, battle.x, battle.z)}.`);
+      }
+    }
+  }
+
+  // Reinforcement: anyone hostile to one side of a live battle marches on it.
+  for (const p of S.parties) {
+    if (p.battle || p.reinforce || p.routed || p.owner) continue;
+    if ((PARTY_TIERS[p.kind] || {}).static || (p.strength || 0) <= 0) continue;
+    for (const battle of S.mapBattles) {
+      if (Math.hypot(p.x - battle.x, p.z - battle.z) > REINFORCE_RANGE) continue;
+      const aP = sideParties(S, battle, 'a')[0];
+      const bP = sideParties(S, battle, 'b')[0];
+      if (!aP || !bP) continue;
+      if (partiesHostile(S, p, aP) !== partiesHostile(S, p, bP)) {
+        p.reinforce = battle.id;
+        break;
+      }
+    }
+  }
+
+  // The fights themselves: attrition in world time, deliberately slow enough
+  // that arriving at one mid-way is a real possibility.
+  for (const battle of S.mapBattles) {
+    const aSide = sideParties(S, battle, 'a');
+    const bSide = sideParties(S, battle, 'b');
+    if (!aSide.length || !bSide.length) continue;   // settled by the filter below
+    battle.hours += hours;
+    const powA = aSide.reduce((t, p) => t + partyPower(p), 0);
+    const powB = bSide.reduce((t, p) => t + partyPower(p), 0);
+    // Each side's losses scale with the other's power. The divisor sets the
+    // pace: a ten-a-side fight runs four to eight hours — long enough that
+    // marching to the sound of it is a real option, for everyone.
+    const hurt = (side, enemyPow) => {
+      for (const p of side) {
+        const loss = (enemyPow / 16) * hours * (0.6 + r() * 0.8)
+          / Math.max(1, side.length);
+        p.strength = Math.max(0, p.strength - loss);
+        if (p.strength <= 1 || p.strength <= battle.starts[p.id] * BATTLE_BREAK) {
+          if (p.strength <= 2) {
+            // Broken outright. Their lord is unhorsed by somebody else's hand,
+            // and what is left of them takes to the road on foot.
+            unhorseLord(S, r, p, { byPlayer: false });
+            scatterSurvivors(S, r, p);
+            p.battle = null;
+            destroyed.add(p.id);
+          } else {
+            routParty(S, battle, p);
+            p.strength = Math.max(1, Math.round(p.strength));
+          }
+        }
+      }
+    };
+    hurt(aSide, powB);
+    hurt(bSide, powA);
+  }
+  if (destroyed.size) S.parties = S.parties.filter((p) => !destroyed.has(p.id));
+  S.mapBattles = S.mapBattles.filter((btl) => {
+    const aAlive = sideParties(S, btl, 'a');
+    const bAlive = sideParties(S, btl, 'b');
+    if (aAlive.length && bAlive.length) return true;
+    // Over: whoever still stands holds the field, and the field remembers.
+    finishBattle(S, btl, aAlive.length ? aAlive : bAlive, r);
+    return false;
+  });
+
+  // Battlefields fade: salvage is picked over by other hands than yours.
+  S.mapSites = S.mapSites.filter((site) => S.day < site.expiresDay);
+}
+
+function finishBattle(S, battle, winners, r) {
+  for (const p of winners) {
+    p.battle = null;
+    p.strength = Math.max(1, Math.round(p.strength));
+    const lord = lordOfParty(S, p);
+    if (lord) lord.wins++;
+  }
+  const winName = winners[0]?.name || 'Nobody';
+  pushLog(S, `${winName} holds the field near ${nearestLocName(S, battle.x, battle.z)}.`);
+  // What a fight leaves behind: wreckage worth stopping for, for a few days.
+  S.mapSites.push({
+    id: uid('site'), kind: 'battlefield', x: battle.x, z: battle.z,
+    day: S.day, expiresDay: S.day + 3 + Math.floor(r() * 3),
+    loot: {
+      credits: 40 + Math.floor(r() * 160),
+      salvage: 1 + Math.floor(r() * 3),
+    },
+  });
+}
+
+function nearestLocName(S, x, z) {
+  let best = null, bd = Infinity;
+  for (const l of LOCATIONS) {
+    const d = Math.hypot(l.x - x, l.z - z);
+    if (d < bd) { bd = d; best = l; }
+  }
+  return best ? best.name : 'the open Reach';
 }
 
 // How far off a band notices the company, and how fast it moves once it has.
@@ -1062,6 +1242,45 @@ function moveParties(S, hours, r) {
   for (const p of S.parties) {
     // A hideout is a place, not a patrol.
     if (PARTY_TIERS[p.kind]?.static) continue;
+
+    // Standing and fighting: a battle holds its combatants where they met.
+    if (p.battle) continue;
+
+    // Routed: nothing matters except away. Faster than a patrol amble, for
+    // long enough that the winner keeps the field.
+    if (p.routed > 0) {
+      const ax = p.x - (p.routFrom?.x ?? p.x), az = p.z - (p.routFrom?.z ?? p.z);
+      const ad = Math.hypot(ax, az) || 1;
+      const step = Math.max(p.speed, 30) * 1.4 * hours * travelFactor(p.x, p.z);
+      const to = clampToRegion(p.x + (ax / ad) * step, p.z + (az / ad) * step);
+      p.x = to.x; p.z = to.z;
+      p.heading = Math.atan2(ax, az);
+      p.routed -= hours;
+      if (p.routed <= 0) { p.routed = 0; p.target = null; }
+      continue;
+    }
+
+    // Marching to the sound: a reinforcing party closes on its battle and
+    // joins whichever side it is not hostile to.
+    if (p.reinforce) {
+      const battle = (S.mapBattles || []).find((x) => x.id === p.reinforce);
+      if (!battle) { p.reinforce = null; } else {
+        const dx = battle.x - p.x, dz = battle.z - p.z;
+        const d = Math.hypot(dx, dz) || 1;
+        if (d < 26) {
+          const aP = battle.a.map((id) => S.parties.find((q) => q.id === id))
+            .find((q) => q && q.battle === battle.id);
+          if (aP) joinBattle(S, battle, p, partiesHostile(S, p, aP) ? 'b' : 'a');
+          else p.reinforce = null;
+        } else {
+          const step = Math.min(d, Math.max(p.speed, 26) * 1.2 * hours * travelFactor(p.x, p.z));
+          p.x += (dx / d) * step;
+          p.z += (dz / d) * step;
+          p.heading = Math.atan2(dx, dz);
+        }
+        continue;
+      }
+    }
 
     // An army on the march has somewhere to be.
     //
@@ -3466,42 +3685,10 @@ function partiesHostile(S, a, b) {
   return Dip.relationBetween(S, fa, fb) === 'war';
 }
 
-function tickPartyBattles(S, r) {
-  const list = S.parties.filter((p) => !PARTY_TIERS[p.kind]?.static);
-  const dead = new Set();
-  for (let i = 0; i < list.length; i++) {
-    const a = list[i];
-    if (dead.has(a.id)) continue;
-    for (let j = i + 1; j < list.length; j++) {
-      const b = list[j];
-      if (dead.has(b.id) || !partiesHostile(S, a, b)) continue;
-      if (Math.hypot(a.x - b.x, a.z - b.z) > 22) continue;
-
-      const pa = Math.max(1, a.strength) * (a.quality || 0.6);
-      const pb = Math.max(1, b.strength) * (b.quality || 0.6);
-      const aWins = r() < pa / (pa + pb);
-      const win = aWins ? a : b, lose = aWins ? b : a;
-      dead.add(lose.id);
-      // Somebody was leading that. They are not on the field any more, but they
-      // are not gone either — byPlayer is false because this was two other
-      // powers settling something between themselves.
-      unhorseLord(S, r, lose, { byPlayer: false });
-      const winner = lordOfParty(S, win);
-      if (winner) winner.wins++;
-      // And what is left of them takes to the road.
-      scatterSurvivors(S, r, lose);
-      // Winning costs. A band that fights its way across the map arrives
-      // somewhere worth fighting, rather than snowballing to infinity.
-      win.strength = Math.max(1, Math.round(win.strength * range(r, 0.55, 0.85)));
-      // Only worth telling the player about if they could plausibly have seen
-      // it. A feed of distant skirmishes is noise, not news.
-      if (Math.hypot(win.x - S.pos.x, win.z - S.pos.z) < 320) {
-        pushLog(S, `${win.name} broke ${lose.name} on the road.`);
-      }
-      break;                                  // one fight per band per tick
-    }
-  }
-  if (dead.size) S.parties = S.parties.filter((p) => !dead.has(p.id));
+// Superseded: party-vs-party fighting is durational now — see tickMapBattles
+// above, which advanceTime drives through this name.
+function tickPartyBattles(S, hours, r) {
+  tickMapBattles(S, hours, r);
 }
 
 /**
