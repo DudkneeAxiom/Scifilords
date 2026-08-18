@@ -5776,3 +5776,82 @@ test('a defense summons holds the town and breaks the column', async ({ page }) 
   expect(r.contractGone).toBe(true);
   expect(r.repGain).toBeGreaterThanOrEqual(5);
 });
+
+test('verticality: the player mounts a crate, and ordered troops climb the wall walk', async ({ page }) => {
+  await boot(page);
+  await newCampaign(page);
+  await page.evaluate(async () => {
+    const { Mission } = await import('/src/mission.js');
+    const UI = await import('/src/ui.js');
+    const G = window.KR;
+    const S = G.campaign;
+    S.renown = 4000;
+    G.mission?.dispose();
+    G.world?.dispose(); G.world = null;
+    document.getElementById('viewport').innerHTML = '';
+    UI.show('hud');
+    G.mission = new Mission({
+      campaign: S,
+      spec: { type: 'siege', site: 'bastion', layout: 'bastion', siteName: 'V',
+        enemyFaction: 'syndic' },
+      squad: S.roster.slice(0, 4),
+      container: document.getElementById('viewport'),
+      onHud: () => {}, onToast: () => {}, onIntro: () => {}, onWheel: () => {}, onEnd: () => {},
+    });
+    await G.mission.start();
+    G.mission.paused = true;
+    if (G.mission.intro) { G.mission.intro.active = false; G.mission.time = G.mission.intro.graceUntil + 0.1; }
+  });
+  await page.waitForFunction(() => window.KR.mission?.player, null, { timeout: 40000 });
+  const r = await page.evaluate(async () => {
+    const Level = await import('/src/level.js');
+    const m = window.KR.mission;
+    const p = m.player;
+    // ---- the player mounts a crate --------------------------------------
+    // A synthetic crate two metres ahead, walk-flagged like every real one.
+    const ground = Level.heightAt(p.x, p.z);
+    const crate = { x: p.x, z: p.z - 2.2, hw: 0.8, hd: 0.8, h: 0.94,
+      y: ground, walk: true };
+    m.level.obstacles.push(crate);
+    // Face it and take it at a run: a few strides for speed, then the jump.
+    // Movement is camera-relative — with camYaw 0, W walks toward -z. The
+    // mission STAYS paused so the live loop cannot double-step the frames
+    // we drive by hand; tryJump alone needs the flag dropped for a beat.
+    m.camYaw = 0;
+    m.hadLock = true;
+    m.keys.add('w');
+    for (let i = 0; i < 8; i++) m.updatePlayer(1 / 60);
+    m.paused = false;
+    m.tryJump();
+    m.paused = true;
+    // Step until they LAND ON the crate — with W held past that they simply
+    // walk across and off the far side, which the first version of this
+    // test measured as a failed jump.
+    let landedUp = false;
+    for (let i = 0; i < 100 && !landedUp; i++) {
+      m.updatePlayer(1 / 60);
+      landedUp = m.grounded && p.elev > 0.8;
+    }
+    m.keys.delete('w');
+    const mounted = { elev: p.elev, overCrate: Math.hypot(p.x - crate.x, p.z - crate.z) < 1.6 };
+    // ---- ordered troops climb the wall walk ------------------------------
+    // The walk decking sits at 4.9 on the wall line; the stairs are inside.
+    const s = m.squad.find((q) => !q.dead && !q.militia);
+    s.x = 0; s.z = -30; s.elev = 0;         // inside the compound, at the foot
+    const dest = { x: -18, z: -12.2 };      // on the walk, defended face
+    s.order = 'move';
+    s.orderPoint = dest;
+    s.forceTarget = null;
+    for (let i = 0; i < 2400; i++) m.updateFriendly(1 / 60, s);
+    return {
+      mounted,
+      walker: { elev: s.elev || 0, dist: Math.hypot(s.x - dest.x, s.z - dest.z) },
+    };
+  });
+  // The jump clears the crate and the top is a place to stand.
+  expect(r.mounted.overCrate).toBe(true);
+  expect(r.mounted.elev).toBeGreaterThan(0.8);
+  // The squaddie took the stairs and stands ON the wall, not at its foot.
+  expect(r.walker.dist).toBeLessThan(4);
+  expect(r.walker.elev).toBeGreaterThan(4);
+});

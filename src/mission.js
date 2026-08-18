@@ -2626,7 +2626,11 @@ export class Mission {
     if (!this.grounded || this.over || this.paused || this.intro?.active) return;
     if (this.player?.down) return;
     if (this.crouch > 0.4) { this.crouchHeld = false; return; }  // stand up first
-    this.vy = 6.1;
+    // 7.3 puts the apex at ~1.2m (v²/2g), which clears a 0.94m crate with a
+    // landing margin. 6.1 peaked at 0.85 — visibly ABOVE a crate and still
+    // unable to mount it, which read as the jump being broken rather than
+    // short. Stacked crates are climbed progressively: mount one, jump again.
+    this.vy = 7.3;
     this.grounded = false;
     Audio.uiMove();
   }
@@ -4016,7 +4020,8 @@ export class Mission {
       if (o.down && !o.isPlayer) continue;      // don't keep shooting the downed
       const d = Math.hypot(o.x - e.x, o.z - e.z);
       if (d > bd) continue;
-      if (!Level.hasLOS(this.level.obstacles, e.x, e.z, o.x, o.z, EYE)) continue;
+      if (!Level.hasLOS(this.level.obstacles, e.x, e.z, o.x, o.z,
+        EYE + (e.elev || 0), EYE + (o.elev || 0))) continue;
       best = o; bd = d;
     }
     return best;
@@ -4366,7 +4371,8 @@ export class Mission {
       e.aimFor = Math.max(0, (e.aimFor || 0) - dt * 0.5);
       return;
     }
-    if (!Level.hasLOS(this.level.obstacles, e.x, e.z, t.x, t.z, CHEST + 0.2)) {
+    if (!Level.hasLOS(this.level.obstacles, e.x, e.z, t.x, t.z,
+      CHEST + 0.2 + (e.elev || 0), CHEST + 0.2 + (t.elev || 0))) {
       e.seenFor = Math.max(0, (e.seenFor || 0) - dt * 0.5);
       e.aimFor = Math.max(0, (e.aimFor || 0) - dt * 0.5);
       return;
@@ -4493,6 +4499,32 @@ export class Mission {
     const far = Math.hypot(tx - e.x, tz - e.z);
     if (far < 0.05) { e.moveSpeed = 0; return far; }
 
+    // Stair routing. The nav grid is two-dimensional: it can path UNDER a
+    // wall walk and declare victory at ground level. When the destination
+    // stands well above the mover's feet, the route is the nearest flight
+    // of matching height — foot first, then the head, and the treads carry
+    // the climb through the elevation stepper below.
+    const goalRise = Level.highestSurface(this.level.obstacles, tx, tz)
+      - Level.heightAt(tx, tz);
+    if (goalRise > 1.2 && (e.elev || 0) < goalRise - 1.2
+      && this.level.stairs && this.level.stairs.length) {
+      let st = null, sd = Infinity;
+      for (const s of this.level.stairs) {
+        if (Math.abs(s.top - goalRise) > 2.5) continue;
+        const d0 = Math.hypot(s.fx - e.x, s.fz - e.z);
+        if (d0 < sd) { sd = d0; st = s; }
+      }
+      if (st) {
+        // Already lifted means already climbing: aim at the head, or the
+        // "go to the foot" rule marches them back down the flight they are
+        // halfway up and they saw between the two forever.
+        const climbing = (e.elev || 0) > 0.4
+          || Math.hypot(st.fx - e.x, st.fz - e.z) < 1.4;
+        tx = climbing ? st.tx : st.fx;
+        tz = climbing ? st.tz : st.fz;
+      }
+    }
+
     const needsRepath = !e.path
       || !e.pathGoal
       || Math.hypot(e.pathGoal.x - tx, e.pathGoal.z - tz) > 2.5
@@ -4537,6 +4569,11 @@ export class Mission {
     const probeX = e.x + ux * 1.6, probeZ = e.z + uz * 1.6;
     for (const o of (e.path ? [] : this.level.obstacles)) {
       if ((o.coverH ?? o.h) < 0.6) continue;
+      // Walkable tops are ROUTES: a stair's upper treads read as obstacles
+      // to this probe and deflected climbers sideways off the flight at its
+      // own foot. Whether a given tread is legal THIS step is resolveMove's
+      // call, not the steering's.
+      if (o.walk) continue;
       if (Math.abs(probeX - o.x) < o.hw + 0.7 && Math.abs(probeZ - o.z) < o.hd + 0.7) {
         // Slide around rather than into.
         const nx = -uz, nz = ux;
@@ -4561,11 +4598,24 @@ export class Mission {
     }
 
     const step = Math.min(speed * dt, d);
-    const res = Level.resolveMove(this.level.obstacles, e.x, e.z, e.x + ux * step, e.z + uz * step);
+    // Feet matter: a soldier ON a stair tread may cross the next tread, and
+    // one on a catwalk walks its decking instead of being stopped by it.
+    // Without this every walkable top was a wall and nobody climbed anything.
+    const res = Level.resolveMove(this.level.obstacles, e.x, e.z,
+      e.x + ux * step, e.z + uz * step,
+      Level.heightAt(e.x, e.z) + (e.elev || 0));
     const b = this.level.bounds;
     e.x = clamp(res.x, -b, b);
     e.z = clamp(res.z, -b, b);
     e.moveSpeed = speed;
+    // Vertical follow, the AI's whole stance system: step up onto whatever
+    // walkable top is within a step of the feet, sink back down when the
+    // ground falls away. No jump — troops take the stairs.
+    const terr = Level.heightAt(e.x, e.z);
+    const surf = Level.surfaceAt(this.level.obstacles, e.x, e.z,
+      terr + (e.elev || 0), 0.62) - terr;
+    if (surf > (e.elev || 0) - 0.08) e.elev = surf;
+    else e.elev = Math.max(surf, (e.elev || 0) - dt * 9);
     // Callers treat this as "how far am I from the goal" — not from the next
     // corner, which would make them think they had arrived mid-route.
     return far;

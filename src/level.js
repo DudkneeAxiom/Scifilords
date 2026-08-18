@@ -207,6 +207,10 @@ class Builder {
     // and until this existed only luck kept the random dressing passes out of
     // one — the town's gate arch was open or blocked depending on the seed.
     this.reserved = [];
+    // Every stair flight placed, foot and head, so movement can route a
+    // climb: the nav grid is two-dimensional and cannot know that the only
+    // way ONTO a wall walk is the flight forty metres to its left.
+    this.stairs = [];
   }
 
   /** Reserve open ground: nothing random may be placed inside it. */
@@ -240,6 +244,11 @@ class Builder {
       // The top stays where the art is — the model is drawn from the centre
       // sample, so that is where its roofline sits. Only the underside moves.
       seatObstacle(o, heightAt(x, z) + h * scale);
+      // A crate has a flat standable top and a jump now reaches it: crates
+      // everywhere are climbable, which is what makes stacked boxes a route
+      // instead of scenery. Only crates — a walkable hesco or container top
+      // would turn every lane wall into a footpath.
+      if (model === 'crate') o.walk = true;
       this.obstacles.push(o);
       // Deliberately the AUTHORED height, before `scale`, which is what this
       // has always used. It is not what it looks like: a rock authored at 1.5m
@@ -342,6 +351,12 @@ class Builder {
   steps(x, z, top, dirX, dirZ, width = 2.2) {
     const rise = 0.5;
     const n = Math.max(1, Math.round(top / rise));
+    // The flight's foot (first tread) and head, recorded for stair routing.
+    this.stairs.push({
+      fx: x + dirX, fz: z + dirZ,
+      tx: x + dirX * n, tz: z + dirZ * n,
+      top,
+    });
     for (let i = 1; i <= n; i++) {
       // One metre of run per half-metre of rise. Kept tight on purpose: a
       // shallower flight has to start so far out that the treads end up
@@ -1360,15 +1375,18 @@ function siteBastion(b) {
   b.prop('gate_tower', 7.6, WALL_Z, 0, BOX.gate_tower, 1);
   b.prop('watchtower', -24, WALL_Z - 3, 0, BOX.watchtower, 1);
   b.prop('watchtower', 24, WALL_Z - 3, 0, BOX.watchtower, 1);
-  // The wall walk, and stairs up from INSIDE only. 4.9 puts a standing eye
-  // above the 5.3 parapet cap — see the fort for the whole argument.
+  // The wall walk, and stairs up from INSIDE only — on the DEFENDED face,
+  // which for this map is north of the curtain. The fort's walk sits on its
+  // approach side and copying that here put the garrison's own stairs
+  // outside their own wall. 4.9 puts a standing eye above the 5.3 parapet
+  // cap — see the fort for that half of the argument.
   const WALK = 4.9;
   for (let i = -8; i <= 8; i++) {
     if (i === 0) continue;
-    b.deck('catwalk', i * 9.0, WALL_Z + 2.2, 0, BOX.catwalk, 1.1, WALK);
+    b.deck('catwalk', i * 9.0, WALL_Z - 2.2, 0, BOX.catwalk, 1.1, WALK);
   }
-  b.stairsTo([[-18, WALL_Z + 3.4, 0, -1], [-27, WALL_Z + 3.4, 0, -1]], WALK);
-  b.stairsTo([[18, WALL_Z + 3.4, 0, -1], [27, WALL_Z + 3.4, 0, -1]], WALK);
+  b.stairsTo([[-18, WALL_Z - 3.4, 0, 1], [-27, WALL_Z - 3.4, 0, 1]], WALK);
+  b.stairsTo([[18, WALL_Z - 3.4, 0, 1], [27, WALL_Z - 3.4, 0, 1]], WALK);
 
   // ---- inside: streets, then the keep -------------------------------------
   // The avenue continues the road so the breach pours somewhere legible.
@@ -1503,6 +1521,7 @@ export function build(siteId, seed, override = {}) {
     ground,
     obstacles: b.obstacles,
     covers: b.covers,
+    stairs: b.stairs,
     // What was actually placed, kept so collision can be audited against the
     // meshes it is supposed to represent. An obstacle on its own cannot say
     // which model it belongs to, which makes a box that does not match what the
@@ -1664,11 +1683,15 @@ function segBox(ax, az, dx, dz, o) {
 }
 
 /** Can A see B? Eye height matters — this is what makes low cover mean something. */
-export function hasLOS(obstacles, ax, az, bx, bz, eye = 1.5) {
+export function hasLOS(obstacles, ax, az, bx, bz, eye = 1.5, eyeB = eye) {
   // `eye` is a height above the ground at each end, so the sightline runs
-  // between two absolute points that are only equal on flat ground.
+  // between two absolute points that are only equal on flat ground. The
+  // second height lets an ELEVATED shooter see down: a defender on the wall
+  // walk aims over the parapet at someone on the approach, and the ray has
+  // to run from their raised eye to the target's ground-level chest or the
+  // wall blinds its own garrison.
   const ay = heightAt(ax, az) + eye;
-  const by = heightAt(bx, bz) + eye;
+  const by = heightAt(bx, bz) + eyeB;
   if (raycast(obstacles, ax, az, bx, bz, eye, 1, ay, by)) return false;
   // The ground blocks too, now that there is some.
   //

@@ -792,6 +792,27 @@ Open, in rough priority order:
    APPROACHES and THE BASTION. Containers remain only as west-lane
    industrial dressing.
 
+**Verticality** (this session, from playtest: "troops can't navigate up,
+   the jump can't top stacked boxes"). Five mechanisms, found by tracing:
+   jump vy 6.1→7.3 (apex v²/2g ≈ 1.2m clears a 0.94 crate); crates are
+   `walk`-flagged in prop() (ONLY crates — a walkable hesco would make
+   lane walls footpaths); NavGrid stops blocking `walk` obstacles (treads
+   and decks are routes, vertical legality is resolveMove's job);
+   moveToward passes feet into resolveMove AND runs a per-entity
+   elevation stepper (step up 0.62, drop at 9m/s); hasLOS gained a second
+   eye height and acquire/aiShoot pass `elev` on both ends, so the wall
+   trades fire with the approach in both directions. Stair ROUTING:
+   `steps()` records each flight (foot/head/top) into `level.stairs`
+   (whitelisted in build()'s return!), and moveToward detours to the
+   nearest matching flight when the goal stands >1.2 above the mover —
+   with "already lifted = already climbing" targeting the HEAD, or the
+   foot rule marches climbers back down. THE TRAPS this cost: the local
+   avoidance probe must skip `walk` obstacles or it deflects climbers off
+   the flight at its own foot; the bastion's walk/stairs must be on the
+   DEFENDED face (the fort's sit on its approach side — copying it put
+   the garrison's stairs outside their own wall); and test staging that
+   holds W after a mount walks straight across and off the far side.
+
 ---
 
 ## The summary artifact

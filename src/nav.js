@@ -28,6 +28,12 @@ export class NavGrid {
       // Only things tall enough to actually stop a person block movement;
       // ankle-height scenery should not carve holes in the navigation.
       if ((o.coverH ?? o.h) < 0.7) continue;
+      // Walkable tops — stair treads, catwalk decking, crates — are ROUTES,
+      // not walls. Blocking them meant no path ever led up a flight of
+      // stairs, which is why ordered troops stood at the foot of a wall walk
+      // they were told to hold. The blocked set stays two-dimensional; the
+      // vertical legality of each step is resolveMove's job (feet + STEP_UP).
+      if (o.walk) continue;
       const pad = radius;
       const minX = o.x - o.hw - pad, maxX = o.x + o.hw + pad;
       const minZ = o.z - o.hd - pad, maxZ = o.z + o.hd + pad;
