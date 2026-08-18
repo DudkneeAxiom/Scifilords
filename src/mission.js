@@ -1052,7 +1052,10 @@ export class Mission {
       const ent = this.spawnEntity({
         id: `p_${i}`, side: 'civil', faction: null, keepExact: true,
         x, z, yaw: 0, hp: 60, weapon: null, model: 'soldier_prisoner',
-        speed: 3.4, name: 'Held personnel', follower: true,
+        // On a prison break the one worth caring about has a NAME.
+        speed: 3.4, name: sp.medic && this.spec.rescueName
+          ? this.spec.rescueName : 'Held personnel',
+        follower: true,
       });
       ent.released = false;
       ent.isMedic = sp.medic;
@@ -1154,6 +1157,21 @@ export class Mission {
       this.interactables.push({
         kind: 'area', area: 'companion', entity: cnpc, x: cnpc.x, z: cnpc.z,
         progress: 0, need: 0.8, label: 'Someone worth talking to',
+      });
+    }
+    // A lord at court: the holder faction's commander taking petitions near
+    // the hall. Talking to power is a walk across town, like everything else.
+    if (this.spec.lord) {
+      const lnpc = this.spawnEntity({
+        id: 'npc_lord', side: 'civil', faction: null,
+        x: 3.2, z: -14, yaw: 0.4, hp: 80, weapon: null,
+        model: this.spec.lord.faction === 'trust' ? 'soldier_trust' : 'soldier_syndic',
+        speed: 3.0, name: this.spec.lord.name,
+      });
+      lnpc.released = true;
+      this.interactables.push({
+        kind: 'area', area: 'lord', entity: lnpc, x: lnpc.x, z: lnpc.z,
+        progress: 0, need: 0.8, label: 'A lord at court',
       });
     }
 
@@ -1436,6 +1454,29 @@ export class Mission {
       label: 'Set the charge',
     });
 
+    // The second way in, where the layout offers one: a grated culvert
+    // under the east curtain. Faster to set than the gate charge, but it
+    // spills the company into a tight alley deep in the defence — a CHOICE
+    // of breach, which is what makes an assault a plan instead of a script.
+    if (this.level.culvert) {
+      const cv = this.level.culvert;
+      // The NEAREST tall obstacle to the authored point, not the first in
+      // placement order — the narrowing containers sit within a few metres
+      // of the grate and a loose match blew one of those up instead.
+      let grate = null, gd = Infinity;
+      for (const o of this.level.obstacles) {
+        const d = Math.hypot(o.x - cv.x, o.z - cv.z);
+        if (d < 3 && (o.coverH ?? o.h) > 2 && d < gd) { gd = d; grate = o; }
+      }
+      if (grate) {
+        this.culvertObstacle = grate;
+        this.interactables.push({
+          kind: 'breach', culvert: true, x: cv.x, z: cv.z + 2.6,
+          progress: 0, need: 4.5, label: 'Blow the culvert grate',
+        });
+      }
+    }
+
     this.spawnGarrison(['rifleman', 'rifleman', 'marksman', 'gunner'], 2);
     // A defended TOWN is not a fort picket: when the spec names an army, the
     // wall posts are only its front rank and the rest muster inside as the
@@ -1478,6 +1519,34 @@ export class Mission {
         e.alert = 1;
         e.state = 'hunt';
         e.lastSeen = { x: g ? g.x : 0, z: g ? g.z : -14 };
+        e.huntUntil = this.time + 20;
+      }
+    }
+    this.spawnReinforcements(3);
+  }
+
+  /** The culvert goes instead of the gate: same phase change, tighter door. */
+  blowCulvert(it) {
+    if (this.breached) return;
+    this.breached = true;
+    const g = this.culvertObstacle;
+    if (g) {
+      this.level.obstacles = this.level.obstacles.filter((o) => o !== g);
+      this.nav = new NavGrid(this.level.obstacles, this.level.bounds, 0.65);
+      const doors = this.level.group.children.filter((o) =>
+        Math.abs(o.position.x - g.x) < 4.2 && Math.abs(o.position.z - g.z) < 3);
+      for (const d of doors) d.visible = false;
+    }
+    this.objective.progress = 1;
+    this.objective.text = 'Take the compound';
+    Audio.explosion(this.relPos(this.player));
+    this.shake = 1.1;
+    this.onToast('GRATE OUT', 'Through the culvert — single file, move', 'good');
+    for (const e of this.entities) {
+      if (e.side === 'enemy' && !e.dead) {
+        e.alert = 1;
+        e.state = 'hunt';
+        e.lastSeen = { x: it.x, z: it.z };
         e.huntUntil = this.time + 20;
       }
     }
@@ -3572,7 +3641,8 @@ export class Mission {
     }
     if (it.kind === 'breach') {
       it.done = true;
-      this.blowGate();
+      if (it.culvert) this.blowCulvert(it);
+      else this.blowGate();
       return;
     }
     if (it.kind === 'loot') {

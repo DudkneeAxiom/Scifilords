@@ -329,6 +329,19 @@ export function acceptContract(S, id) {
   S.contracts.forEach((x) => { x.accepted = false; });
   c.accepted = true;
   pushLog(S, `Contract accepted: ${c.title}. Site: ${locName(c.site)}.`, 'good');
+  // Taking an escort puts the convoy ON THE ROAD: it exists, it moves, and
+  // from this moment the road can have it.
+  if (c.type === 'escort' && !c.convoyId) {
+    const r2 = rng((S.seed + S.day * 313 + c.id.length * 29) | 0);
+    const from = locById(c.site);
+    const p = spawnParty(S, r2, 'caravan', c.site);
+    p.x = from.x + range(r2, -14, 14);
+    p.z = from.z + range(r2, -14, 14);
+    p.convoyTo = c.escortTo;
+    p.name = 'Escorted convoy';
+    c.convoyId = p.id;
+    pushLog(S, `The convoy rolls out of ${from.name} for ${locName(c.escortTo)}.`, 'info');
+  }
 }
 
 export const activeContract = (S) => S.contracts.find((c) => c.accepted) || null;
@@ -504,6 +517,44 @@ const LORD_TIERS = 3;                        // tier at which a party rates a na
 export const lordById = (S, id) => (S.lords || []).find((l) => l.id === id);
 export const lordOfParty = (S, p) => (p?.lordId ? lordById(S, p.lordId) : null);
 
+/**
+ * Temperament: how a lord fights their war. `odds` multiplies the winning
+ * chance a lord's party demands before it commits — LOWER is bolder, the
+ * same direction as the grudge modifier. `host` scales the army a lord
+ * raises when they march on a town. The line is how an encounter describes
+ * them, because a reputation the player cannot read is not a reputation.
+ */
+export const TEMPERS = {
+  martial: {
+    id: 'martial', odds: 0.7, host: 1.15,
+    line: 'has a name for pressing fights others would walk away from',
+  },
+  cautious: {
+    id: 'cautious', odds: 1.45, host: 0.85,
+    line: 'picks fights only when the arithmetic is comfortable',
+  },
+  rapacious: {
+    id: 'rapacious', odds: 0.9, host: 1.0,
+    line: 'is fed by what the road loses',
+  },
+  honorable: {
+    id: 'honorable', odds: 1.15, host: 1.0,
+    line: 'fights clean, and remembers those who do the same',
+  },
+};
+
+/**
+ * A lord's temperament, with a deterministic fallback for lords minted
+ * before temperaments existed: derived from the name, so an old campaign's
+ * lords each get ONE stable disposition rather than a reroll per read.
+ */
+export function temperOf(l) {
+  if (l?.temper && TEMPERS[l.temper]) return TEMPERS[l.temper];
+  const keys = Object.keys(TEMPERS);
+  const h = (l?.name || '').split('').reduce((a, c) => a + c.charCodeAt(0), 0);
+  return TEMPERS[keys[h % keys.length]];
+}
+
 /** Somebody of this faction who is not currently in the field. */
 function availableLord(S, r, faction) {
   const busy = new Set(S.parties.map((p) => p.lordId).filter(Boolean));
@@ -515,6 +566,8 @@ function availableLord(S, r, faction) {
     id: uid('lord'),
     name: `${pick(r, FIRST_NAMES)} ${pick(r, LAST_NAMES)}`,
     faction,
+    // How they fight their war, fixed at commissioning.
+    temper: pick(r, Object.keys(TEMPERS)),
     defeats: 0,          // times the player has broken their command
     wins: 0,             // times they have broken the player's
     captured: false,
@@ -857,6 +910,7 @@ function onNewDay(S, r) {
   // to do with the new code.
   tickWar(S, rng((S.seed ^ 0x7717) + S.day * 3301));
   tickManpower(S, rng((S.seed ^ 0x2b19) + S.day * 4409));
+  tickTorching(S, rng((S.seed ^ 0x70c4) + S.day * 947));
   tickFactionRecruiting(S, rng((S.seed ^ 0x51ad) + S.day * 5171));
   tickRaids(S, rng((S.seed ^ 0x6c33) + S.day * 6113));
   // Captivity ends. A lord held indefinitely is a lord removed from the game,
@@ -873,6 +927,18 @@ function onNewDay(S, r) {
   }
   tickHeldLords(S, rng((S.seed ^ 0x3d71) + S.day * 7717));
   tickPrisoners(S, rng((S.seed ^ 0x1f5b) + S.day * 8221));
+  // Held companions come home one way or another: broken out by the player,
+  // or ransomed at a captor's price after twelve days — if the ledger can
+  // stand it. A company too broke to pay leaves them sitting.
+  for (const c of [...(S.captives || [])]) {
+    if (S.day - c.sinceDay < 12) continue;
+    if (S.credits < 600) continue;
+    S.credits -= 600;
+    S.roster.push(c.soldier);
+    S.captives = S.captives.filter((x) => x !== c);
+    S.contracts = S.contracts.filter((x) => x.rescue !== c.soldier.id);
+    pushLog(S, `${c.soldier.name} was ransomed home for 600 credits. They walked in thinner.`, 'world');
+  }
   // A summons outlives its column if the column was broken on the road rather
   // than arriving. The call still went out and you still did not answer it, but
   // the contract has to go or it sits on the board forever pointing at an army
@@ -908,6 +974,31 @@ function onNewDay(S, r) {
     const c = generateContract(S, r);
     if (!c) break;
     pushLog(S, `New posting at ${locName(c.site)}: ${c.title}.`);
+  }
+  maybeEscortContract(S, rng((S.seed ^ 0xe5c0) + S.day * 677));
+  // Workshop stalls pay their day's take. Logged weekly, not daily — a
+  // ledger line every morning is noise, not income.
+  let stallTake = 0;
+  for (const wid of Object.keys(S.workshops || {})) {
+    stallTake += workshopIncome(S, wid);
+  }
+  if (stallTake > 0) {
+    S.credits += stallTake;
+    if (S.day % 7 === 0) {
+      pushLog(S, `The stalls paid ${stallTake} today. The week has been like that.`, 'good');
+    }
+  }
+  // A convoy that stopped existing on the road did not arrive. The failure
+  // is the contract's, and the town that lost the load remembers whose
+  // escort it was under.
+  for (const c of [...S.contracts]) {
+    if (c.type !== 'escort' || !c.convoyId) continue;
+    if (S.parties.some((p) => p.id === c.convoyId)) continue;
+    S.contracts = S.contracts.filter((x) => x.id !== c.id);
+    if (c.accepted) {
+      changeRelation(S, c.escortTo, -4);
+      pushLog(S, `The convoy for ${locName(c.escortTo)} never arrived. The escort's name travels with the loss.`, 'bad');
+    }
   }
   // Patrol densities drift back toward normal — sabotage buys time, not permanence.
   S.world.trustPatrolDensity = clamp(S.world.trustPatrolDensity + 0.06, 0, 1.2);
@@ -1196,7 +1287,7 @@ const PURSUIT_SANCTUARY = 55;
 const BOLDNESS = { strays: 0.16, looters: 0.20, scrappers: 0.28, deserters: 0.12 };
 const BOLDNESS_DEFAULT = 0.42;
 
-function partyIntent(S, p, squad) {
+export function partyIntent(S, p, squad) {
   if (!p.hostileToPlayer) return 'patrol';
   // Nobody presses an attack up to a settlement's gate. A location has people
   // in it and usually a garrison, and a band that would take on four mercenaries
@@ -1226,6 +1317,9 @@ function partyIntent(S, p, squad) {
   const theirs = 1 - odds;
   let bold = BOLDNESS[p.kind] ?? BOLDNESS_DEFAULT;
   if (lord && (lord.regard || 0) <= -5) bold *= 0.7;   // grudges take worse odds
+  // Temperament is the standing version of the same dial: a martial lord
+  // accepts odds a cautious one walks away from.
+  if (lord) bold *= temperOf(lord).odds;
   if (theirs > bold) return 'chase';
   // Well under what they would accept: not merely uninterested, but actively
   // getting out of the way. This is the tier description made true — looters
@@ -1326,6 +1420,24 @@ function moveParties(S, hours, r) {
         pickPartyTarget(S, r, p);             // back to ordinary soldiering
       } else {
         const step = Math.min(d, p.speed * hours);
+        p.x += (dx / d) * step;
+        p.z += (dz / d) * step;
+        p.heading = Math.atan2(dx, dz);
+      }
+      continue;
+    }
+
+    // An escorted convoy: one road, one destination, pay on delivery. It is
+    // a party like any other — raiders predate it, battles catch it — which
+    // is the entire product being sold when someone hires an escort.
+    if (p.convoyTo) {
+      const dest = locById(p.convoyTo);
+      const dx = dest.x - p.x, dz = dest.z - p.z;
+      const d = Math.hypot(dx, dz);
+      if (d < 26) {
+        deliverConvoy(S, p);
+      } else {
+        const step = Math.min(d, p.speed * hours * travelFactor(p.x, p.z));
         p.x += (dx / d) * step;
         p.z += (dz / d) * step;
         p.heading = Math.atan2(dx, dz);
@@ -1637,7 +1749,19 @@ export function applyMissionResult(S, res) {
     const liegeBonus = (S.allegiance && c.employer === S.allegiance) ? 1.35 : 1;
     const paid = Math.round(c.pay * mods.payMul * liegeBonus);
     S.credits += paid;
-    notes.push({ tone: 'good', text: `Contract paid: ${paid} credits.` });
+    // A rescue pays in a person, not a number — no zero-credit note.
+    if (paid > 0) notes.push({ tone: 'good', text: `Contract paid: ${paid} credits.` });
+    // The prison break: the one they kept walks out with you.
+    if (c.rescue) {
+      const cap = (S.captives || []).find((x) => x.soldier.id === c.rescue);
+      if (cap) {
+        S.roster.push(cap.soldier);
+        S.captives = S.captives.filter((x) => x !== cap);
+        S.morale = clamp((S.morale ?? 70) + 6, 0, 100);
+        notes.push({ tone: 'good', text: `${cap.soldier.name} walks out with the company. Nobody gets left.` });
+        pushLog(S, `${cap.soldier.name} was broken out of ${locName(res.site)}.`, 'good');
+      }
+    }
     if (c.employer) {
       S.rep[c.employer] = (S.rep[c.employer] || 0) + 2;
       const other = c.employer === 'trust' ? 'syndic' : 'trust';
@@ -2112,7 +2236,46 @@ function tickManpower(S, r) {
     // whole trade. Only on ground you hold — you cannot conscript somebody
     // else's town.
     const conscript = hasPolicy(S, 'conscription') && isHolding(S, l.id) ? -0.6 : 0;
-    S.manpower[l.id] = Math.max(0, Math.min(cap, have + 1 + barracks * 0.5 + conscript));
+    // A settlement recovers at the pace of the hamlets that feed it. Torched
+    // feeders are the strategic point of the village tier: burn the fields
+    // and the garrison stops refilling, without a shot at the wall.
+    const feed = feederScale(S, l);
+    S.manpower[l.id] = Math.max(0, Math.min(cap,
+      have + (1 + barracks * 0.5) * feed + conscript));
+  }
+}
+
+/** The hamlets within reach of a settlement, and how many still stand. */
+export function feedersOf(locId) {
+  const l = locById(locId);
+  if (!l || l.kind !== 'settlement') return [];
+  return LOCATIONS.filter((v) => v.kind === 'hamlet'
+    && Math.hypot(v.x - l.x, v.z - l.z) < 260);
+}
+
+export function feederScale(S, l) {
+  if (l.kind !== 'settlement') return 1;
+  const feeders = feedersOf(l.id);
+  if (!feeders.length) return 1;
+  const razed = feeders.filter((v) => S.day - (S.razed?.[v.id] ?? -99) < 15).length;
+  return Math.max(0.25, 1 - razed * 0.4);
+}
+
+/**
+ * Raiders torch what they can reach: a hamlet with a raider band near it
+ * can burn, and the settlement it feeds recovers slower for a fortnight.
+ * The log says so, because a fact the player cannot read is not a fact.
+ */
+function tickTorching(S, r) {
+  for (const v of LOCATIONS) {
+    if (v.kind !== 'hamlet') continue;
+    if (S.day - (S.razed?.[v.id] ?? -99) < 15) continue;
+    const raider = S.parties.some((p) => p.faction === 'raider'
+      && Math.hypot(p.x - v.x, p.z - v.z) < 200);
+    if (!raider || r() > 0.12) continue;
+    S.razed = S.razed || {};
+    S.razed[v.id] = S.day;
+    pushLog(S, `${v.name} is burning. The towns it feeds will feel it for weeks.`, 'bad');
   }
 }
 
@@ -2755,6 +2918,38 @@ export function captureCompany(S, captor, r) {
   const freed = (S.prisoners || []).length;
   S.prisoners = [];
 
+  // A named companion is worth keeping: whoever took the company holds one
+  // back when they can, in a town of theirs, and a rescue posting appears —
+  // the prison break is the player's to attempt, or a fat ransom lands on
+  // its own after twelve days. Raiders hold nobody: no towns, no cells.
+  let kept = null;
+  const cells = LOCATIONS.filter((l) => ownerOf(S, l.id) === captor
+    && l.kind === 'settlement');
+  const comps = S.roster.filter((s) => s.companion && s.status !== STATUS.DEAD);
+  if (comps.length && cells.length && r() < 0.75) {
+    kept = pick(r, comps);
+    S.roster = S.roster.filter((s) => s.id !== kept.id);
+    const at = pick(r, cells);
+    S.captives = S.captives || [];
+    S.captives.push({ soldier: kept, at: at.id, sinceDay: S.day });
+    S.contracts.push({
+      id: uid('con'),
+      type: 'recovery',
+      rescue: kept.id,
+      rescueName: kept.name,
+      site: at.id,
+      employer: null,
+      title: `Break ${kept.name} out of ${at.name}`,
+      text: `${captor === 'trust' ? 'The Trust' : 'The Syndic'} kept ${kept.name} `
+        + `when the rest of you were put out on the road. They are held at `
+        + `${at.name}. Nobody pays for this work; the pay is the person.`,
+      pay: 0,
+      expiresDay: S.day + 30,
+      accepted: false,
+    });
+    pushLog(S, `${kept.name} was kept behind. Word is they are held at ${at.name}.`, 'bad');
+  }
+
   // The time is the real cost, and it is also the mercy: wounds close while you
   // are sitting in a room. Wages and rations are deliberately NOT run for these
   // days — a company in a cell is not buying food or drawing pay, and running
@@ -3178,6 +3373,67 @@ export function sourcesFor(S, goodId, limit = 2) {
   }
   out.sort((a, b) => a.price - b.price);
   return out.slice(0, limit);
+}
+
+/**
+ * What the trader has heard about prices elsewhere — the Mount & Blade
+ * trading loop's missing half. Reads the REAL per-town tables, finds the
+ * best spread worth the breath from here, and says so in a sentence.
+ * Deterministic per day like the tables themselves, so asking twice gets
+ * the same rumour, and acting on it finds the price the rumour promised.
+ * Returns null when nothing clears 1.35x — a trader with no news says none.
+ */
+export function priceRumour(S, hereId) {
+  const markets = LOCATIONS.filter(
+    (l) => l.id !== hereId && l.services?.includes('market'));
+  let best = null;
+  for (const g of GOODS_LIST) {
+    const pHere = priceAt(S, hereId, g);
+    if (!pHere) continue;
+    for (const m of markets) {
+      const ratio = priceAt(S, m.id, g) / pHere;
+      if (!best || ratio > best.ratio) best = { good: g, at: m, ratio };
+    }
+  }
+  if (!best || best.ratio < 1.35) return null;
+  const strength = best.ratio >= 1.9 ? 'double what it goes for here'
+    : best.ratio >= 1.6 ? 'half again what it goes for here'
+      : 'well over the price on these stalls';
+  return {
+    good: best.good,
+    at: best.at.id,
+    ratio: best.ratio,
+    text: `Word is ${GOODS[best.good].name.toLowerCase()} is fetching ${strength} `
+      + `at ${best.at.name}. You did not hear it from me.`,
+  };
+}
+
+/**
+ * The trade ledger: prices the company has PERSONALLY seen, town by town,
+ * written down when a market's stalls are opened. The rumour system points
+ * at spreads it has heard of; the ledger is what you know first-hand, and
+ * it goes stale honestly — the entry keeps the day it was written.
+ */
+export function recordPrices(S, locId) {
+  const l = locById(locId);
+  if (!l?.services?.includes('market')) return;
+  S.ledger = S.ledger || {};
+  const prices = {};
+  for (const g of GOODS_LIST) prices[g] = priceAt(S, locId, g);
+  S.ledger[locId] = { day: S.day, prices };
+}
+
+/** Best SELLING price seen for a good, excluding the town you stand in. */
+export function ledgerBest(S, goodId, excludeLoc = null) {
+  let best = null;
+  for (const [locId, entry] of Object.entries(S.ledger || {})) {
+    if (locId === excludeLoc) continue;
+    const p = entry.prices[goodId];
+    if (p && (!best || p > best.price)) {
+      best = { at: locId, price: p, day: entry.day };
+    }
+  }
+  return best;
 }
 
 export function priceAt(S, locId, goodId) {
@@ -3734,6 +3990,10 @@ function tryCapture(S, r, attacker, defender) {
   // the field in ranks through the mission's wave streaming. On the map it
   // fights the same durational battles as everything else, just for longer.
   col.strength = Math.round(col.strength * range(r, 3.2, 4.6));
+  // The lord leading it raises the army their temperament deserves: a
+  // martial lord marches heavy, a cautious one holds people back.
+  const colLord = lordOfParty(S, col);
+  if (colLord) col.strength = Math.round(col.strength * temperOf(colLord).host);
   col.x = from.x + range(r, -20, 20);
   col.z = from.z + range(r, -20, 20);
   col.siegeTarget = best.id;
@@ -3804,6 +4064,48 @@ function closeSummons(S, columnId, { showedUp }) {
   S.rep[c.employer] = (S.rep[c.employer] || 0) - 5;
   pushLog(S, `${FACTIONS[c.employer]?.name || c.employer} noted that Bracket `
     + 'was not on the field.', 'bad');
+}
+
+/** The convoy made it: the road paid, or would have if you had taken it. */
+function deliverConvoy(S, p) {
+  S.parties = S.parties.filter((x) => x.id !== p.id);
+  const c = S.contracts.find((x) => x.escortTo && x.convoyId === p.id);
+  if (!c) return;
+  S.contracts = S.contracts.filter((x) => x.id !== c.id);
+  if (!c.accepted) return;                     // it rolled without you
+  S.credits += c.pay;
+  changeRelation(S, c.escortTo, 4);
+  pushLog(S, `The convoy reached ${locName(c.escortTo)}. Escort paid: ${c.pay} credits.`, 'good');
+}
+
+/**
+ * A convoy hiring escorts, posted between two market towns. One at a time on
+ * the board; the pay is honest about the distance, and it lands only when
+ * the load does — the whole contract is the road between here and there.
+ */
+function maybeEscortContract(S, r) {
+  if (S.contracts.some((c) => c.type === 'escort')) return;
+  if (r() > 0.35) return;
+  const markets = LOCATIONS.filter((l) => l.services?.includes('market'));
+  if (markets.length < 2) return;
+  const from = pick(r, markets);
+  const to = pick(r, markets.filter((m) => m.id !== from.id));
+  const dist = Math.hypot(to.x - from.x, to.z - from.z);
+  if (dist < 250) return;
+  S.contracts.push({
+    id: uid('con'),
+    type: 'escort',
+    site: from.id,
+    escortTo: to.id,
+    employer: null,
+    title: `Escort the convoy to ${to.name}`,
+    text: `Hauliers out of ${from.name} are taking a load to ${to.name} and `
+      + 'will pay for company on the road. The pay lands when the load does.',
+    pay: 380 + Math.round(dist * 0.6),
+    expiresDay: S.day + 5,
+    accepted: false,
+  });
+  pushLog(S, `A convoy at ${from.name} is hiring escorts for the ${to.name} road.`);
 }
 
 /** A column that has reached what it was sent for. */
@@ -3973,6 +4275,241 @@ export function offerService(S, id) {
 }
 
 export const vassals = (S) => (S.lords || []).filter((l) => l.vassal);
+
+// --------------------------------------------------------------------------
+// Tavern mercenaries and the dice
+// --------------------------------------------------------------------------
+
+const MERC_BANDS = [
+  { id: 'redline', name: 'The Redline Crew', size: 7 },
+  { id: 'kestrels', name: 'Kestrel Irregulars', size: 6 },
+  { id: 'ashwalkers', name: 'The Ashwalkers', size: 9 },
+  { id: 'tollmen', name: 'The Tollmen', size: 8 },
+];
+
+/**
+ * The fighting band drinking in this town today, if the rotation seats one:
+ * a mercenary company for hire by the JOB, not the roster. Deterministic
+ * per town per day, like companions and courts.
+ */
+export function mercBandAt(S, locId) {
+  const l = locById(locId);
+  if (!l?.services?.includes('recruit')) return null;
+  if (S.mercBand && S.day <= S.mercBand.untilDay) return null;  // one at a time
+  const h = (S.day * 17 + locId.length * 5 + locId.charCodeAt(0)) % (MERC_BANDS.length * 2);
+  if (h >= MERC_BANDS.length) return null;         // some days the room is empty
+  const band = MERC_BANDS[h];
+  return { ...band, fee: band.size * 120 };
+}
+
+/**
+ * Hire the band for three days: every deployment in that window fields them
+ * as allies, streamed in like any allied force. Paid up front — mercenaries
+ * have heard every version of "after the job".
+ */
+export function hireMercBand(S, locId) {
+  const band = mercBandAt(S, locId);
+  if (!band) return { ok: false, why: 'The room is empty' };
+  if (S.credits < band.fee) return { ok: false, why: 'Mercenaries are paid up front' };
+  S.credits -= band.fee;
+  S.mercBand = { id: band.id, name: band.name, size: band.size, untilDay: S.day + 3 };
+  pushLog(S, `${band.name} signed on for three days. ${band.size} guns, paid up front.`, 'good');
+  return { ok: true, band: S.mercBand };
+}
+
+export const mercActive = (S) => (S.mercBand && S.day <= S.mercBand.untilDay)
+  ? S.mercBand : null;
+
+// --------------------------------------------------------------------------
+// Workshops: a stall bought, not ground taken
+// --------------------------------------------------------------------------
+
+export const WORKSHOP_COST = 2400;
+export const WORKSHOP_SELL = 1600;
+
+/**
+ * Buy a stall in a market town: passive income that lives on the town's
+ * health, not yours. One per town; the town has to at least tolerate you.
+ */
+export function buyWorkshop(S, locId) {
+  const l = locById(locId);
+  if (!l?.services?.includes('market')) return { ok: false, why: 'No market to trade from' };
+  S.workshops = S.workshops || {};
+  if (S.workshops[locId]) return { ok: false, why: 'You already hold the stall here' };
+  if (relationOf(S, locId) < -20) return { ok: false, why: 'Nobody sells a stall to an enemy' };
+  if (S.credits < WORKSHOP_COST) return { ok: false, why: `A stall costs ${WORKSHOP_COST}` };
+  S.credits -= WORKSHOP_COST;
+  S.workshops[locId] = { sinceDay: S.day };
+  pushLog(S, `Bracket bought the stall rights at ${l.name}.`, 'good');
+  return { ok: true };
+}
+
+export function sellWorkshop(S, locId) {
+  if (!S.workshops?.[locId]) return { ok: false, why: 'Nothing to sell here' };
+  delete S.workshops[locId];
+  S.credits += WORKSHOP_SELL;
+  pushLog(S, `The stall at ${locName(locId)} was sold on for ${WORKSHOP_SELL}.`, 'world');
+  return { ok: true };
+}
+
+/** What one stall pays today: the town's health, in miniature. */
+export function workshopIncome(S, locId) {
+  const rel = relationOf(S, locId);
+  if (rel <= -25) return 0;                     // the town freezes you out
+  let pay = 60;
+  // A mustered-out town has no customers.
+  pay *= clamp(manpowerAt(S, locId) / 20, 0.4, 1.2);
+  // A holder at war spends on the war.
+  const holder = ownerOf(S, locId);
+  if (holder && Dip.enemiesOf(S, holder).length) pay *= 0.6;
+  if (rel >= 40) pay *= 1.2;
+  return Math.round(pay);
+}
+
+// The pit's named circuit: fighters with records, bouts you can bet on, and
+// a champion whose name travels. Fame is the standings table.
+const PIT_FIGHTERS = [
+  { id: 'saw', name: 'Marla Saw', style: 'counter-puncher' },
+  { id: 'brick', name: 'Brick Odom', style: 'walks through it' },
+  { id: 'wren', name: 'Little Wren', style: 'never where you aim' },
+  { id: 'kolya', name: 'Kolya the Debt', style: 'patient, then not' },
+  { id: 'harrow', name: 'The Harrow Kid', style: 'all opening round' },
+  { id: 'venn', name: 'Old Venn', style: 'has seen your trick' },
+];
+
+/** Today's exhibition bout: two named fighters, odds from their records. */
+export function exhibitionBout(S) {
+  const h = (S.day * 13) % PIT_FIGHTERS.length;
+  const k = (S.day * 7 + 3) % PIT_FIGHTERS.length;
+  if (h === k) return null;                       // dark night at the pit
+  const fame = S.pitFame || {};
+  const a = PIT_FIGHTERS[h], b = PIT_FIGHTERS[k];
+  const fa = fame[a.id] || 0, fb = fame[b.id] || 0;
+  // The favourite is the record, and the book prices accordingly.
+  const oddsA = clamp(0.5 + (fa - fb) * 0.08, 0.25, 0.75);
+  return { a, b, oddsA };
+}
+
+/**
+ * Put money on a name. Resolves on the spot — the bout runs tonight whether
+ * you stay to watch or not — and the WINNER'S fame is real: it moves the
+ * standings the next bout is priced from. Underdogs pay better, as they
+ * must.
+ */
+export function betExhibition(S, onA, stake = 150) {
+  const bout = exhibitionBout(S);
+  if (!bout) return { ok: false, why: 'No bout on the card tonight' };
+  if (S.betDay === S.day) return { ok: false, why: 'One bet a night keeps the book friendly' };
+  if (S.credits < stake) return { ok: false, why: 'The book plays for money' };
+  S.credits -= stake;
+  S.betDay = S.day;
+  const r = rng((S.seed ^ 0xb0d7) + S.day * 211);
+  const aWins = r() < bout.oddsA;
+  const winner = aWins ? bout.a : bout.b;
+  S.pitFame = S.pitFame || {};
+  S.pitFame[winner.id] = (S.pitFame[winner.id] || 0) + 1;
+  const picked = onA === aWins;
+  if (picked) {
+    const oddsPicked = onA ? bout.oddsA : 1 - bout.oddsA;
+    const payout = Math.round(stake * (oddsPicked < 0.5 ? 2.4 : 1.7));
+    S.credits += stake + payout;
+    pushLog(S, `${winner.name} took the bout. The book paid ${payout} on your ${stake}.`, 'good');
+    return { ok: true, won: true, winner: winner.name, payout };
+  }
+  pushLog(S, `${winner.name} took the bout, and the book took your ${stake}.`, 'bad');
+  return { ok: true, won: false, winner: winner.name };
+}
+
+/** The current champion, by the standings, if anybody has a record yet. */
+export function pitChampion(S) {
+  const fame = S.pitFame || {};
+  let best = null;
+  for (const f of PIT_FIGHTERS) {
+    const w = fame[f.id] || 0;
+    if (w > 0 && (!best || w > best.wins)) best = { ...f, wins: w };
+  }
+  return best;
+}
+
+/**
+ * The dice by the pit door. The house edge is honest and visible: even
+ * money on a 46% roll, deterministic per attempt so a reload rolls the
+ * same bones.
+ */
+export function rollDice(S, stake = 100) {
+  if (S.credits < stake) return { ok: false, why: 'The table plays for money' };
+  S.credits -= stake;
+  S.diceCount = (S.diceCount || 0) + 1;
+  const r = rng((S.seed ^ 0xd1ce) + S.day * 97 + S.diceCount * 31);
+  const won = r() < 0.46;
+  if (won) S.credits += stake * 2;
+  pushLog(S, won ? `The bones came up. ${stake} doubled at the pit door.`
+    : `The bones went the house's way. ${stake} gone.`, won ? 'good' : 'bad');
+  return { ok: true, won };
+}
+
+/**
+ * The lord at court in this town today, if the rotation seats one here:
+ * a commander of the holder faction who is not in the field, not captured,
+ * and not already yours. Deterministic per town per day, companion-style —
+ * courts are a fact about the day, not a slot machine.
+ */
+export function lordAt(S, locId) {
+  const owner = ownerOf(S, locId);
+  if (owner !== 'trust' && owner !== 'syndic') return null;
+  const busy = new Set(S.parties.map((p) => p.lordId).filter(Boolean));
+  const home = (S.lords || []).filter((l) => l.faction === owner
+    && !l.captured && !busy.has(l.id) && !l.vassal);
+  if (!home.length) return null;
+  const h = (S.day * 31 + locId.length * 7 + locId.charCodeAt(0)) % home.length;
+  return home[h];
+}
+
+/**
+ * A gift, given at court. Regard is the currency of every lord system —
+ * pursuit, ransom lines, defection — and this is the one lever the player
+ * can pull on it deliberately. Once a day per lord: a second gift in an
+ * afternoon is not generosity, and lords know the difference.
+ */
+export function giftLord(S, lordId, cost = 300) {
+  const lord = lordById(S, lordId);
+  if (!lord) return { ok: false, why: 'Gone from court' };
+  if (lord.giftDay === S.day) {
+    return { ok: false, why: 'One gift a day is generosity; two is a bribe' };
+  }
+  if (S.credits < cost) {
+    return { ok: false, why: 'The ledger cannot cover a gift worth giving' };
+  }
+  S.credits -= cost;
+  lord.giftDay = S.day;
+  lord.regard = clamp((lord.regard || 0) + 1, -10, 10);
+  pushLog(S, `${lord.name} accepted a gift, and was seen to.`, 'good');
+  return { ok: true, regard: lord.regard };
+}
+
+/**
+ * Asking a lord at court to take your colours. The peaceful sibling of
+ * offerService(): no capture required, but the bar is high — regard 7 is a
+ * friendship built over many gifts and released prisoners, and the asking
+ * itself is safe only because courts are private.
+ */
+export function courtDefection(S, lordId) {
+  const lord = lordById(S, lordId);
+  if (!lord) return { ok: false, why: 'Gone from court' };
+  if (!S.ownFaction) return { ok: false, why: 'Nobody defects to a company for hire' };
+  if (lord.faction === S.ownFaction.id) return { ok: false, why: 'They already wear your colours' };
+  if ((lord.regard || 0) < 7) {
+    return { ok: false, why: 'They are not fond enough of Bracket to fall with it' };
+  }
+  const from = lord.faction;
+  lord.faction = S.ownFaction.id;
+  lord.vassal = true;
+  lord.fief = null;
+  if (S.rep[from] != null) S.rep[from] -= 8;
+  S.renown = (S.renown || 0) + 25;
+  pushLog(S, `${lord.name} has left ${FACTIONS[from]?.name || from} and sworn to ${S.ownFaction.name}.`, 'good');
+  return { ok: true };
+}
 
 /**
  * Put a vassal on one of your holdings.

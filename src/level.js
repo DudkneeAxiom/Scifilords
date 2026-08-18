@@ -1365,11 +1365,20 @@ function siteBastion(b) {
 
   // ---- the curtain ---------------------------------------------------------
   // Full span past the largest possible bounds (spread caps at 1.75 →
-  // ±196; segments reach ±198). One gate. That is the whole argument.
+  // ±196; segments reach ±198). One gate — and one grated culvert under
+  // the east curtain, because an assault should be a choice of doors.
   for (let i = -22; i <= 22; i++) {
     if (i === 0) continue;
+    if (i === 6) continue;                            // the culvert runs here
     b.prop('rampart', i * 9.0, WALL_Z, 0, BOX.rampart, 1);
   }
+  // The culvert: pipework through the wall line, sealed by a blast grate
+  // that a charge can take out. Containers narrow the gap so the way
+  // through, once open, is single file — the price of the quieter door.
+  b.prop('pipe_run', 54, WALL_Z, 0, BOX.pipe_run, 1);
+  b.prop('container', 50.2, WALL_Z, Math.PI / 2, BOX.container, 1.2);
+  b.prop('container', 57.8, WALL_Z, Math.PI / 2, BOX.container, 1.2);
+  b.prop('blast_door', 54, WALL_Z, 0, 'auto', 1);
   b.prop('gate', 0, WALL_Z, 0, 'auto', 1);
   b.prop('gate_tower', -7.6, WALL_Z, 0, BOX.gate_tower, 1);
   b.prop('gate_tower', 7.6, WALL_Z, 0, BOX.gate_tower, 1);
@@ -1421,6 +1430,8 @@ function siteBastion(b) {
     extraction: { x: 0, z: 76 },
     // Deep inside: the gate is the beginning, the keep is the end.
     objectivePoint: { x: 0, z: -70 },
+    // The second door. buildSiege turns this into a breach point.
+    culvert: { x: 54, z: -10 },
     enemyFaction: 'syndic',
     // Wall posts make the approach expensive; street and keep posts make
     // the breach expensive. Same doctrine as the fort, twice the depth.
@@ -1531,6 +1542,9 @@ export function build(siteId, seed, override = {}) {
     extraction: meta.extraction,
     enemyFaction: meta.enemyFaction,
     objectivePoint: meta.objectivePoint,
+    // The optional second breach. Explicit in this whitelist, because a meta
+    // field that is not is a meta field that never arrives.
+    culvert: meta.culvert || null,
     // Every layout hand-places its defenders and its patrol routes, and for a
     // long time none of that reached the mission — these two lines were simply
     // missing from the returned object, so spawnGarrison() always fell through

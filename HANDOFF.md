@@ -826,6 +826,67 @@ Open, in rough priority order:
    spawn model override — your amber ring is the side signal, the uniform
    is the training signal), and the roster card shows the lineage badge.
 
+**Price rumours** (this session). The trading loop's missing half:
+   `priceRumour(S, hereId)` scans the REAL per-town price tables for the
+   best spread from here across market towns, speaks it when it clears
+   1.35× ("Word is machine parts is fetching double… at Kestrel Yards"),
+   returns null when nothing does — a trader with no news says none. It
+   is deterministic per day because the tables are, so asking twice gets
+   the same sentence and hauling goods where it points FINDS the promised
+   price — the acceptance test checks the named pair's real ratio equals
+   the spoken one to five decimals. Wired into the market trader's chat
+   line in the town walk (main.js CHATS.market).
+
+**Lord temperaments** (this session). How a lord fights their war, fixed
+   at commissioning: `TEMPERS` in state.js — martial (odds ×0.7, host
+   ×1.15), cautious (×1.45, ×0.85), rapacious (×0.9), honorable (×1.15).
+   `odds` multiplies the winning chance a lord's party DEMANDS before
+   committing — LOWER is bolder, the same direction as the grudge
+   modifier, and getting that backwards makes cowards of the brave.
+   Applied in `partyIntent` (now exported for tests), in `tryCapture`
+   (the host a lord raises), and on the encounter panel (temperament line
+   first — it is the standing fact, history after). `temperOf(l)` has a
+   deterministic name-hash fallback so lords minted before temperaments
+   keep ONE stable disposition. The acceptance test SEARCHES for an even
+   fight before comparing intents — at a hardcoded strength the band's
+   odds sat above both thresholds and both lords chased.
+
+**The audit sweep** (this session). Ten systems from the M&B coverage
+   audit (claude.ai artifact "Kettle Reach Systems Audit"), implemented in
+   one run:
+   1. LORD COURTS — `lordAt` seats an un-fielded holder-faction lord per
+      town per day (companion-style rotation); the town walk gets an
+      `npc_lord`; `giftLord` (+1 regard, once/day, 300cr) and
+      `courtDefection` (ownFaction + regard ≥7 → vassal) in the chat.
+   2. PRISON BREAKS — `captureCompany` keeps a companion (75%, captor
+      needs towns) into `S.captives` + an unpaid rescue contract
+      (`c.rescue`); the recovery plays on the bastion with the medic-slot
+      prisoner NAMED; success returns them (summons-style pre-capture of
+      the contract fields); 12 days → 600cr auto-ransom if affordable.
+   3. THE CULVERT — second breach on the bastion (blast_door at (54,-10),
+      rampart i==6 skipped, containers narrow it); `blowCulvert` mirrors
+      blowGate's physical half; the grate-finder takes the NEAREST tall
+      obstacle within 3 — a loose match blew up a narrowing container.
+   4. ESCORTS — `maybeEscortContract` (one at a time, markets ≥250 apart);
+      ACCEPTING spawns the convoy (`p.convoyTo`); moveParties marches it,
+      `deliverConvoy` pays on arrival; a vanished convoy fails the
+      contract in the day sweep with a relation hit.
+   5. TAVERN — `mercBandAt`/`hireMercBand` (3 days, allies on every
+      deployment via the startMission funnel, visit/pit excluded);
+      `rollDice` at the pit door (46%, deterministic per attempt).
+   6. CIRCUIT — `exhibitionBout` (odds from `S.pitFame`), `betExhibition`
+      (one a night, underdogs 2.4×, winner's fame moves the next line),
+      `pitChampion` named on the pit door.
+   7. LEDGER — `recordPrices` on stall open (inventoryPanel), `ledgerBest`
+      surfaces "seen N at TOWN, day D" on carried goods when >1.15×.
+   8. WORKSHOPS — `buyWorkshop` 2400/sell 1600, income = town health
+      (manpower × war × relations), paid in the day tick, logged weekly.
+   9. WAR AS POLICY — `Dip.declareWarOn` (ownFaction only) beside the
+      existing suePeace, both on the diplomacy panel.
+   10. HAMLETS — five `kind:'hamlet'` feeders; `feedersOf`/`feederScale`
+      slow a settlement's manpower recovery ×0.4/razed (floor 0.25);
+      `tickTorching` lets raider bands raze them for a fortnight.
+
 ---
 
 ## The summary artifact

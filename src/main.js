@@ -457,6 +457,8 @@ function startVisit(loc) {
     siteName: loc.name, services: loc.services,
     hasFavour: !!fav, favourWho: fav?.who || null, locId: loc.id,
     companion: State.companionAt(S, loc.id),
+    // A lord at court, when the day's rotation seats one in this town.
+    lord: State.lordAt(S, loc.id),
   };
   // The commander walks alone. A squad in tow turns every lane into a
   // pathing exercise, and nobody brings four riflemen to buy rations.
@@ -497,24 +499,45 @@ function handleTownArea(spec, area) {
   // voice and options that lead into the appropriate screen — the panels
   // open OVER the chat, the way settlement verbs already work.
   const CHATS = {
-    market: {
-      who: 'The trader',
-      line: 'Prices are what the road makes them. Everything on these stalls '
-        + 'came through that gate one way or another — have a look.',
-      options: [{ id: 'trade', label: 'SEE THE STALLS', major: true }],
-    },
+    market: (() => {
+      const owned = !!(S.workshops || {})[loc.id];
+      return {
+        who: 'The trader',
+        // A trader with news shares it — the rumour reads the real price
+        // tables, so hauling goods where it points finds the promised spread.
+        line: 'Prices are what the road makes them. Everything on these stalls '
+          + 'came through that gate one way or another — have a look.'
+          + (State.priceRumour(S, loc.id)
+            ? ' ' + State.priceRumour(S, loc.id).text : '')
+          + (owned ? ` Your stall took ${State.workshopIncome(S, loc.id)} yesterday.` : ''),
+        options: [
+          { id: 'trade', label: 'SEE THE STALLS', major: true },
+          ...(loc.services?.includes('market') && !owned
+            ? [{ id: 'stall', label: `BUY THE STALL RIGHTS (${State.WORKSHOP_COST})` }] : []),
+          ...(owned ? [{ id: 'sellstall', label: `SELL THE STALL (${State.WORKSHOP_SELL})` }] : []),
+        ],
+      };
+    })(),
     board: {
       who: 'The posting clerk',
       line: 'Work goes up when it comes in, and it has been coming in. '
         + 'Read the board; ask me nothing the board can answer.',
       options: [{ id: 'board', label: 'READ THE BOARD', major: true }],
     },
-    recruit: {
-      who: 'The hiring agent',
-      line: 'People come through looking to sign with anyone who feeds them. '
-        + 'Some of them can even shoot. I keep the honest list.',
-      options: [{ id: 'services', label: 'WHO IS LOOKING FOR WORK', major: true }],
-    },
+    recruit: (() => {
+      const band = State.mercBandAt(S, loc.id);
+      return {
+        who: 'The hiring agent',
+        line: 'People come through looking to sign with anyone who feeds them. '
+          + 'Some of them can even shoot. I keep the honest list.'
+          + (band ? ` ${band.name} are drinking in the back — ${band.size} guns, `
+            + `${band.fee} for three days, paid up front.` : ''),
+        options: [
+          { id: 'services', label: 'WHO IS LOOKING FOR WORK', major: true },
+          ...(band ? [{ id: 'mercs', label: `HIRE ${band.name.toUpperCase()} (${band.fee})` }] : []),
+        ],
+      };
+    })(),
     medical: {
       who: 'The medic',
       line: 'Kits, beds, and no questions. Bring your wounded in before the '
@@ -534,6 +557,24 @@ function handleTownArea(spec, area) {
           ? ` [${DATA.OFFICERS[spec.companion.id].title}: ${DATA.OFFICERS[spec.companion.id].gift}]` : ''),
       options: [{ id: 'hire', label: 'SIGN THEM ON (' + spec.companion.fee + ')', major: true }],
     } : null,
+    lord: spec.lord ? (() => {
+      // Re-read from state: regard may have moved since the walk began.
+      const lord = State.lordById(S, spec.lord.id) || spec.lord;
+      const reg = lord.regard || 0;
+      const recv = reg >= 5 ? 'They receive you as a friend.'
+        : reg <= -5 ? 'They receive you coldly, and do not pretend otherwise.'
+          : 'They receive you with court manners and nothing warmer.';
+      return {
+        who: lord.name,
+        line: `${DATA.FACTIONS[lord.faction]?.name || 'The court'} holds this town, `
+          + `and today its court holds me. It is said I ${State.temperOf(lord).line}. ${recv}`,
+        options: [
+          { id: 'gift', label: 'SEND A GIFT (300)' },
+          ...(S.ownFaction && lord.faction !== S.ownFaction.id
+            ? [{ id: 'defect', label: 'ASK THEM TO TAKE YOUR COLOURS', major: true }] : []),
+        ],
+      };
+    })() : null,
     gate: {
       who: 'The gate watch',
       line: 'The road is the road and the walls are ours. Say the word when '
@@ -556,6 +597,39 @@ function handleTownArea(spec, area) {
         UI.closeModal();
         UI.toast('SIGNED ON', res.soldier.name + ' joins the company', 'good');
         spec.companion = null;
+        back();
+      }
+      else if (id === 'gift') {
+        const res = State.giftLord(S, spec.lord.id);
+        if (!res.ok) { Audio.uiDeny(); UI.toast('', res.why, 'bad'); return; }
+        Audio.uiSelect();
+        UI.toast('GIFT SENT', 'It was noted at court', 'good');
+      }
+      else if (id === 'defect') {
+        const res = State.courtDefection(S, spec.lord.id);
+        if (!res.ok) { Audio.uiDeny(); UI.toast('', res.why, 'bad'); return; }
+        UI.closeModal();
+        UI.toast('SWORN', 'A lord has taken your colours', 'good');
+        back();
+      }
+      else if (id === 'stall') {
+        const res = State.buyWorkshop(S, spec.locId);
+        if (!res.ok) { Audio.uiDeny(); UI.toast('', res.why, 'bad'); return; }
+        Audio.uiSelect();
+        UI.toast('STALL BOUGHT', 'It pays what the town can pay', 'good');
+      }
+      else if (id === 'sellstall') {
+        const res = State.sellWorkshop(S, spec.locId);
+        if (!res.ok) { Audio.uiDeny(); UI.toast('', res.why, 'bad'); return; }
+        Audio.uiSelect();
+        UI.toast('STALL SOLD', `${State.WORKSHOP_SELL} back on the ledger`, 'world');
+      }
+      else if (id === 'mercs') {
+        const res = State.hireMercBand(S, spec.locId);
+        if (!res.ok) { Audio.uiDeny(); UI.toast('', res.why, 'bad'); return; }
+        Audio.uiSelect();
+        UI.closeModal();
+        UI.toast('HIRED', `${res.band.name} ride with Bracket for three days`, 'good');
         back();
       }
       else if (id === 'leave') {
@@ -736,10 +810,13 @@ function specFor(loc, contract) {
     type: contract.type,
     site: loc.id,
     // A summoned army siege is fought on ground built for it — THE BASTION,
-    // from either side of the wall. Other contracts keep the location's own
-    // ground.
+    // from either side of the wall — and a prison break happens where
+    // prisons are: the bastion keep. Other contracts keep the location's
+    // own ground.
     layout: (contract.summons && (contract.type === 'siege' || contract.defend))
+      || contract.rescue
       ? 'bastion' : (loc.layout || 'array'),
+    ...(contract.rescue ? { rescueName: contract.rescueName } : {}),
     siteName: loc.name,
     // A faction's own ground is defended by that faction; neutral sites by
     // whoever is squatting there.
@@ -798,8 +875,11 @@ function startPit(loc) {
       wager,
     }, [State.commander(S)]);
   };
-  // The book takes stakes on the commander, Mount & Blade tournament style.
+  // The book takes stakes on the commander, Mount & Blade tournament style —
+  // and runs a named circuit of its own you can bet into.
   const stakes = [200, 500, 1000].filter((w) => (S.credits || 0) >= w);
+  const bout = State.exhibitionBout(S);
+  const champ = State.pitChampion(S);
   UI.modal({
     title: 'THE PIT',
     tag: loc.name.toUpperCase(),
@@ -807,15 +887,38 @@ function startPit(loc) {
       is next, the crowd bets on it, and you walk out either way.</div>
       <div class="prose mt">The book will also take a stake on the commander clearing
       the whole card — every round, nobody left to put in with you. It pays
-      <span class="hl">three to one</span>. Going down early keeps your money.</div>`,
+      <span class="hl">three to one</span>. Going down early keeps your money.</div>
+      ${champ ? `<div class="prose dim mt">The name on the wall is
+        <span class="hl">${UIesc(champ.name)}</span> — ${champ.wins} bouts standing.</div>` : ''}
+      ${bout ? `<div class="prose mt">Tonight's bout:
+        <span class="hl">${UIesc(bout.a.name)}</span> (${UIesc(bout.a.style)}) against
+        <span class="hl">${UIesc(bout.b.name)}</span> (${UIesc(bout.b.style)}).
+        The book has ${UIesc(bout.a.name)} at ${Math.round(bout.oddsA * 100)}.</div>` : ''}`,
     foot: '<button class="btn btn-major" data-x="none">JUST FIGHT</button>'
       + stakes.map((w) => `<button class="btn" data-wager="${w}">STAKE ${w}</button>`).join('')
+      + (bout ? `<button class="btn" data-bet="a">BET ${bout.a.name.split(' ')[0].toUpperCase()} (150)</button>`
+        + `<button class="btn" data-bet="b">BET ${bout.b.name.split(' ')[0].toUpperCase()} (150)</button>` : '')
+      + '<button class="btn" data-x="dice">ROLL DICE (100)</button>'
       + '<button class="btn" data-x="close">WALK AWAY</button>',
     onClose: () => G.world?.setPaused(false),
   });
   document.querySelector('#modal [data-x="close"]').onclick = () => {
     Audio.uiBack(); UI.closeModal(); G.world?.setPaused(false);
   };
+  document.querySelector('#modal [data-x="dice"]').onclick = () => {
+    const res = State.rollDice(S, 100);
+    if (!res.ok) { Audio.uiDeny(); UI.toast('', res.why, 'bad'); return; }
+    if (res.won) { Audio.uiSelect(); UI.toast('THE BONES CAME UP', '100 doubled', 'good'); }
+    else { Audio.uiDeny(); UI.toast('HOUSE TAKES IT', '100 gone', 'warn'); }
+  };
+  for (const el of document.querySelectorAll('#modal [data-bet]')) {
+    el.onclick = () => {
+      const res = State.betExhibition(S, el.dataset.bet === 'a', 150);
+      if (!res.ok) { Audio.uiDeny(); UI.toast('', res.why, 'bad'); return; }
+      if (res.won) { Audio.uiSelect(); UI.toast('YOUR FIGHTER TOOK IT', `${res.winner} — paid ${res.payout}`, 'good'); }
+      else { Audio.uiDeny(); UI.toast('WRONG NAME', `${res.winner} took the bout`, 'warn'); }
+    };
+  }
   document.querySelector('#modal [data-x="none"]').onclick = () => {
     Audio.uiSelect(); UI.closeModal(); begin(0);
   };
@@ -892,6 +995,14 @@ async function startMission(spec, squad) {
   G.screen = 'mission';
   UI.show('hud');
   UI.clearToasts();
+
+  // A hired mercenary band fights every job in its window — streamed onto
+  // the field as allies, like any force that is not on your payroll.
+  const merc = State.mercActive(G.campaign);
+  if (merc && spec.type !== 'visit' && spec.type !== 'pit') {
+    spec.allies = (spec.allies || 0) + merc.size;
+    spec.allyFaction = spec.allyFaction || 'syndic';
+  }
 
   G.mission = new Mission({
     campaign: G.campaign,

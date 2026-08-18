@@ -267,6 +267,23 @@ export function declareFaction(S, name, colour) {
   return { ok: true };
 }
 
+/**
+ * The other kingdom action: choosing the war. Only a declared power does
+ * this — a sworn company's wars belong to its liege, and a free company's
+ * fights are contracts, not policy.
+ */
+export function declareWarOn(S, factionId) {
+  const side = S.ownFaction?.id;
+  if (!side) return { ok: false, why: 'Only a declared power chooses its wars.' };
+  if (!MAJOR_FACTIONS.includes(factionId)) return { ok: false, why: 'They are not a power.' };
+  if (relationBetween(S, side, factionId) === 'war') {
+    return { ok: false, why: 'You are already at war with them.' };
+  }
+  setRelation(S, side, factionId, 'war', 45);
+  S.rep[factionId] = Math.min(S.rep[factionId] || 0, -10);
+  return { ok: true };
+}
+
 /** Sue for peace with a faction you are at war with, for money. */
 export function suePeaceCost(S, factionId) {
   return Math.round(900 + Math.abs(Math.min(0, standingOf(S, factionId))) * 60);

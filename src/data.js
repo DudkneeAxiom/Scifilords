@@ -533,6 +533,46 @@ export const LOCATIONS = [
   // nothing to steer toward and no reason to leave a road. These are the
   // in-between places: faction pickets that make territory feel HELD, and
   // unaligned ground with a reason to visit and a risk in visiting.
+  // The village tier: hamlets that FEED the settlements near them. No
+  // services, no contracts — they exist so the countryside can be hurt.
+  // A razed hamlet slows its settlement's manpower recovery for a
+  // fortnight (feederScale in state.js), which gives raiders a strategic
+  // weapon and garrisons a reason to patrol the fields.
+  {
+    id: 'welling', name: 'Welling Rows', kind: 'hamlet', faction: null, model: null,
+    x: -640, z: -330, region: 'kettle',
+    blurb: 'Terrace crops under Dolmet’s lamps. Feeds the depot.',
+    detail: 'Rows of cistern-fed terraces worked by families who count in Trust scrip. When Welling burns, Dolmet hires nobody for a month.',
+    services: [], missions: [], layout: 'roadside', contacts: [],
+  },
+  {
+    id: 'saltfield', name: 'Saltfield', kind: 'hamlet', faction: null, model: null,
+    x: -450, z: -520, region: 'kettle',
+    blurb: 'Evaporation pans south of Dolmet. Bitter work.',
+    detail: 'Pan-scrapers and brine carts. The salt goes north, the people follow it when the pans die.',
+    services: [], missions: [], layout: 'roadside', contacts: [],
+  },
+  {
+    id: 'greenstep', name: 'Greenstep', kind: 'hamlet', faction: null, model: null,
+    x: 720, z: 250, region: 'kettle',
+    blurb: 'Reclaimer runoff makes the one green field in the Flats.',
+    detail: 'Perran’s kitchen garden, grown in filtered runoff. Everyone here is somebody’s cousin at the reclaimer.',
+    services: [], missions: [], layout: 'roadside', contacts: [],
+  },
+  {
+    id: 'wireacre', name: 'Wireacre', kind: 'hamlet', faction: null, model: null,
+    x: 950, z: -170, region: 'kettle',
+    blurb: 'Scrap-fenced smallholdings under Kestrel’s masts.',
+    detail: 'Chicken wire, antenna guys, and beans. Kestrel Yards eats what Wireacre grows and pretends otherwise.',
+    services: [], missions: [], layout: 'roadside', contacts: [],
+  },
+  {
+    id: 'lowfen', name: 'Lowfen', kind: 'hamlet', faction: null, model: null,
+    x: 10, z: 730, region: 'kettle',
+    blurb: 'Fen plots on the wet ground south of Vetch.',
+    detail: 'The only ground in the Reach that floods on purpose. Vetch Crossing’s markets start here.',
+    services: [], missions: [], layout: 'roadside', contacts: [],
+  },
   {
     id: 'span', name: 'Broken Span', kind: 'wild', faction: null, model: null,
     x: -900, z: -700, region: 'kettle',

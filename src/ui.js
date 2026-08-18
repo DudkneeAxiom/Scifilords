@@ -1014,6 +1014,8 @@ export function diplomacyPanel(S, cbs) {
           TRIBUTE — ${Dip.tributeCost(S, id)} CR</button>
         ${atWar ? `<button class="btn" data-peace="${id}" ${S.credits >= Dip.suePeaceCost(S, id) ? '' : 'disabled'}>
           SUE FOR PEACE — ${Dip.suePeaceCost(S, id)} CR</button>` : ''}
+        ${S.ownFaction && !atWar ? `<button class="btn btn-warn" data-war="${id}">
+          DECLARE WAR</button>` : ''}
         ${!S.allegiance && !S.ownFaction ? `<button class="btn ${commission.ok ? 'btn-warn' : ''}"
           data-join="${id}" ${commission.ok ? '' : 'disabled'} title="${esc(commission.why || '')}">
           TAKE COMMISSION</button>` : ''}
@@ -1147,6 +1149,18 @@ export function diplomacyPanel(S, cbs) {
         State.refreshHostility(S);
         Audio.uiSelect();
         oathPanel(S, FACTIONS[id].name, () => again());
+      } else { Audio.uiDeny(); toastModal(res.why); }
+    };
+  }
+  for (const el of document.querySelectorAll('#modal [data-war]')) {
+    el.onclick = () => {
+      const id = el.dataset.war;
+      const res = Dip.declareWarOn(S, id);
+      if (res.ok) {
+        State.pushLog(S, `${S.ownFaction.name} has declared war on ${FACTIONS[id].name}.`, 'bad');
+        State.refreshHostility(S);
+        Audio.uiAlert();
+        again();
       } else { Audio.uiDeny(); toastModal(res.why); }
     };
   }
@@ -1681,6 +1695,9 @@ const itemTile = (src, label, sub, extra = '') => `
 export function inventoryPanel(S, cbs) {
   const loc = State.locById(S.atLocation);
   const canTrade = !!(loc && loc.services?.includes('trade'));
+  // Opening the stalls writes today's prices into the company ledger —
+  // knowledge you walked in and got, and the trading loop's memory.
+  if (canTrade) State.recordPrices(S, loc.id);
   const used = State.cargoUsed(S);
   const cap = State.CARGO_CAPACITY;
 
@@ -1689,10 +1706,15 @@ export function inventoryPanel(S, cbs) {
     const g = GOODS[id];
     const here = canTrade ? State.sellPriceAt(S, loc.id, id) : null;
     const trend = canTrade ? State.priceTrend(loc.id, id) : 'flat';
+    // The ledger speaks when somewhere you have BEEN pays meaningfully more.
+    const seen = State.ledgerBest(S, id, loc?.id);
+    const ledgerLine = seen && here && seen.price > here * 1.15
+      ? ` &middot; <span class="dim">seen ${seen.price} at ${esc(State.locName(seen.at))}, day ${seen.day}</span>`
+      : '';
     return itemTile(
       Models.goodIcon(id, 72), g.name,
       `${n} units &middot; ${g.bulk * n} bulk`
-      + (here ? ` &middot; <span class="pr ${trend}">${here} here</span>` : ''),
+      + (here ? ` &middot; <span class="pr ${trend}">${here} here</span>` : '') + ledgerLine,
       canTrade ? `<div class="inv-actions">
         <button class="btn" data-sell="${id}" data-qty="1">SELL 1</button>
         <button class="btn" data-sell="${id}" data-qty="${n}">ALL</button>
@@ -2536,6 +2558,8 @@ export function encounterPanel(S, party, cbs) {
     const lord = State.lordOfParty(S, party);
     if (!lord) return '';
     const past = [];
+    // Temperament first: it is the standing fact, the rest is history.
+    past.push(State.temperOf(lord).line);
     if (lord.defeats) past.push(`you have broken their command ${lord.defeats} time(s)`);
     if (lord.wins) past.push(`they have ${lord.wins} win(s) on the road`);
     if ((lord.regard || 0) >= 5) past.push('they owe you their freedom');
