@@ -957,6 +957,30 @@ Two more from the audit's MISSING column:
 
 ---
 
+## Disguise and infiltration (after feasts/banner)
+
+The M&B disguise run. `hostileTown` (state.js): a settlement whose
+holder `Dip.isHostileToPlayer` — standing-hostile OR at war with your
+side — and that you do not hold, no longer opens its menu. enterLocation
+shows `UI.gatePanel` instead: TURN AROUND, TAKE THE PLACE APART (raid —
+without this the gate made raiding hostile towns unreachable), or GO IN
+QUIET → `startDisguise`.
+
+Under the coat: `settlementMenu` filters verbs to market/wait/walk (the
+QUIET_VERBS list) and shows a LOW PROFILE tag with the current risk.
+Every verb used rolls `disguiseAct` — deterministic per site+day+act
+count, chance `disguiseRisk` = 4% + renown/3000 capped 35%. Made →
+`UI.madePanel` (blocking): FIGHT CLEAR deploys a settlement-layout
+skirmish against the owner's watch (12-strong warband party), HANDS OUT
+runs `captureCompany(owner)`. Leaving the menu ends the disguise
+(`endDisguise` in the `leave` closure), and getting made costs -6 town
+relation.
+
+Trap: the disguise state is `S.disguise = {site, day, acts}` — scoped to
+one town; `disguisedAt(S, otherTown)` is false.
+
+---
+
 ## The summary artifact
 
 <https://claude.ai/code/artifact/9070868b-f320-47b9-818c-2e2cfa32745d>

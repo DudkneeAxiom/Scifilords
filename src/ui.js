@@ -2219,6 +2219,54 @@ export function debtPanel(S, loc, cbs) {
 }
 
 /**
+ * The gate of a town whose holder shoots at your colours: turned away,
+ * unless you leave the company outside and walk in as nobody.
+ */
+export function gatePanel(S, loc, cbs) {
+  const risk = Math.round(State.disguiseRisk(S) * 100);
+  modal({
+    title: 'THE GATE',
+    tag: esc(loc.name.toUpperCase()),
+    body: `<div class="prose">The guard reads your plates twice. ${esc(loc.name)} is held
+        by people at war with you, and the gate does not open for Bracket colours.</div>
+      <div class="prose dim mt">A plain coat and borrowed plates would get one person
+        through. The company camps outside, the town shrinks to its market and its
+        streets, and every errand run in there is a ${risk}% chance somebody
+        remembers a poster. The bigger your name, the worse those odds.</div>`,
+    foot: `<button class="btn btn-major" data-x="quiet">GO IN QUIET</button>
+      <button class="btn btn-warn" data-x="raid">TAKE THE PLACE APART</button>
+      <button class="btn" data-x="close">TURN AROUND</button>`,
+    onClose: cbs.onClose,
+  });
+  wire({
+    close: onCloseWrap(cbs.onClose),
+    quiet: () => { Audio.uiSelect(); cbs.onQuiet(); },
+    raid: () => { Audio.uiSelect(); cbs.onRaid(); },
+  });
+}
+
+/**
+ * Made. The coat did not hold, and the ways out are the ways out.
+ */
+export function madePanel(S, loc, cbs) {
+  modal({
+    title: 'MADE',
+    tag: esc(loc.name.toUpperCase()),
+    body: `<div class="prose">Somebody looked twice, and then a whistle went up the
+        street. The watch is coming, and they know exactly whose face that is.</div>
+      <div class="prose dim mt">Fight your way back to the wire, or put your hands
+        out and let them take the company for whatever a captor takes.</div>`,
+    foot: `<button class="btn btn-major btn-warn" data-x="fight">FIGHT CLEAR</button>
+      <button class="btn" data-x="surrender">HANDS OUT</button>`,
+    blocking: true,
+  });
+  wire({
+    fight: () => { Audio.deployTone(); cbs.onFight(); },
+    surrender: () => { Audio.uiBack(); cbs.onSurrender(); },
+  });
+}
+
+/**
  * The hall during a feast: who is in it, and whether the door opens for you.
  */
 export function feastPanel(S, loc, cbs) {
@@ -2371,12 +2419,20 @@ export function settlementMenu(S, loc, cbs) {
   if (!held) verb('raid', 'Take the place apart', 'They will not forget it', 'warn');
   if (cbs.canSeize) verb('seize', 'Take it for Bracket', 'Break whoever holds it and stand in it', 'warn');
 
+  // Under a plain coat the town is a smaller place: the stalls, a bench to
+  // wait on, the streets. Every named interaction — recruiting, the board,
+  // the pit — is a face remembered, so none of them are offered.
+  const disguised = State.disguisedAt(S, loc.id);
+  const QUIET_VERBS = ['market', 'wait', 'walk'];
+  const shown = disguised ? verbs.filter((v) => QUIET_VERBS.includes(v.id)) : verbs;
+
   const body = `
     <div class="sm-head">
       <div class="sm-where">
         <span class="sm-name">${esc(loc.name)}</span>
         <span class="tag ${loc.faction || 'none'}">${f ? esc(f.short) : 'UNALIGNED'}</span>
         ${held ? '<span class="tag player">BRACKET</span>' : ''}
+        ${disguised ? '<span class="tag warn">LOW PROFILE</span>' : ''}
       </div>
       <div class="sm-standing">
         <span class="lbl">THEY REGARD YOU AS</span>
@@ -2385,9 +2441,12 @@ export function settlementMenu(S, loc, cbs) {
       </div>
     </div>
     <div class="prose sm-blurb">${esc(loc.detail || loc.blurb)}</div>
+    ${disguised ? `<div class="prose dim">The company is camped out past the wire. In here
+      it is just you, a plain coat, and a ${Math.round(State.disguiseRisk(S) * 100)}% chance
+      per errand that somebody remembers the poster.</div>` : ''}
     ${rumourLine(S, loc)}
     <div class="sm-verbs">
-      ${verbs.map((v) => `<button class="sm-verb ${v.cls}" data-verb="${v.id}">
+      ${shown.map((v) => `<button class="sm-verb ${v.cls}" data-verb="${v.id}">
         <span class="sv-label">${v.label}</span>
         <span class="sv-note">${v.note}</span>
       </button>`).join('')}

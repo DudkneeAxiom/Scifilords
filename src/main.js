@@ -351,9 +351,41 @@ function enterLocation() {
   // the duration — a visit is being somewhere, not parking outside it.
   G.world?.setInside(true);
   const leave = () => {
+    // Walking out the gate is the end of the coat either way.
+    State.endDisguise(S);
     G.visiting = false;
     G.world?.setInside(false);
     G.world?.setPaused(false);
+  };
+
+  // The coat did not hold: the watch knows the face, and the ways out are
+  // the ways out — shoot back to the wire, or hands out.
+  const made = () => {
+    const owner = State.ownerOf(S, loc.id);
+    State.endDisguise(S);
+    State.changeRelation(S, loc.id, -6, 'a face off a poster');
+    UI.madePanel(S, loc, {
+      onFight: () => {
+        G.visiting = false;
+        G.world?.setInside(false);
+        UI.closeModal();
+        openDeploy({
+          type: 'skirmish', site: 'settlement', layout: 'settlement',
+          siteName: loc.name, enemyFaction: owner,
+          party: {
+            strength: 12, quality: 1,
+            kind: owner === 'trust' ? 'warband_trust' : 'warband_syndic',
+            name: `${loc.name} watch`,
+          },
+        });
+      },
+      onSurrender: () => {
+        const taken = State.captureCompany(S, owner, makeRng(S.seed + S.day * 31));
+        UI.closeModal();
+        leave();
+        UI.toast('TAKEN', `${taken.days} days gone, ${taken.credits} credits with them`, 'bad');
+      },
+    });
   };
 
   const openMenu = () => {
@@ -362,6 +394,11 @@ function enterLocation() {
       canWalk: !!loc.services.length && (loc.layout || 'settlement') === 'settlement',
       onClose: leave,
       onVerb: (verb) => {
+        // Every errand under the coat is one more chance to be remembered.
+        if (State.disguisedAt(S, loc.id)) {
+          const act = State.disguiseAct(S);
+          if (act.made) { made(); return; }
+        }
         if (verb === 'walk') { G.visiting = false; UI.closeModal(); startVisit(loc); return; }
         if (verb === 'deploy') { G.visiting = false; UI.closeModal(); openDeploy(specFor(loc, c)); return; }
         if (verb === 'seize') { G.visiting = false; Audio.uiSelect(); startSeizure(loc); return; }
@@ -459,6 +496,16 @@ function enterLocation() {
       foot.appendChild(b);
     }
   };
+  // A town whose holder is at war with you does not open for your colours.
+  // The choice at the gate: turn around, or go in under a plain coat.
+  if (State.hostileTown(S, loc.id) && !State.disguisedAt(S, loc.id)) {
+    UI.gatePanel(S, loc, {
+      onQuiet: () => { State.startDisguise(S, loc.id); openMenu(); },
+      onRaid: () => { G.visiting = false; UI.closeModal(); startRaid(loc); },
+      onClose: leave,
+    });
+    return;
+  }
   openMenu();
 }
 

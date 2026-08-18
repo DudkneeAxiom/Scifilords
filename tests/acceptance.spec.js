@@ -6767,3 +6767,59 @@ test('the hall and the banner: feasts gather the lords, colours get chosen', asy
   expect(r.name).toBe('The Redline Charter');
   expect(r.colour2).toBe(0x3f7fc0);
 });
+
+test('a plain coat and borrowed plates: hostile gates, quiet errands, posters', async ({ page }) => {
+  await boot(page);
+  await newCampaign(page);
+  const r = await page.evaluate(() => {
+    const { State, DATA, Dip } = window.KR.dev;
+    const S = window.KR.campaign;
+    const town = DATA.LOCATIONS.find((l) => l.kind === 'settlement'
+      && State.ownerOf(S, l.id) === 'trust' && l.services?.length);
+    // Neutral standing: the gate opens like it always did.
+    const open = State.hostileTown(S, town.id);
+    // Their patrols shoot at you now: the gate does not.
+    S.rep.trust = -30;
+    State.refreshHostility(S);
+    const shut = State.hostileTown(S, town.id);
+    // Your own ground never turns you away, whatever the war says.
+    S.holdings[town.id] = { upgrades: {}, takenDay: S.day };
+    const owned = State.hostileTown(S, town.id);
+    delete S.holdings[town.id];
+
+    // Under the coat: renown scales the risk, acts count up, and the roll is
+    // deterministic per site+day+act — the same afternoon reads the same.
+    S.renown = 0;
+    const lowRisk = State.disguiseRisk(S);
+    S.renown = 3000;
+    const highRisk = State.disguiseRisk(S);
+    State.startDisguise(S, town.id);
+    const inCoat = State.disguisedAt(S, town.id);
+    const elsewhere = State.disguisedAt(S, 'span');
+    S.renown = 0;
+    const a1 = State.disguiseAct(S);
+    const acts = S.disguise.acts;
+    // Walk the acts until somebody looks twice; risk floor 4% must land
+    // within a few hundred errands, deterministically.
+    S.renown = 3000;
+    let made = a1.made, guard = 0;
+    while (!made && guard++ < 400) made = State.disguiseAct(S).made;
+    const caught = made;
+    State.endDisguise(S);
+    const shed = !S.disguise;
+    return {
+      open, shut, owned, lowRisk, highRisk, inCoat, elsewhere,
+      firstActs: acts, caught, shed,
+    };
+  });
+  expect(r.open).toBe(false);
+  expect(r.shut).toBe(true);
+  expect(r.owned).toBe(false);
+  expect(r.lowRisk).toBeLessThan(r.highRisk);
+  expect(r.highRisk).toBeGreaterThanOrEqual(0.35);
+  expect(r.inCoat).toBe(true);
+  expect(r.elsewhere).toBe(false);
+  expect(r.firstActs).toBe(1);
+  expect(r.caught).toBe(true);
+  expect(r.shed).toBe(true);
+});

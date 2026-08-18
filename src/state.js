@@ -3137,6 +3137,56 @@ export const favourAsk = (f) => favourText(f, 'ask');
  * is attached to, and killing it on a loss would send them straight back to the
  * reload they were being spared.
  */
+// --------------------------------------------------------------------------
+// Disguise: getting into a town that would rather shoot you
+// --------------------------------------------------------------------------
+
+/** Does this settlement's holder turn Bracket away at the gate? */
+export function hostileTown(S, locId) {
+  const owner = ownerOf(S, locId);
+  if (owner !== 'trust' && owner !== 'syndic') return false;
+  if (isHolding(S, locId)) return false;
+  return Dip.isHostileToPlayer(S, owner);
+}
+
+/**
+ * Leave the company camped outside and walk in as nobody. The M&B disguise
+ * run: everything you do inside is one more chance for somebody to look
+ * twice, and the bigger your name, the more faces have seen a poster of it.
+ */
+export function startDisguise(S, locId) {
+  S.disguise = { site: locId, day: S.day, acts: 0 };
+  pushLog(S, `Bracket went into ${locName(locId)} quiet: plain coat, borrowed plates, no colours.`);
+  return S.disguise;
+}
+
+export function endDisguise(S) { S.disguise = null; }
+
+export const disguisedAt = (S, locId) => S.disguise?.site === locId;
+
+/** Per-act discovery chance. Renown is the enemy of anonymity. */
+export function disguiseRisk(S) {
+  return clamp(0.04 + (S.renown || 0) / 3000, 0.04, 0.35);
+}
+
+/**
+ * One more thing done under a plain coat. Deterministic per site, day and
+ * act count — reloading the same afternoon reads the same faces.
+ */
+export function disguiseAct(S) {
+  if (!S.disguise) return { made: false };
+  S.disguise.acts += 1;
+  const sid = S.disguise.site;
+  let h = 0;
+  for (let i = 0; i < sid.length; i++) h = (h * 31 + sid.charCodeAt(i)) | 0;
+  const roll = rng((S.seed ^ Math.abs(h)) + S.day * 613 + S.disguise.acts * 89)();
+  if (roll < disguiseRisk(S)) {
+    pushLog(S, 'Somebody looked twice. Then a third time, at a poster.', 'bad');
+    return { made: true, acts: S.disguise.acts };
+  }
+  return { made: false, acts: S.disguise.acts };
+}
+
 export function captureCompany(S, captor, r) {
   const days = irange(r, 4, 11);
 
