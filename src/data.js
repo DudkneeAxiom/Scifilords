@@ -527,6 +527,54 @@ export const LOCATIONS = [
     detail: 'Guns that point at an ocean nothing has crossed in living memory, kept in perfect order.',
     services: [], missions: ['seize', 'sabotage', 'defense'], layout: 'outpost', contacts: [],
   },
+
+  // ---- filling the country: outposts and places worth a detour ---------
+  // The provinces read as empty between their towns — long stretches with
+  // nothing to steer toward and no reason to leave a road. These are the
+  // in-between places: faction pickets that make territory feel HELD, and
+  // unaligned ground with a reason to visit and a risk in visiting.
+  {
+    id: 'span', name: 'Broken Span', kind: 'wild', faction: null, model: null,
+    x: -900, z: -700, region: 'kettle',
+    blurb: 'A collapsed viaduct. The road under it is the landmark.',
+    detail: 'Half a highway bridge, down since before anyone. The camp under the standing half changes hands by season.',
+    services: [], missions: ['skirmish', 'recovery'], layout: 'roadside', contacts: [],
+  },
+  {
+    id: 'reservoir', name: 'Dry Reservoir', kind: 'wild', faction: null, model: null,
+    x: 1100, z: -1100, region: 'kettle',
+    blurb: 'An empty bowl of cracked concrete. Deserters like it.',
+    detail: 'The basin the Trust drained and never refilled. Out of sight of every road, which is the point of camping in it.',
+    services: [], missions: ['skirmish', 'lair'], layout: 'depot', contacts: [],
+  },
+  {
+    id: 'relay12', name: 'Relay 12', kind: 'outpost', faction: 'trust',
+    model: 'wm_outpost', x: -700, z: -1350, region: 'sarn',
+    blurb: 'Trust signals picket on the uplands road.',
+    detail: 'Four masts and a generator shed. The uplands traffic moves because this place says it may.',
+    services: [], missions: ['sabotage', 'seize', 'defense'], layout: 'outpost', contacts: [],
+  },
+  {
+    id: 'tollgate', name: 'Weal Tollgate', kind: 'outpost', faction: 'syndic',
+    model: 'wm_outpost', x: 1400, z: 500, region: 'weal',
+    blurb: 'Syndic checkpoint where the east road enters the Weal.',
+    detail: 'A counterweighted barrier and a ledger. The Syndic taxes the road because the road is theirs to tax.',
+    services: [], missions: ['seize', 'sabotage', 'defense'], layout: 'fort', contacts: [],
+  },
+  {
+    id: 'crawler', name: 'Wrecked Crawler', kind: 'wild', faction: null, model: null,
+    x: -1500, z: 900, region: 'scour',
+    blurb: 'A mining crawler the size of a street, dead where it stopped.',
+    detail: 'Stripped a little more every year. Whole rooms inside have not been opened since the crews walked off.',
+    services: [], missions: ['recovery', 'skirmish'], layout: 'works', contacts: [],
+  },
+  {
+    id: 'gantry', name: 'Anchor Gantry', kind: 'outpost', faction: 'syndic',
+    model: 'wm_outpost', x: 900, z: 1500, region: 'littoral',
+    blurb: 'Syndic crane yard holding the road to the Anchorage.',
+    detail: 'Loading gantries worked by council crews. The only heavy lift south of the pan, and priced accordingly.',
+    services: [], missions: ['seize', 'defense'], layout: 'depot', contacts: [],
+  },
 ];
 
 // --------------------------------------------------------------------------

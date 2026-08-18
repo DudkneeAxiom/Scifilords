@@ -9,7 +9,7 @@
 import * as THREE from '../vendor/three/three.module.min.js';
 import * as Models from './models.js';
 import * as Audio from './audio.js';
-import { LOCATIONS, REGION, REGIONS, FACTIONS } from './data.js';
+import { LOCATIONS, REGION, REGIONS, FACTIONS, PARTY_TIERS } from './data.js';
 import * as State from './state.js';
 import * as Dip from './diplomacy.js';
 import { clamp, lerp, rng, range, pick } from './util.js';
@@ -1276,11 +1276,26 @@ export class WorldMap {
       ground: travelFactor(this.S.pos.x, this.S.pos.z),
       contract: State.activeContract(S),
       contracts: S.contracts,
-      nearParties: (this.nearParties || []).map((p) => ({
-        id: p.id, name: p.name, faction: p.faction, strength: p.strength,
-        tier: p.tier, hostile: p.hostileToPlayer,
-        dist: Math.hypot(p.x - S.pos.x, p.z - S.pos.z),
-      })),
+      nearParties: (this.nearParties || []).map((p) => {
+        const dist = Math.hypot(p.x - S.pos.x, p.z - S.pos.z);
+        // What they are DOING is most of what a contact report is worth.
+        const intent = p.battle ? 'FIGHTING'
+          : p.chasing ? 'PURSUING YOU'
+            : p.routed ? 'ROUTED'
+              : p.reinforce ? 'MOVING TO A FIGHT'
+                : p.siegeTarget ? 'MARCHING'
+                  : (PARTY_TIERS[p.kind]?.static ? 'DUG IN' : 'PATROLLING');
+        // Numbers harden as they close: a column at the edge of sight is an
+        // estimate, not a count.
+        const close = dist < 80;
+        const est = close ? String(Math.round(p.strength))
+          : `${Math.max(1, Math.floor(p.strength * 0.75))}–${Math.ceil(p.strength * 1.3)}`;
+        return {
+          id: p.id, name: close ? p.name : (p.hostileToPlayer ? 'Unknown armed group' : p.name),
+          faction: p.faction, strength: p.strength, est, intent,
+          tier: p.tier, hostile: p.hostileToPlayer, dist,
+        };
+      }),
       renown: S.renown || 0,
       allegiance: S.allegiance,
       ownFaction: S.ownFaction,

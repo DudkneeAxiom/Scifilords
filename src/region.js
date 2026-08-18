@@ -172,6 +172,12 @@ export const ROADS = [
   ['sarnhold', 'pellcross'],
   ['sarnhold', 'meridian'],
   ['pellcross', 'vantree'],
+  // Pickets sit ON the routes they watch, or they watch nothing.
+  ['dolmet', 'relay12'],
+  ['relay12', 'sarnhold'],
+  ['perran', 'tollgate'],
+  ['tollgate', 'wealbastion'],
+  ['gantry', 'anchorage'],
 ];
 
 // Resolved once. The road list is names; the maths wants coordinates, and this

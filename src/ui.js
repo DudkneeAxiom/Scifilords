@@ -644,6 +644,27 @@ export function renderWorldHud(h) {
     if (leg.dataset.sig !== html) { leg.innerHTML = html; leg.dataset.sig = html; }
   }
 
+  // Contacts: the nearest parties as a terse report — what they are, roughly
+  // how many (numbers harden as they close), and what they are DOING. The
+  // intent line is most of the value: PURSUING YOU and PATROLLING are
+  // different decisions at a glance.
+  const ct = $('wh-contacts');
+  if (ct) {
+    const rows = (h.nearParties || []).slice()
+      .sort((a, b) => a.dist - b.dist).slice(0, 3);
+    if (!rows.length) {
+      ct.classList.add('hidden');
+      ct.dataset.sig = '';
+    } else {
+      ct.classList.remove('hidden');
+      const html2 = `<div class="panel-title">CONTACTS</div>` + rows.map((p) =>
+        `<div class="log-line ${p.hostile ? 'bad' : ''}">`
+        + `<span class="t">${esc(p.est)}</span>${esc(p.name)}`
+        + `<span class="dim"> · ${esc(p.intent)} · ${Math.round(p.dist)}m</span></div>`).join('');
+      if (ct.dataset.sig !== html2) { ct.innerHTML = html2; ct.dataset.sig = html2; }
+    }
+  }
+
   // Log
   const lg = $('wh-log');
   const html = `<div class="panel-title">COMPANY LOG</div>` + (h.log.slice(0, 9).map((l) =>
