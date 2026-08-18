@@ -942,18 +942,28 @@ def prop_landing_pad():
 
 
 def prop_checkpoint():
+    """The booth alone. The boom bar is its own no-collision model now: with
+    both in one mesh, the 'auto' collision box spanned the whole arm — an
+    invisible wall ten metres wide that stopped bullets under a strip of
+    painted tin. A boom bar is scenery; a booth is cover."""
     clear()
     root = empty("root")
     box("hut", (2.4, 2.4, 2.6), (0, 0, 1.3), "olive_dk", root)
     box("hut_roof", (2.8, 2.8, 0.22), (0, 0, 2.7), "steel_dk", root)
     box("window", (2.1, 0.12, 0.9), (0, -1.22, 1.75), "glass", root)
-    cyl("post", 0.14, 1.8, (2.0, -0.6, 0.9), "steel_dk", root)
-    box("boom", (6.0, 0.18, 0.18), (5.0, -0.6, 1.6), "bone", root)
-    for i in range(5):
-        box(f"band{i}", (0.6, 0.20, 0.20), (2.6 + i * 1.2, -0.6, 1.6),
-            "orange" if i % 2 == 0 else "bone", root)
     box("sign", (1.0, 0.08, 0.7), (-1.7, -1.25, 2.0), "ochre_dk", root)
     export("checkpoint")
+
+
+def prop_checkpoint_boom():
+    clear()
+    root = empty("root")
+    cyl("post", 0.14, 1.8, (0, 0, 0.9), "steel_dk", root)
+    box("boom", (6.0, 0.18, 0.18), (3.0, 0, 1.6), "bone", root)
+    for i in range(5):
+        box(f"band{i}", (0.6, 0.20, 0.20), (0.6 + i * 1.2, 0, 1.6),
+            "orange" if i % 2 == 0 else "bone", root)
+    export("checkpoint_boom")
 
 
 def prop_catwalk():
@@ -1356,6 +1366,7 @@ def main():
     prop_pipe_run()
     prop_landing_pad()
     prop_checkpoint()
+    prop_checkpoint_boom()
     prop_catwalk()
     prop_antenna_small()
     prop_dead_tree()

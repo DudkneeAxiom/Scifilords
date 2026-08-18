@@ -635,6 +635,7 @@ function siteRampart(b) {
   b.prop('watchtower', 18, 18, 0, BOX.watchtower, 1);
   b.prop('bunker', 16, -14, -Math.PI / 2, BOX.bunker, 1);
   b.prop('checkpoint', 0, 30, Math.PI, BOX.checkpoint, 1);
+  b.prop('checkpoint_boom', 0, 30, Math.PI, null, 1);
 
   // Perimeter wall of barriers with two deliberate gaps (N and W).
   for (let i = -5; i <= 5; i++) {
@@ -737,6 +738,7 @@ function siteRoadside(b) {
   b.prop('sandbags', -11, 12, 0.4, BOX.sandbags, 1.2);
   b.prop('pipe_run', 20, -2, Math.PI / 2, BOX.pipe_run, 1);
   b.prop('checkpoint', -22, 20, -0.6, BOX.checkpoint, 1);
+  b.prop('checkpoint_boom', -22, 20, -0.6, null, 1);
   b.prop('crate', -7, -14, 0.2, BOX.crate, 1);
   b.prop('crate', -5.8, -13, 1.0, BOX.crate, 1);
   b.scatter(['rock_0', 'rock_1', 'rock_2', 'rock_3'], 26, 0, 0, 44);
@@ -778,6 +780,7 @@ function siteDepot(b) {
   b.prop('watchtower', -26, -18, 0, BOX.watchtower, 1);
   b.prop('watchtower', 26, -18, 0, BOX.watchtower, 1);
   b.prop('checkpoint', 0, 40, Math.PI, BOX.checkpoint, 1);
+  b.prop('checkpoint_boom', 0, 40, Math.PI, null, 1);
   b.prop('catwalk', 0, 24, 0, BOX.catwalk, 1);
   for (let i = -4; i <= 4; i++) {
     if (Math.abs(i) > 1) {
@@ -880,6 +883,7 @@ function siteSettlement(b) {
   b.prop('sandbags', -8, 31, 0.3, BOX.sandbags, 1.2);
   // A guard post just inside the arch.
   b.prop('checkpoint', -7, 22, 0, BOX.checkpoint, 1);
+  b.prop('checkpoint_boom', -5.5, 22, 0, null, 1);
   b.prop('sandbags', 7, 22.5, -0.2, BOX.sandbags, 1.1);
 
   // ---- the road in: a loose gate row, then it opens onto the square ----
@@ -1000,6 +1004,7 @@ function siteWorks(b) {
   b.prop('bunker', -24, -14, Math.PI / 2, BOX.bunker, 1.1);
 
   b.prop('checkpoint', -3, 24, 0, BOX.checkpoint, 1);
+  b.prop('checkpoint_boom', -1.5, 24, 0, null, 1);
   b.prop('sandbags', 3, 23, -0.4, BOX.sandbags, 1.2);
   b.prop('watchtower', -22, 20, 0, BOX.watchtower, 1);
   b.prop('truck_wreck', 10, 20, -0.7, BOX.truck_wreck, 1);

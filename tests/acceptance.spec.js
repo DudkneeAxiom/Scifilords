@@ -417,7 +417,7 @@ test('recruitment at a settlement adds a soldier and charges credits', async ({ 
   await page.evaluate(() => {
     const S = window.KR.campaign;
     window.KR.world.stopTravel();
-    S.pos.x = -210; S.pos.z = -150;
+    S.pos.x = -550; S.pos.z = -410;
     S.credits = 3000;
     window.__testSite = [S.pos.x, S.pos.z];
   });
@@ -1050,7 +1050,7 @@ test('a seize deployment requires holding the ground, not just clearing it', asy
       title: 'Take Rampart 12', text: 'test', pay: 0, expiresDay: S.day + 9, accepted: true,
     });
     window.KR.world.stopTravel();
-    S.pos.x = -60; S.pos.z = -278;
+    S.pos.x = -160; S.pos.z = -748;
     window.__testSite = [S.pos.x, S.pos.z];
   });
   await page.waitForTimeout(900);
