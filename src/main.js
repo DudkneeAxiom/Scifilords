@@ -565,6 +565,25 @@ function handleEncounter(party, opts = {}) {
     cornered: !!opts.cornered,
     onClose: () => G.world?.setPaused(false),
     // Buy your way past. The band takes the money and moves off the road.
+    // Deserters pressed by better odds hand over what they carry and walk.
+    onYield: (p) => {
+      UI.closeModal();
+      G.world?.setPaused(false);
+      const r2 = makeRng((S.seed + S.day * 53 + 11) | 0);
+      if (r2() < 0.75) {
+        const take = 60 + Math.floor(r2() * 120);
+        S.credits += take;
+        S.cargo.salvage = (S.cargo.salvage || 0) + 1;
+        S.parties = S.parties.filter((x) => x.id !== p.id);
+        State.pushLog(S, 'A deserter band stood down and paid its way past Bracket.', 'good');
+        UI.toast('STOOD DOWN', take + ' credits and their spare kit', 'good');
+      } else {
+        State.pushLog(S, 'The deserters chose to run instead of yield.', 'bad');
+        UI.toast('THEY SCATTER', 'Not today, they decided', 'info');
+        p.routed = 12;
+        p.routFrom = { x: S.pos.x, z: S.pos.z };
+      }
+    },
     onToll: (p) => {
       const res = State.payToll(S, p);
       if (!res.ok) { Audio.uiDeny(); UI.toast('', res.why, 'bad'); return; }

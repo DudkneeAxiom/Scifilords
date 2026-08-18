@@ -4681,3 +4681,60 @@ test('a visit is being somewhere: token off the map, hours passing indoors', asy
   await page.waitForFunction(() => window.KR.world.playerToken.visible === true,
     null, { timeout: 5000 });
 });
+
+test('the living world survives save and load: battles, signals, wreckage', async ({ page }) => {
+  test.setTimeout(120000);
+  await boot(page);
+  await newCampaign(page);
+  const r = await page.evaluate(async () => {
+    const State = await import('/src/state.js');
+    const S = State.newCampaign(9090);
+    window.KR.campaign = S;
+    // Run the world until it has a live battle and a live signal — the state
+    // this test exists to carry across the boundary. Forcing a meeting is
+    // fine; what matters is that REAL objects go through the freezer.
+    const a = S.parties.find((p) => p.faction === 'raider' && p.strength > 3);
+    const b = S.parties.find((p) => p.faction && p.faction !== 'raider' && p.strength > 3);
+    a.x = 1500; a.z = 900; b.x = 1510; b.z = 905;
+    for (let h = 0; h < 12 && !(S.mapBattles || []).length; h++) State.advanceTime(S, 1);
+    S.mapEvents = S.mapEvents || [];
+    S.mapEvents.push({ id: 'evt_frozen', kind: 'distress', x: 100, z: 100,
+      day: S.day, expiresDay: S.day + 3, roll: 0.9 });
+    S.mapSites = S.mapSites || [];
+    S.mapSites.push({ id: 'site_frozen', kind: 'battlefield', x: -200, z: 40,
+      day: S.day, expiresDay: S.day + 3, loot: { credits: 50, salvage: 1 } });
+    const before = {
+      battles: (S.mapBattles || []).length,
+      combatants: S.parties.filter((p) => p.battle).length,
+    };
+    State.save(S);
+    const L = State.load();
+    const after = {
+      battles: (L.mapBattles || []).length,
+      combatants: L.parties.filter((p) => p.battle).length,
+      event: (L.mapEvents || []).some((e) => e.id === 'evt_frozen'),
+      site: (L.mapSites || []).some((s) => s.id === 'site_frozen' && s.loot.credits === 50),
+      // The die cast at birth survives the freezer — save-scumming a signal
+      // changes nothing, which is only true if the roll is IN the save.
+      roll: (L.mapEvents || []).find((e) => e.id === 'evt_frozen')?.roll,
+    };
+    // And the loaded world RUNS: the thawed battle keeps burning down. Sum
+    // over the ORIGINAL combatants by id — total battle strength can rise
+    // when reinforcements march in, which is the world living, not stalling.
+    const ids = L.parties.filter((p) => p.battle).map((p) => p.id);
+    const sum = () => L.parties.filter((p) => ids.includes(p.id))
+      .reduce((t, p) => t + p.strength, 0);
+    const strengthBefore = sum();
+    for (let h = 0; h < 6; h++) State.advanceTime(L, 1);
+    const strengthAfter = sum();
+    return { before, after, strengthBefore, strengthAfter };
+  });
+  expect(r.before.battles).toBeGreaterThan(0);
+  expect(r.after.battles).toBe(r.before.battles);
+  expect(r.after.combatants).toBe(r.before.combatants);
+  expect(r.after.event, 'the signal did not survive the save').toBe(true);
+  expect(r.after.site, 'the wreckage did not survive the save').toBe(true);
+  expect(r.after.roll).toBe(0.9);
+  expect(r.strengthAfter, 'the thawed battle stopped burning')
+    .toBeLessThan(r.strengthBefore);
+});

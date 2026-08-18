@@ -2138,6 +2138,7 @@ export function settlementMenu(S, loc, cbs) {
       </div>
     </div>
     <div class="prose sm-blurb">${esc(loc.detail || loc.blurb)}</div>
+    ${rumourLine(S, loc)}
     <div class="sm-verbs">
       ${verbs.map((v) => `<button class="sm-verb ${v.cls}" data-verb="${v.id}">
         <span class="sv-label">${v.label}</span>
@@ -2411,6 +2412,12 @@ export function encounterPanel(S, party, cbs) {
     // escape button that always works means a battle can never be forced, and
     // a battle that can never be forced means the rules for losing one are
     // unreachable.
+    // Deserters are soldiers with no cause left: pressed by a company that
+    // clearly outmatches them, they would rather hand over the kit than die
+    // for nobody. The option only shows when the sergeants like the odds.
+    if (party.kind === 'deserters' && est && est.odds > 0.62) {
+      options.push('<button class="btn" data-x="yield" title="They look like they know the arithmetic too">PRESS THEM TO STAND DOWN</button>');
+    }
     if (!cbs.cornered) {
       // Say how likely it is, because the player is choosing between a fight
       // they can see the odds of and a run they cannot.
@@ -2508,6 +2515,7 @@ export function encounterPanel(S, party, cbs) {
     talk: () => cbs.onTalk(party),
     drink: () => cbs.onTalk(party),
     toll: () => cbs.onToll?.(party),
+    yield: () => cbs.onYield?.(party),
     inspect: () => cbs.onInspect?.(party),
     refuse: () => cbs.onRefuse?.(party),
   });
@@ -2875,4 +2883,44 @@ export function battlePanel(S, info, cbs) {
     // cannot leave except by Escape, which reads as a hang.
     close: onCloseWrap(cbs.onClose),
   });
+}
+
+/**
+ * What the town has heard: one line of approximate intel, read straight from
+ * the live world rather than generated — a battle, a signal or a hideout
+ * within earshot of this place, named by its nearest landmark, never by
+ * coordinates. Rumors are how the player learns about things without a
+ * marker leading them by the nose.
+ */
+function rumourLine(S, loc) {
+  const near = (x, z) => Math.hypot(x - loc.x, z - loc.z);
+  const nearestName = (x, z) => {
+    let best = null, bd = Infinity;
+    for (const l of LOCATIONS) {
+      const d = Math.hypot(l.x - x, l.z - z);
+      if (d < bd) { bd = d; best = l; }
+    }
+    return best ? best.name : 'the open country';
+  };
+  let line = null;
+  for (const b of S.mapBattles || []) {
+    if (near(b.x, b.z) < 1300) { line = `There is fighting out toward ${nearestName(b.x, b.z)}. Has been for hours.`; break; }
+  }
+  if (!line) {
+    for (const e of S.mapEvents || []) {
+      if (near(e.x, e.z) < 1300) {
+        line = e.kind === 'oldsignal'
+          ? `Something old is transmitting again near ${nearestName(e.x, e.z)}. Nobody will go look.`
+          : `A distress loop has been repeating out past ${nearestName(e.x, e.z)}.`;
+        break;
+      }
+    }
+  }
+  if (!line) {
+    const lair = (S.parties || []).find((p) => p.kind === 'lair' && near(p.x, p.z) < 1500);
+    if (lair) line = `Whatever is robbing the roads is dug in somewhere near ${nearestName(lair.x, lair.z)}.`;
+  }
+  return line
+    ? `<div class="prose dim mt"><span class="hl">WORD IN TOWN</span> — ${esc(line)}</div>`
+    : '';
 }

@@ -648,6 +648,15 @@ export const PARTY_TIERS = {
     cargo: true,
     desc: 'Hauling stock between markets under a hired escort.',
   },
+  deserters: {
+    id: 'deserters', name: 'Deserter Band', tier: 2, faction: 'raider',
+    model: 'wm_party_raider', strength: [4, 9], speed: 24, hostile: true,
+    quality: 0.72, roles: ['rifleman', 'rifleman', 'marksman'],
+    // Trained people with no flag left. Faster than looters, shyer than
+    // anyone: the boldness table gives them the lowest stomach for a fight
+    // in the game, so they run from patrols and prey only on the soft.
+    desc: 'Uniforms with the patches cut off. They want your truck, not a war.',
+  },
   merc: {
     id: 'merc', name: 'Free Company', tier: 3, faction: null,
     model: 'wm_party_player', strength: [12, 26], speed: 17, hostile: false,

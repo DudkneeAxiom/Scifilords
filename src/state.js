@@ -1170,7 +1170,7 @@ const PURSUIT_SANCTUARY = 55;
  * rates 0.64 against a five-strong looter band, so anything demanding better
  * than a third of a chance leaves the early map as inert as it was.
  */
-const BOLDNESS = { strays: 0.16, looters: 0.20, scrappers: 0.28 };
+const BOLDNESS = { strays: 0.16, looters: 0.20, scrappers: 0.28, deserters: 0.12 };
 const BOLDNESS_DEFAULT = 0.42;
 
 function partyIntent(S, p, squad) {
