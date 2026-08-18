@@ -736,20 +736,30 @@ function specFor(loc, contract) {
     type: contract.type,
     site: loc.id,
     // A summoned army siege is fought on ground built for it — THE BASTION,
-    // not whatever layout the town happens to have. Other contracts keep
-    // the location's own ground.
-    layout: (contract.type === 'siege' && contract.summons)
+    // from either side of the wall. Other contracts keep the location's own
+    // ground.
+    layout: (contract.summons && (contract.type === 'siege' || contract.defend))
       ? 'bastion' : (loc.layout || 'array'),
     siteName: loc.name,
     // A faction's own ground is defended by that faction; neutral sites by
     // whoever is squatting there.
     enemyFaction: loc.faction || (contract.employer === 'trust' ? 'syndic' : 'raider'),
-    ...(col ? {
+    ...(col && !contract.defend ? {
       allies: col.strength,
       allyFaction: contract.employer,
       // The town does not fall to four people and a truck: a summoned siege
       // is defended at army scale too, streamed in through the field cap.
       enemyArmy: Math.round(col.strength * 0.85),
+    } : {}),
+    ...(contract.defend ? {
+      // Holding the wall: the column is the ENEMY army, the town's garrison
+      // fights beside you, and the attacker names the uniforms.
+      defend: true,
+      enemyArmy: col ? col.strength : 60,
+      allies: Math.round((col ? col.strength : 60) * 0.8),
+      allyFaction: contract.employer,
+      enemyFaction: contract.enemyFaction
+        || (contract.employer === 'trust' ? 'syndic' : 'trust'),
     } : {}),
     contract,
   };

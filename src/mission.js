@@ -933,6 +933,7 @@ export class Mission {
     else if (t === 'pit') this.buildPit();
     else if (t === 'siege') this.buildSiege();
     else if (t === 'visit') this.buildVisit();
+    else if (this.spec.defend) this.buildSiegeDefense();
     else this.buildDefense();
 
     this.buildStages();
@@ -1238,7 +1239,7 @@ export class Mission {
    */
   updateSkirmishWaves() {
     const t = this.spec.type;
-    if (t !== 'skirmish' && t !== 'lair' && t !== 'siege') return;
+    if (t !== 'skirmish' && t !== 'lair' && t !== 'siege' && !this.spec.defend) return;
     if (!this.skirmishTotal) return;
     const alive = this.entities.filter((e) => e.side === 'enemy' && !e.dead).length;
     const left = this.skirmishTotal - (this.skirmishCommitted || 0);
@@ -1246,7 +1247,11 @@ export class Mission {
       const n = Math.min(left, Math.round(FIELD_CAP * 0.5));
       const roles = PARTY_TIERS[this.spec.party?.kind]?.roles
         || ['rifleman', 'breacher', 'marksman'];
-      if (t === 'siege') {
+      if (this.spec.defend) {
+        // A besieging army's next rank comes up the lanes, not out of thin
+        // air beside the defenders.
+        for (let i = 0; i < n; i++) this.spawnAssaulter();
+      } else if (t === 'siege') {
         // Defenders muster INSIDE the walls. The arc spawner is for open
         // ground — it would stand a garrison's reserve on the attacker's own
         // approach, outside the thing they are defending.
@@ -1600,6 +1605,98 @@ export class Mission {
       this.completeObjective();
       this.onToast('POSITION TAKEN', `${this.level.name} is yours`, 'good');
       this.endMission(true, 'seized');
+    }
+  }
+
+  /**
+   * The other side of the wall: HOLDING the bastion while a host assaults
+   * it. The player and the garrison start INSIDE; the attacker's army
+   * streams up the lanes through the field cap; the gate holds until their
+   * sappers blow it, and then the streets are the battle. Won by breaking
+   * the whole assault — every rank, not just the one on the field.
+   */
+  buildSiegeDefense() {
+    const army = Math.max(20, Math.round(this.spec.enemyArmy || 60));
+    this.objective = {
+      text: 'Hold the bastion — break the assault',
+      progress: 0, need: army, done: false, type: 'siegehold',
+    };
+    // The defenders' ground. The player entity already stands at the
+    // attacker-side spawn the layout authored, so the whole command moves
+    // inside the wall — and playerSpawn moves with them, because that is
+    // where allied ranks arrive.
+    const inSpawn = { x: 0, z: -34 };
+    this.level.playerSpawn = { ...inSpawn, ry: 0 };
+    this.level.extraction = { ...inSpawn };
+    this.player.x = inSpawn.x;
+    this.player.z = inSpawn.z;
+    this.player.yaw = 0;                    // facing the gate
+    this.squad.forEach((s, i) => {
+      s.x = inSpawn.x - 7 + (i % 5) * 3.2;
+      s.z = inSpawn.z - 5 - Math.floor(i / 5) * 3;
+    });
+    this.spawnAllies();
+
+    // The sappers: the gate holds long enough to walk the wall and place
+    // people, and not a breath longer than the roll says.
+    this.breached = false;
+    this.gateObstacle = this.level.obstacles.find(
+      (o) => (o.coverH ?? o.h) > 5.5 && Math.abs(o.x) < 6) || null;
+    this.gateBlowAt = 35 + this.r() * 25;
+
+    // The first assault rank, coming up the lanes from the south edge.
+    this.skirmishTotal = army;
+    const first = Math.min(Math.round(FIELD_CAP * 0.7), army);
+    for (let i = 0; i < first; i++) this.spawnAssaulter();
+    this.skirmishCommitted = first;
+  }
+
+  /** One attacker, entering from the south lanes and heading for the wall. */
+  spawnAssaulter() {
+    const e = this.reinforce(range(this.r, -44, 44), range(this.r, 54, 72),
+      pick(this.r, ['rifleman', 'rifleman', 'breacher', 'gunner']), 0);
+    e.state = 'hunt';
+    e.alert = 1;
+    // Until the breach they press the wall; after it they pour at the keep.
+    e.lastSeen = this.breached ? { x: 0, z: -30 } : { x: 0, z: -4 };
+    return e;
+  }
+
+  updateSiegeHold(dt) {
+    if (this.objective.done || this.over) return;
+    // The sappers finish: the gate stops being a gate. The physical half
+    // mirrors blowGate() — that method narrates the ATTACKER'S breach, and
+    // this one is the sound you never wanted to hear from inside.
+    if (!this.breached && this.time > this.gateBlowAt) {
+      this.breached = true;
+      const g = this.gateObstacle;
+      if (g) {
+        this.level.obstacles = this.level.obstacles.filter((o) => o !== g);
+        this.nav = new NavGrid(this.level.obstacles, this.level.bounds, 0.65);
+        const doors = this.level.group.children.filter((o) =>
+          Math.abs(o.position.x - g.x) < 4.2 && Math.abs(o.position.z - g.z) < 3);
+        for (const d of doors) d.visible = false;
+      }
+      Audio.explosion(this.relPos(this.player));
+      this.shake = 1.3;
+      this.onToast('THE GATE IS DOWN', 'They are coming through', 'bad');
+      for (const e of this.entities) {
+        if (e.side === 'enemy' && !e.dead) {
+          e.lastSeen = { x: this.player.x, z: this.player.z };
+          e.huntUntil = this.time + 30;
+        }
+      }
+    }
+    const alive = this.entities.filter((e) => e.side === 'enemy' && !e.dead).length;
+    this.objective.progress = this.entities.filter(
+      (e) => e.side === 'enemy' && e.dead).length;
+    this.updateSkirmishWaves();
+    if (alive === 0 && this.skirmishCommitted >= this.skirmishTotal) {
+      this.completeObjective();
+      this.onToast('THE ASSAULT IS BROKEN', 'The bastion holds', 'good');
+      this.endMission(true, 'held');
+    } else if (alive > 0) {
+      this.guardAgainstStall(dt);
     }
   }
 
@@ -4439,7 +4536,8 @@ export class Mission {
     if (t === 'raid') this.updateRaid();
 
     if (t === 'defense') {
-      this.updateDefense(dt);
+      if (this.spec.defend) this.updateSiegeHold(dt);
+      else this.updateDefense(dt);
     }
 
     if (this.stages?.length && this.stageIndex >= 0) this.updateStages(dt);
@@ -5163,7 +5261,10 @@ export class Mission {
       } : null,
       timer: this.spec.type === 'sabotage' && this.chargesPlaced && !this.blown
         ? Math.max(0, this.chargeTimer) : null,
-      wave: this.spec.type === 'defense' ? { n: this.wave, of: 3, next: Math.max(0, this.waveTimer), active: this.waveActive } : null,
+      // A siege hold has no scripted waves — its "timer" is the army ticker
+      // and the sappers at the gate, so it must not borrow this readout.
+      wave: this.spec.type === 'defense' && !this.spec.defend
+        ? { n: this.wave, of: 3, next: Math.max(0, this.waveTimer), active: this.waveActive } : null,
       seize: this.spec.type === 'seize' ? {
         pct: Math.round(((this.holdProgress || 0) / (this.holdSeconds || 1)) * 100),
         contested: this.entities.some((e) => e.side === 'enemy' && !e.dead

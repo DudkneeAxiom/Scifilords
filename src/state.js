@@ -1687,15 +1687,24 @@ export function applyMissionResult(S, res) {
   // unchanged until the column happened to arrive and "take" a town the
   // player had already taken — and the column then marched into its own
   // conquest as if nothing had happened. The column garrisons what it took.
-  if (res.type === 'siege' && res.success && summons) {
-    if (!isHolding(S, res.site) && ownerOf(S, res.site) !== summons.employer) {
-      S.mapOwner[res.site] = summons.employer;
+  if (res.success && summons && (res.type === 'siege' || res.type === 'defense')) {
+    if (res.type === 'siege') {
+      if (!isHolding(S, res.site) && ownerOf(S, res.site) !== summons.employer) {
+        S.mapOwner[res.site] = summons.employer;
+        notes.push({
+          tone: 'world',
+          text: `${locName(res.site)} has fallen to ${FACTIONS[summons.employer]?.name
+            || summons.employer} — Bracket was first through the breach.`,
+        });
+        pushLog(S, `${locName(res.site)} taken. Bracket answered the call.`, 'good');
+      }
+    } else {
+      // The assault broke on the walls: the town stands, the column does not.
       notes.push({
         tone: 'world',
-        text: `${locName(res.site)} has fallen to ${FACTIONS[summons.employer]?.name
-          || summons.employer} — Bracket was first through the breach.`,
+        text: `${locName(res.site)} held. The column that marched on it is finished.`,
       });
-      pushLog(S, `${locName(res.site)} taken. Bracket answered the call.`, 'good');
+      pushLog(S, `${locName(res.site)} held against the assault. Bracket was inside the walls.`, 'good');
     }
     S.parties = S.parties.filter((p) => p.id !== summons.column);
     S.rep[summons.employer] = (S.rep[summons.employer] || 0) + 3;
@@ -3748,6 +3757,27 @@ function tryCapture(S, r, attacker, defender) {
       accepted: false,
     });
     pushLog(S, `${FACTIONS[attacker].name} has summoned Bracket to ${best.name}.`, 'world');
+  }
+  // The other side of the same call: when the host is marching on YOUR
+  // liege's town, you are expected inside the walls before it arrives.
+  if (defender === S.allegiance) {
+    S.contracts.push({
+      id: uid('con'),
+      type: 'defense',
+      defend: true,
+      site: best.id,
+      employer: defender,
+      summons: col.id,
+      enemyFaction: attacker,
+      title: `Hold ${best.name} against ${FACTIONS[attacker]?.short || attacker}`,
+      text: `${FACTIONS[attacker].name} is marching on ${best.name}. `
+        + `${FACTIONS[defender].name} expects Bracket inside the walls `
+        + 'before the column arrives.',
+      pay: 550 + Math.round(bd * 0.4),
+      expiresDay: S.day + 4,
+      accepted: false,
+    });
+    pushLog(S, `${best.name} calls for its defenders. The column is on the road.`, 'bad');
   }
   return { loc: best, attacker, defender, column: col };
 }

@@ -5662,3 +5662,116 @@ test('THE BASTION: a laned approach, one gate in a full-span curtain, streets be
   // The gate is the beginning, not the end.
   expect(r.objectiveDepth).toBeLessThan(-50);
 });
+
+test('holding the bastion: defenders inside, the gate falls on a timer, the assault can break', async ({ page }) => {
+  await boot(page);
+  await newCampaign(page);
+  await page.evaluate(async () => {
+    const { Mission } = await import('/src/mission.js');
+    const UI = await import('/src/ui.js');
+    const G = window.KR;
+    const S = G.campaign;
+    S.renown = 4000;
+    G.mission?.dispose();
+    G.world?.dispose(); G.world = null;
+    document.getElementById('viewport').innerHTML = '';
+    UI.show('hud');
+    G.mission = new Mission({
+      campaign: S,
+      spec: { type: 'defense', defend: true, site: 'bastion', layout: 'bastion',
+        siteName: 'Bastion', enemyFaction: 'syndic',
+        enemyArmy: 90, allies: 70, allyFaction: 'trust' },
+      squad: S.roster.slice(0, 4),
+      container: document.getElementById('viewport'),
+      onHud: () => {}, onToast: () => {}, onIntro: () => {}, onWheel: () => {}, onEnd: () => {},
+    });
+    await G.mission.start();
+    G.mission.paused = true;
+    if (G.mission.intro) { G.mission.intro.active = false; G.mission.time = G.mission.intro.graceUntil + 0.1; }
+  });
+  await page.waitForFunction(() => window.KR.mission?.player, null, { timeout: 40000 });
+  const r = await page.evaluate(() => {
+    const m = window.KR.mission;
+    const WALL_Z = -10;
+    const before = {
+      // The command stands INSIDE the wall, facing the gate.
+      playerInside: m.player.z < WALL_Z,
+      alliesInside: m.squad.filter((s) => s.militia && !s.dead)
+        .every((s) => s.z < WALL_Z + 6),
+      // The first assault rank is OUTSIDE, coming up the lanes.
+      assaultersOutside: m.entities.filter((e) => e.side === 'enemy' && !e.dead)
+        .every((e) => e.z > WALL_Z + 6),
+      breached: m.breached,
+      armies: m.buildHud().armies,
+    };
+    // The sappers finish: run the hold tick past the roll.
+    m.time = m.gateBlowAt + 0.1;
+    m.updateSiegeHold(1 / 60);
+    const gateDown = m.breached === true;
+    // The next rank enters from the south when the field thins.
+    for (const e of m.entities) { if (e.side === 'enemy') e.dead = true; }
+    m.updateSkirmishWaves();
+    const wave = m.entities.filter((e) => e.side === 'enemy' && !e.dead);
+    const waveFromSouth = wave.length > 0 && wave.every((e) => e.z > 30);
+    // Break the whole assault: no ranks left anywhere ends it held.
+    m.skirmishTotal = m.skirmishCommitted;
+    for (const e of m.entities) { if (e.side === 'enemy') e.dead = true; }
+    m.updateSiegeHold(1 / 60);
+    return {
+      before, gateDown, waveFromSouth,
+      held: m.over && m.result === undefined ? null : true,
+      done: m.objective.done,
+    };
+  });
+  expect(r.before.playerInside).toBe(true);
+  expect(r.before.alliesInside).toBe(true);
+  expect(r.before.assaultersOutside).toBe(true);
+  expect(r.before.breached).toBe(false);
+  // The war scoreboard counts both hosts.
+  expect(r.before.armies.theirs).toBeGreaterThan(70);
+  expect(r.before.armies.ours).toBeGreaterThan(55);
+  expect(r.gateDown).toBe(true);
+  expect(r.waveFromSouth).toBe(true);
+  expect(r.done).toBe(true);
+});
+
+test('a defense summons holds the town and breaks the column', async ({ page }) => {
+  await boot(page);
+  await newCampaign(page);
+  const r = await page.evaluate(() => {
+    const { State, DATA } = window.KR.dev;
+    const S = window.KR.campaign;
+    S.allegiance = 'trust';
+    const loc = DATA.LOCATIONS.find((l) => l.kind === 'settlement'
+      && State.ownerOf(S, l.id) === 'trust');
+    const ownerBefore = State.ownerOf(S, loc.id);
+    S.parties.push({
+      id: 'defcol', kind: 'warband_syndic', faction: 'syndic', name: 'Syndic host',
+      strength: 140, x: loc.x - 90, z: loc.z - 90, tx: loc.x, tz: loc.z,
+      siegeTarget: loc.id, tier: 4, speed: 20,
+    });
+    S.contracts.forEach((x) => { x.accepted = false; });
+    S.contracts.push({
+      id: 'con_hold', type: 'defense', defend: true, site: loc.id, employer: 'trust',
+      summons: 'defcol', enemyFaction: 'syndic', title: 'h', text: 'h', pay: 700,
+      expiresDay: S.day + 4, accepted: true,
+    });
+    const repBefore = S.rep.trust || 0;
+    State.applyMissionResult(S, {
+      success: true, type: 'defense', site: loc.id, kills: 30,
+      soldierResults: [], suppliesUsed: 0,
+    });
+    return {
+      ownerBefore,
+      ownerAfter: State.ownerOf(S, loc.id),
+      columnGone: !S.parties.some((p) => p.id === 'defcol'),
+      contractGone: !S.contracts.some((x) => x.id === 'con_hold'),
+      repGain: (S.rep.trust || 0) - repBefore,
+    };
+  });
+  // The town STAYS the liege's; the column is finished; the call was answered.
+  expect(r.ownerAfter).toBe(r.ownerBefore);
+  expect(r.columnGone).toBe(true);
+  expect(r.contractGone).toBe(true);
+  expect(r.repGain).toBeGreaterThanOrEqual(5);
+});

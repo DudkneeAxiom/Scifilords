@@ -740,6 +740,24 @@ Open, in rough priority order:
    enemyArmy 150) deliberately — a small-spec test was how the fort's
    regression stayed invisible.
 
+**Holding THE BASTION** (this session). The defense side of the summons:
+   when a host marches on a town of the player's ALLEGIANCE, `tryCapture`
+   posts a defense summons (`type:'defense', defend:true, summons,
+   enemyFaction`). `specFor` routes it to the bastion with `defend:true`,
+   `enemyArmy = col.strength`, `allies = 0.8×` (the town garrison).
+   Mission side: `buildSiegeDefense` moves the command INSIDE (and moves
+   `level.playerSpawn` with them — allied ranks arrive there), initialises
+   `this.breached = false` (forgetting this cost one test run), finds the
+   gate obstacle, rolls `gateBlowAt` 35–60s; `spawnAssaulter` enters from
+   the south lanes hunting the wall, `updateSkirmishWaves` gained a
+   `spec.defend` branch that feeds ranks from the south; `updateSiegeHold`
+   blows the gate at the roll (physical half mirrors `blowGate()` without
+   its attacker-framed narration), and the mission ends `held` only when
+   EVERY rank is broken. The classic defense wave readout is gated
+   `!spec.defend` or it shows "NEXT WAVE IN NaNs". On success the town
+   stays the liege's, the column dies, +3 rep — same summons block in
+   `applyMissionResult`, now typed on siege vs defense.
+
 ---
 
 ## The summary artifact
