@@ -1628,6 +1628,10 @@ export function applyMissionResult(S, res) {
   // --- payment & materiel ---
   const mods = companyMods(S.roster);
   const c = activeContract(S);
+  // Remembered before the payment block consumes the contract: an answered
+  // siege summons has territorial consequences handled further down.
+  const summons = (res.success && c && c.site === res.site && c.summons)
+    ? { column: c.summons, employer: c.employer } : null;
   if (res.success && c && c.site === res.site) {
     // A liege pays its own people better than it pays hired help.
     const liegeBonus = (S.allegiance && c.employer === S.allegiance) ? 1.35 : 1;
@@ -1678,6 +1682,26 @@ export function applyMissionResult(S, res) {
   S.medical = Math.max(0, S.medical - (res.medicalUsed || 0));
 
   // --- territory ---
+  // An answered summons, won: the town falls to the liege with Bracket first
+  // through the breach. Without this, a successful assault left the map
+  // unchanged until the column happened to arrive and "take" a town the
+  // player had already taken — and the column then marched into its own
+  // conquest as if nothing had happened. The column garrisons what it took.
+  if (res.type === 'siege' && res.success && summons) {
+    if (!isHolding(S, res.site) && ownerOf(S, res.site) !== summons.employer) {
+      S.mapOwner[res.site] = summons.employer;
+      notes.push({
+        tone: 'world',
+        text: `${locName(res.site)} has fallen to ${FACTIONS[summons.employer]?.name
+          || summons.employer} — Bracket was first through the breach.`,
+      });
+      pushLog(S, `${locName(res.site)} taken. Bracket answered the call.`, 'good');
+    }
+    S.parties = S.parties.filter((p) => p.id !== summons.column);
+    S.rep[summons.employer] = (S.rep[summons.employer] || 0) + 3;
+    notes.push({ tone: 'good', text: 'The liege noted who was on the field. Standing rises.' });
+  }
+
   if (res.type === 'seize') {
     if (res.success && seizeLocation(S, res.site)) {
       notes.push({

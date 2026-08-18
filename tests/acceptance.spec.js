@@ -4981,3 +4981,80 @@ test('a companion is an officer: the company runs differently with them signed o
   expect(fx.overwatch).toBe(true);
   expect(fx.baseFire).toBe(true);
 });
+
+test('a summons is a battle you join in person, and winning it moves the border', async ({ page }) => {
+  await boot(page);
+  await newCampaign(page);
+  // The consequence side: an answered, won assault flips the town to the
+  // liege, retires the column into the garrison, and the liege remembers.
+  const r = await page.evaluate(() => {
+    const { State, DATA } = window.KR.dev;
+    const S = window.KR.campaign;
+    S.allegiance = 'trust';
+    const loc = DATA.LOCATIONS.find((l) => l.kind === 'settlement'
+      && State.ownerOf(S, l.id) === 'syndic');
+    S.parties.push({
+      id: 'testcol', kind: 'warband_trust', faction: 'trust', name: 'Trust column',
+      strength: 12, x: loc.x - 90, z: loc.z - 90, tx: loc.x, tz: loc.z,
+      siegeTarget: loc.id, tier: 3, speed: 20,
+    });
+    S.contracts.forEach((x) => { x.accepted = false; });
+    S.contracts.push({
+      id: 'con_summons', type: 'siege', site: loc.id, employer: 'trust',
+      summons: 'testcol', title: 't', text: 't', pay: 600,
+      expiresDay: S.day + 4, accepted: true,
+    });
+    const repBefore = S.rep.trust || 0;
+    const res = { success: true, type: 'siege', site: loc.id, kills: 5,
+      soldierResults: [], suppliesUsed: 0 };
+    State.applyMissionResult(S, res);
+    return {
+      owner: State.ownerOf(S, loc.id),
+      columnGone: !S.parties.some((p) => p.id === 'testcol'),
+      contractGone: !S.contracts.some((x) => x.id === 'con_summons'),
+      repGain: (S.rep.trust || 0) - repBefore,
+    };
+  });
+  expect(r.owner).toBe('trust');
+  expect(r.columnGone).toBe(true);
+  expect(r.contractGone).toBe(true);
+  // +2 for any completed contract, +3 for answering the call in person.
+  expect(r.repGain).toBeGreaterThanOrEqual(5);
+
+  // The field side: a siege deployed with a living column puts that column's
+  // fighters on the approach beside the squad.
+  await page.evaluate(async () => {
+    const { Mission } = await import('/src/mission.js');
+    const UI = await import('/src/ui.js');
+    const G = window.KR;
+    const S = G.campaign;
+    S.renown = 4000;
+    G.mission?.dispose();
+    G.world?.dispose(); G.world = null;
+    document.getElementById('viewport').innerHTML = '';
+    UI.show('hud');
+    G.mission = new Mission({
+      campaign: S,
+      spec: { type: 'siege', site: 'fort', layout: 'fort', siteName: 'Gate',
+        enemyFaction: 'syndic', allies: 6, allyFaction: 'trust' },
+      squad: S.roster.slice(0, 4),
+      container: document.getElementById('viewport'),
+      onHud: () => {}, onToast: () => {}, onIntro: () => {}, onWheel: () => {}, onEnd: () => {},
+    });
+    await G.mission.start();
+    G.mission.paused = true;
+  });
+  await page.waitForFunction(() => window.KR.mission?.player, null, { timeout: 40000 });
+  const field = await page.evaluate(() => {
+    const m = window.KR.mission;
+    const militia = m.squad.filter((s) => s.militia);
+    return {
+      allies: militia.length,
+      side: militia.every((s) => s.side === 'player'),
+      model: militia.every((s) => s.faction === 'trust'),
+    };
+  });
+  expect(field.allies).toBe(6);
+  expect(field.side).toBe(true);
+  expect(field.model).toBe(true);
+});

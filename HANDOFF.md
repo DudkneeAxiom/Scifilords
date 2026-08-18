@@ -610,6 +610,22 @@ Open, in rough priority order:
    future refactor makes state.js import mission.js, break the officer
    lookup out instead.
 
+**Sieges you answer in person** (this session). A summons contract was
+   playable but hollow: the player deployed ALONE (no column on the field),
+   and a won assault did not move the border — only the column's own arrival
+   flipped `S.mapOwner`, so the player could take a town days before the map
+   admitted it, after which the column marched into its own conquest.
+   Now `specFor` attaches the LIVE column as `allies`/`allyFaction` (a column
+   broken on the road leaves the assault yours alone — dawdling has a cost),
+   `buildSiege` calls the extracted `spawnAllies()` (same militia contract as
+   skirmish joins), and `applyMissionResult` captures `{column, employer}`
+   from the summons contract BEFORE the payment block consumes it, then on a
+   won siege flips ownership, retires the column party into the garrison,
+   and adds +3 rep on top of the ordinary +2 contract completion. The trap:
+   `activeContract(S)` is just "the accepted contract", so the summons data
+   must be read before `S.contracts` is filtered, and `closeSummons` fires
+   harmlessly afterwards (contract already gone → early return).
+
 ---
 
 ## The summary artifact

@@ -727,6 +727,11 @@ function handleEncounter(party, opts = {}) {
 
 /** Everything the mission layer needs to build a deployment at a location. */
 function specFor(loc, contract) {
+  // Answering a summons means the liege's column fights beside you — if it is
+  // still alive. A column broken on the road leaves the assault yours alone,
+  // which is exactly the risk of dawdling on the way to a war.
+  const col = contract.summons
+    ? G.campaign?.parties?.find((p) => p.id === contract.summons) : null;
   return {
     type: contract.type,
     site: loc.id,
@@ -735,6 +740,7 @@ function specFor(loc, contract) {
     // A faction's own ground is defended by that faction; neutral sites by
     // whoever is squatting there.
     enemyFaction: loc.faction || (contract.employer === 'trust' ? 'syndic' : 'raider'),
+    ...(col ? { allies: col.strength, allyFaction: contract.employer } : {}),
     contract,
   };
 }
