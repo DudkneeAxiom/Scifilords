@@ -8301,7 +8301,13 @@ test('a pitched battle is fought: lines close, break, and the field is decided',
     for (let i = 0; i < 10800 && !m.over; i++) {
       realStep(1 / 60);
       const g = gapNow();
-      if (g > widest) widest = g;
+      // The widest gap is only measured during the APPROACH — before the
+      // lines touch. Two things widen it legitimately afterwards and both
+      // made this flake: once a side has nobody left gapNow() is Infinity,
+      // and once a line breaks its routers run two hundred metres, which is
+      // the morale system working rather than an advance going backwards.
+      // What is being guarded here is the march in, and only the march in.
+      if (closedAt === null && Number.isFinite(g) && g > widest) widest = g;
       if (closedAt === null && g < 4) closedAt = i / 60;
       if (brokeAt === null
         && m.entities.some((e) => e.side === 'enemy' && e.routing)) brokeAt = i / 60;
