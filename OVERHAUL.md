@@ -214,8 +214,10 @@ The shape of the game now:
   lightly exercised in play. Worth a directed playtest.
 - Wounded/dead/captured resolution is inherited from the gun era and
   was never re-tuned for melee lethality.
-- Sieges use the field systems but their own approach logic predates
-  formations; they work, they are not yet FORMED.
+- Sieges: the approach is FIXED (see the playtest round below) — an
+  attack order now advances without line of sight and the garrison holds
+  its wall. What remains is shape: the assault arrives as a crowd, not a
+  column, and the two breach vectors are not chosen between.
 
 ## Round: the progression tree, and the world screen
 
@@ -633,3 +635,87 @@ missions off the campaign seed. Pinning them individually was losing, so
 including the ones nobody has written yet, and a test that genuinely
 wants a varying world can still set its own seed deliberately and
 visibly. Documenting a trap is not the same as removing it.
+
+## Round: playtest every mission type, not just the skirmish
+
+Ten mission types, and almost every probe in the tree builds a skirmish.
+So this round played one of each — build it, march the line, walk the
+commander at whatever the mission wants doing, and ask whether it
+RESOLVES (`tools/everytype.mjs`).
+
+### A siege nobody could start
+
+Two bugs, and they compounded into a mission that could not begin.
+
+`acquire()` will not hand back a target without line of sight, which is
+correct — but the branch that executes an attack order reads
+`order === 'attack' && t`, so with no target it fell through to the
+formation branch and everyone re-formed on the commander. The order
+looked accepted and did nothing. A garrison stands behind a wall, so in a
+siege it did nothing every time: ten men idle at v=0, fifty metres off
+the gate, for two solid minutes. Telling a line to attack does not mean
+"attack whoever you happen to see" — they now march on the nearest enemy
+they know about, wall or no wall, and pick up a real target as one
+clears.
+
+The other half was on the defending side. `pitchedBattle()` is true for a
+siege from EITHER end, and it was the only test gating the promotion out
+of `guard` into `hunt` — so the garrison left its posts to go hunting,
+ran into its own curtain wall and stayed there, three and a half metres a
+second of nothing, the gap to the assault frozen at fifty. Defenders man
+the wall; only the side that marched gets promoted.
+
+With both fixed a fort plays end to end: the assault closes 55m → 6m,
+the gate goes down, and the field is decided — `carried(win)` at 89s.
+
+### Three findings that were the probe, not the game
+
+Worth writing down because each looked like a serious bug for a while.
+
+- "The mission ends as `wiped` with eight men alive" — the probe counted
+  `!dead`; the game counts `!dead && !down && !militia`. A company
+  entirely on the floor is legitimately finished.
+- "The commander's death loses a battle the army is winning" — same
+  miscount. Standing was genuinely zero.
+- "A cache can be looted for ever" — the probe filtered on `done`; the
+  game filters on `done || taken`, and cache sets `taken`.
+
+The habit that caught all three: measure the way the code being tested
+measures, and check a suspicious result against `git stash` before
+believing it. The advance change above was A/B'd that way — at HEAD the
+same lair ends 0v18 having killed nobody, so the fix is neutral-to-better
+rather than the regression the raw numbers first suggested.
+
+### The exchange rate, finally measured
+
+Ten against eighteen is a wipe in sixty seconds, which reads alarming
+until you run even numbers: nine a side ends 4v0 to the player
+(`tools/fair.mjs`). The melee is sound and player troops are not weaker —
+being outnumbered 1.8:1 in a melee is simply decisive. Worth noting the
+per-swing numbers are lopsided the other way (theirs dmg48/reach2.6 vs
+mine dmg26/reach2.2) and my side still wins, so the gap is carried
+somewhere else in the stat block.
+
+### Casualty resolution, with numbers on it
+
+The open item below said this was never re-tuned for melee. It has now
+been measured rather than asserted (`tools/attrition.mjs`, pure
+functions, no renderer):
+
+| outcome        | cut | crush | shot |
+|----------------|-----|-------|------|
+| won, extracted | 0%  | 0%    | 0%   |
+| lost, medic    | 41% | 58%   | 56%  |
+| lost, no medic | 53% | 70%   | 68%  |
+
+That is a cliff, not a curve: a battle you win costs nothing permanent
+and returns everyone inside a week, a battle you lose buries half your
+downed. It follows directly from `stabilised: success && extractArmed`,
+so it is a deliberate line rather than a defect — but it means victory
+has no attritional cost, which is the opposite of the campaign this is
+modelled on. Left alone deliberately: moving it changes recruiting, pay
+and the deploy ceiling together, and that is a design decision, not a
+bug fix.
+
+The 240-day map soak was clean through all of this: 0 console errors,
+every panel closed, every invariant held.

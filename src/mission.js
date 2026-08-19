@@ -1373,7 +1373,15 @@ export class Mission {
       // the enemy. Only for battles that ARE pitched: a hideout or a
       // sabotage run still has to be noticed, and taking that away would
       // delete stealth from the game.
-      if (e.advanceOn && this.pitchedBattle() && (e.state === 'guard' || e.state === 'patrol')) {
+      // ...but the side holding a fort is not the side that marches.
+      // pitchedBattle() is true for a siege from EITHER end, and promoting
+      // on it alone sent the garrison out hunting: they left their posts,
+      // ran into their own curtain wall and stayed there, three and a half
+      // metres a second of nothing, the gap to the assault frozen at fifty
+      // for a minute. Defenders man the wall and let the assault come.
+      const assaulting = this.spec.type !== 'siege' || !!this.spec.defend;
+      if (e.advanceOn && assaulting && this.pitchedBattle()
+        && (e.state === 'guard' || e.state === 'patrol')) {
         e.state = 'hunt';
         e.huntUntil = this.time + 1e9;
         e.alert = 1;
@@ -5985,6 +5993,29 @@ export class Mission {
       dest = d > e.weapon.range * 0.75
         ? { x: t.x, z: t.z }
         : null;
+    } else if (e.order === 'attack') {
+      // ATTACK WITH NOBODY IN SIGHT IS STILL AN ADVANCE.
+      //
+      // acquire() will not hand back a target without line of sight, and a
+      // garrison stands behind a wall — so in a siege every soldier under an
+      // attack order fell through to the formation branch and re-formed on
+      // the commander. The order LOOKED accepted and did nothing: measured
+      // at a fort, ten men idle at v=0 fifty metres off the gate for two
+      // solid minutes, no contact, no casualties, no resolution.
+      //
+      // Telling a line to attack does not mean "attack whoever you can
+      // currently see". It means go at them. They march on the nearest enemy
+      // they know about, wall or no wall, and pick up a real target the
+      // moment one clears — which is exactly what happens on the approach.
+      let near = null, nd = Infinity;
+      for (const o of this.entities) {
+        if (o.dead || o.down || o.follower || o.side === e.side) continue;
+        const d = Math.hypot(o.x - e.x, o.z - e.z);
+        if (d < nd) { nd = d; near = o; }
+      }
+      // Not omniscience: a company advances on a field it can see across,
+      // not on a man it has no business knowing about.
+      if (near && nd < e.sight * 3) dest = { x: near.x, z: near.z };
     } else {
       // Follow: stand in whatever shape the commander has called for. The
       // camera sits directly behind them, so every formation pushes people out

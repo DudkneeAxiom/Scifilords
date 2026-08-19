@@ -9016,3 +9016,86 @@ test('a duel: the lock holds the man, and nobody can swing for ever', async ({ p
   // And mashing empties the commander rather than paying for itself.
   expect(r.mashedDry, 'a player could mash for ever').toBeLessThan(0.3);
 });
+
+test('an assault that starts: attack advances without sight, and the garrison holds its wall', async ({ page }) => {
+  await boot(page);
+  await newCampaign(page);
+  // A siege that could not begin.
+  //
+  // Two faults met in one mission. acquire() will not hand back a target
+  // without line of sight — correct — but the branch executing an attack
+  // order read `order === 'attack' && t`, so with no target it fell through
+  // to the formation branch and everyone quietly re-formed on the commander.
+  // A garrison stands behind a wall, so the order was accepted and did
+  // nothing every single time.
+  //
+  // Meanwhile pitchedBattle() is true for a siege from EITHER end and was
+  // the only gate on promotion out of `guard`, so the defenders left their
+  // posts to go hunting and ground into their own curtain wall.
+  //
+  // Measured before the fix: ten men idle at v=0, fifty metres off the gate,
+  // for two solid minutes — no contact, no casualties, no resolution, while
+  // the garrison burned three and a half metres a second going nowhere.
+  const r = await page.evaluate(async () => {
+    const { Mission } = await import('/src/mission.js');
+    const UI = await import('/src/ui.js');
+    const G = window.KR;
+    const S = G.campaign;
+    G.mission?.dispose();
+    G.world?.dispose(); G.world = null;
+    document.getElementById('viewport').innerHTML = '';
+    UI.show('hud');
+    G.mission = new Mission({
+      campaign: S,
+      spec: { type: 'siege', site: 'fort', layout: 'fort', siteName: 'Assault',
+        party: { id: 'sg', kind: 'scrappers', name: 'Garrison', strength: 18, tier: 3, quality: 0.8 } },
+      squad: S.roster.slice(0, 10),
+      container: document.getElementById('viewport'),
+      onHud: () => {}, onToast: () => {}, onIntro: () => {}, onWheel: () => {}, onEnd: () => {},
+    });
+    await G.mission.start();
+    const m = G.mission;
+    m.paused = false; m.hadLock = true; m.inserting = false;
+    if (m.intro) { m.intro.active = false; m.time = m.intro.graceUntil + 0.1; }
+    for (const e of m.entities) e.inserting = false;
+    const realStep = m.step.bind(m);
+    m.step = () => {};
+
+    // The commander stands still on purpose: the question is whether the
+    // LINE advances on its own order, not whether it trails a moving player.
+    for (const s of m.squad) { s.order = 'attack'; s.orderPoint = null; s.forceTarget = null; }
+
+    const foes = () => m.entities.filter((e) => e.side === 'enemy' && !e.dead);
+    // How far the nearest of ours is from the nearest of theirs.
+    const gap = () => {
+      let best = Infinity;
+      for (const a of m.squad) {
+        if (a.dead || a.down) continue;
+        for (const b of foes()) best = Math.min(best, Math.hypot(b.x - a.x, b.z - a.z));
+      }
+      return best;
+    };
+    const gap0 = gap();
+    // Did the garrison stay on its wall? Sample how far defenders drift from
+    // where they were posted.
+    const posted = foes().map((e) => ({ e, x: e.x, z: e.z }));
+    for (let i = 0; i < 2700; i++) realStep(1 / 60);
+    const drift = posted.filter((p) => !p.e.dead)
+      .map((p) => Math.hypot(p.e.x - p.x, p.e.z - p.z));
+    return {
+      gap0, gap1: gap(),
+      hunting: foes().filter((e) => e.state === 'hunt').length,
+      meanDrift: drift.length ? drift.reduce((a, b) => a + b, 0) / drift.length : 0,
+    };
+  });
+
+  // They started well off the wall and they CLOSED it. Before the fix this
+  // number did not move at all.
+  expect(r.gap0).toBeGreaterThan(25);
+  expect(r.gap1).toBeLessThan(r.gap0 * 0.5);
+
+  // And the garrison is still on its wall rather than out in the field: no
+  // promotion to hunt, and nobody wandered far from where they were posted.
+  expect(r.hunting).toBe(0);
+  expect(r.meanDrift).toBeLessThan(20);
+});
