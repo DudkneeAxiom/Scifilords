@@ -3225,7 +3225,12 @@ export class Mission {
     const y0 = Level.heightAt(e.x, e.z) + (e.elev || 0) + 1.5;
     const dx = tx - e.x, dz = tz - e.z;
     const d = Math.hypot(dx, dz);
-    const s = w.flight || 28;
+    // Height is an archer's whole argument for taking the ridge: shooting
+    // downhill puts more of the draw into the flight, so the arrow gets
+    // there flatter and lands harder. Capped, because a ridge is an
+    // advantage and not a siege engine.
+    const drop = clamp((y0 - ty) / 12, 0, 1);
+    const s = (w.flight || 28) * (1 + drop * 0.25);
     const t = Math.max(0.15, d / s);
     const g = 14;
     // Skill is scatter at the loose, not a die roll at the landing.
@@ -5463,7 +5468,27 @@ export class Mission {
       }
     }
 
-    const step = Math.min(speed * dt, d);
+    // The hill charges for itself. Sample the grade a stride ahead and tax
+    // the climb by what the mover is carrying: a maul and a suit of plate
+    // arrive at the top of a ridge blown, a bowman barely notices it, and
+    // "hold the high ground" becomes a sentence with teeth. Downhill gives
+    // a little back, because gravity is on everyone's side equally.
+    let slopeMul = 1;
+    {
+      const ahead = 1.6;
+      const rise = Level.heightAt(e.x + ux * ahead, e.z + uz * ahead)
+        - Level.heightAt(e.x, e.z);
+      const grade = rise / ahead;
+      if (grade > 0.04) {
+        // Heft: the maul is the worst of it, a bow the least.
+        const heft = e.weapon?.id === 'heavy' ? 1.5
+          : e.weapon?.melee ? 1.0 : 0.6;
+        slopeMul = clamp(1 - grade * 0.85 * heft, 0.45, 1);
+      } else if (grade < -0.04) {
+        slopeMul = clamp(1 - grade * 0.25, 1, 1.15);
+      }
+    }
+    const step = Math.min(speed * slopeMul * dt, d);
     // Feet matter: a soldier ON a stair tread may cross the next tread, and
     // one on a catwalk walks its decking instead of being stopped by it.
     // Without this every walkable top was a wall and nobody climbed anything.

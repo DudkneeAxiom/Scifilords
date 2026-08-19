@@ -829,10 +829,27 @@ function handleEncounter(party, opts = {}) {
       let lh = 0;
       for (let i = 0; i < party.id.length; i++) lh = (lh * 31 + party.id.charCodeAt(i)) | 0;
       const lairSite = ['compound', 'quarry', 'wreckyard'][Math.abs(lh) % 3];
+      // WHERE you met them decides what you fight on. Campaign geography
+      // becomes battlefield: the uplands are cuttings and passes, the
+      // Reach's own basin is relay ground and open field, the roads
+      // between are long broken highway. A small scrap still happens at
+      // the roadside — five men do not need a hundred metres of frontage.
+      const fieldSite = () => {
+        const reg = State.regionAt(S.pos.x, S.pos.z).id;
+        if ((party.strength || 0) < 8) return 'roadside';
+        const byRegion = {
+          sarn: ['pass', 'relay'], weal: ['highway', 'field'],
+          scour: ['pass', 'highway'], littoral: ['highway', 'relay'],
+          kettle: ['relay', 'field'],
+        };
+        const pool = byRegion[reg] || ['field', 'relay'];
+        return pool[Math.abs(lh) % pool.length];
+      };
+      const site = lair ? lairSite : boss ? 'roadside' : fieldSite();
       openDeploy({
         type: boss ? 'titan' : lair ? 'lair' : 'skirmish',
-        site: lair ? lairSite : 'roadside',
-        layout: lair ? lairSite : 'roadside',
+        site,
+        layout: site,
         // One way in. You cannot bring the company.
         squadCap: lair ? 4 : undefined,
         party,

@@ -7466,3 +7466,117 @@ test('nerve decides it: lines break, cowards run, and the field is called', asyn
   expect(r.outnumbered).toBe('withdraw');
   expect(r.called).toBe(true);
 });
+
+test('ground with opinions: ridges, chokepoints, and a hill that charges for itself', async ({ page }) => {
+  test.setTimeout(150000);
+  await boot(page);
+  await newCampaign(page);
+  // The landforms are real relief, not decoration.
+  const terrain = await page.evaluate(async () => {
+    const L = await import('/src/level.js');
+    const read = (site, pts) => {
+      L.build(site, 7);
+      return pts.map(([x, z]) => Number(L.heightAt(x, z).toFixed(2)));
+    };
+    // THE NARROWS: both shoulders stand well above the gap between them.
+    const [westShoulder, gap, eastShoulder] = read('pass', [[-46, 0], [0, 0], [46, 0]]);
+    // THE APPROACHES: the northern spine stands above the ground in front.
+    const [spine, below] = read('field', [[0, -74], [0, -20]]);
+    // THE RELAY FIELD: hummocks, none of them commanding.
+    const relief = read('relay', [[-34, -30], [0, -8], [38, 22], [0, 58]]);
+    // And a site that asked for nothing still fights on the basin's roll.
+    L.build('roadside', 7);
+    const plain = [[0, 0], [20, 20], [-20, -20]].map(([x, z]) => L.heightAt(x, z));
+    return {
+      westShoulder, gap, eastShoulder, spine, below,
+      relSpread: Math.max(...relief) - Math.min(...relief),
+      plainSpread: Math.max(...plain) - Math.min(...plain),
+    };
+  });
+  // A pass is a pass: high both sides, low in the middle, by a real margin.
+  expect(terrain.westShoulder - terrain.gap).toBeGreaterThan(6);
+  expect(terrain.eastShoulder - terrain.gap).toBeGreaterThan(6);
+  // The approach ridge is worth standing on.
+  expect(terrain.spine - terrain.below).toBeGreaterThan(3);
+  // The relay field is broken, but nothing there commands it.
+  expect(terrain.relSpread).toBeGreaterThan(1.5);
+  expect(terrain.relSpread).toBeLessThan(9);
+  // A site with no landform is still the gentle basin it always was.
+  expect(terrain.plainSpread).toBeLessThan(8);
+
+  // Then the tactics the ground is supposed to pose.
+  await page.evaluate(async () => {
+    const { Mission } = await import('/src/mission.js');
+    const UI = await import('/src/ui.js');
+    const G = window.KR;
+    const S = G.campaign;
+    G.mission?.dispose();
+    G.world?.dispose(); G.world = null;
+    document.getElementById('viewport').innerHTML = '';
+    UI.show('hud');
+    G.mission = new Mission({
+      campaign: S,
+      spec: { type: 'skirmish', site: 'pass', layout: 'pass',
+        enemyFaction: 'raider', party: { strength: 6, quality: 0.9 } },
+      squad: S.roster.slice(0, 4),
+      container: document.getElementById('viewport'),
+      onHud: () => {}, onToast: () => {}, onIntro: () => {}, onWheel: () => {}, onEnd: () => {},
+    });
+    await G.mission.start();
+    G.mission.paused = true;
+  });
+  await page.waitForFunction(() => window.KR.mission?.player, null, { timeout: 40000 });
+  const tactics = await page.evaluate(async () => {
+    const { WEAPONS } = await import('/src/data.js');
+    const L = await import('/src/level.js');
+    const m = window.KR.mission;
+    const site = m.level.name;
+    for (const e of m.entities) {
+      if (e.side === 'enemy') { e.x = 400; e.z = 400; e.sight = 5; e.target = null; }
+    }
+    m.skirmishTotal = 0;
+    m.paused = false;
+    const realStep = m.step.bind(m);
+    m.step = () => {};
+
+    // The same climb, carried by different arms. Start at the foot of the
+    // west shoulder and walk up it for four seconds.
+    const climb = (weaponId) => {
+      const e = m.squad[0];
+      e.weapon = WEAPONS[weaponId];
+      e.x = -20; e.z = 0; e.elev = 0;
+      e.order = 'move'; e.orderPoint = { x: -46, z: 0 };
+      e.path = null; e.moveTarget = null; e.routing = false;
+      e.target = null; e.forceTarget = null;
+      const x0 = e.x;
+      for (let i = 0; i < 120; i++) realStep(1 / 30);
+      return Number((x0 - e.x).toFixed(2));            // metres made good uphill
+    };
+    const withBow = climb('bow');
+    const withMaul = climb('heavy');
+
+    // An archer on the ridge shoots flatter than one on the floor: same
+    // target, more of the draw in the flight.
+    const a = m.squad[1];
+    a.weapon = WEAPONS.bow;
+    const tgt = { x: 0, z: -40 };
+    const ty = L.heightAt(tgt.x, tgt.z) + 1.2;
+    a.x = 0; a.z = 0; a.elev = 0;
+    m.arrows.length = 0;
+    m.looseArrow(a, tgt.x, ty, tgt.z);
+    const flat = m.arrows[m.arrows.length - 1];
+    const lowSpeed = Math.hypot(flat.vx, flat.vz);
+    a.x = -46; a.z = 0;                                 // up on the shoulder
+    m.looseArrow(a, tgt.x, ty, tgt.z);
+    const high = m.arrows[m.arrows.length - 1];
+    const highSpeed = Math.hypot(high.vx, high.vz);
+    return { site, withBow, withMaul, lowSpeed, highSpeed };
+  });
+  expect(tactics.site).toBe('THE NARROWS');
+  // Everyone gets up the hill; the man with the maul gets there later.
+  expect(tactics.withBow).toBeGreaterThan(0);
+  expect(tactics.withMaul).toBeGreaterThan(0);
+  expect(tactics.withMaul).toBeLessThan(tactics.withBow * 0.95);
+  // Height puts more of the draw into the flight.
+  expect(tactics.highSpeed).toBeGreaterThan(tactics.lowSpeed);
+});

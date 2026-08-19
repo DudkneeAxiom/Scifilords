@@ -60,8 +60,50 @@ function rawHeight(x, z) {
 // one level exists at a time, and the next build() overwrites it.
 let FLAT = null;
 
+/**
+ * Landforms a site asks for on top of the basin's own roll.
+ *
+ * The global field is deliberately gentle — it has to read as one country
+ * across every layout — but formation warfare needs ground with OPINIONS:
+ * a ridge worth putting archers on, a saddle worth funnelling a charge
+ * through, a hollow that hides a flanking company until it is too late.
+ * Set per-build from the layout's meta, exactly like FLAT, and applied
+ * before the pad so a graded town still flattens whatever it sits on.
+ *
+ *   ridges: [{ x, z, ang, len, w, h }]  a raised spine, angle in radians
+ *   bowls:  [{ x, z, r, d }]            a shallow depression
+ *
+ * Kept to a handful of terms per site: heightAt runs per ground vertex and
+ * per movement step, and this is not the place to be clever.
+ */
+let SHAPE = null;
+
+function shapeAt(x, z) {
+  if (!SHAPE) return 0;
+  let y = 0;
+  for (const r of SHAPE.ridges || []) {
+    // Distance along the spine and out from it, in the ridge's own frame.
+    const dx = x - r.x, dz = z - r.z;
+    const s = Math.sin(r.ang), c = Math.cos(r.ang);
+    const along = dx * s + dz * c;
+    const across = dx * c - dz * s;
+    if (Math.abs(along) > r.len || Math.abs(across) > r.w) continue;
+    // Cosine falloff both ways: a rounded whaleback, never a wall.
+    const fa = Math.cos((along / r.len) * Math.PI * 0.5);
+    const fc = Math.cos((across / r.w) * Math.PI * 0.5);
+    y += r.h * fa * fc * fc;
+  }
+  for (const b of SHAPE.bowls || []) {
+    const d = Math.hypot(x - b.x, z - b.z);
+    if (d > b.r) continue;
+    const f = Math.cos((d / b.r) * Math.PI * 0.5);
+    y -= b.d * f * f;
+  }
+  return y;
+}
+
 export function heightAt(x, z) {
-  const h = rawHeight(x, z);
+  const h = rawHeight(x, z) + shapeAt(x, z);
   if (!FLAT) return h;
   const d = Math.hypot(x - FLAT.x, z - FLAT.z);
   if (d >= FLAT.r + FLAT.fade) return h;
@@ -775,6 +817,141 @@ function siteRoadside(b) {
     objectivePoint: { x: 0, z: -6 },
     garrison: [[-6, -12], [6, -14], [0, -20], [-14, -4], [12, -2]],
     patrols: [[[-18, -8], [18, -10], [-18, -8]]],
+  };
+}
+
+function sitePass(b) {
+  // THE NARROWS — a road between two shoulders of rock. The landform does
+  // the tactics (see LANDFORMS.pass): high ground both sides, a gap in the
+  // middle about twelve metres across. Everything here just dresses it and
+  // makes the gap unmistakable, because a chokepoint the player cannot SEE
+  // is a chokepoint they will not use.
+  b.protect(0, 0, 10, 120);
+
+  // The old road up the middle, and the wrecks of everyone who tried it.
+  b.prop('truck_wreck', -6, 30, 0.4, BOX.truck_wreck, 1);
+  b.prop('truck_wreck', 7, -12, 2.1, BOX.truck_wreck, 1);
+  b.prop('truck_wreck', -4, -52, 1.2, BOX.truck_wreck, 1);
+
+  // The gate posts of the gap: a ruined checkpoint on both shoulders, so
+  // the narrowest point reads at a hundred metres.
+  b.prop('checkpoint', -13, 0, 0.35, 'auto', 1);
+  b.prop('checkpoint', 13, 0, -0.35, 'auto', 1);
+  b.prop('watchtower', -20, -6, 0, BOX.watchtower, 1);
+  b.prop('watchtower', 20, 6, 0, BOX.watchtower, 1);
+  // Fallen slabs narrowing it further — cover for whoever holds the middle.
+  b.prop('barrier', -9, -3, 0.2, BOX.barrier, 1.2);
+  b.prop('barrier', 9, 3, -0.2, BOX.barrier, 1.2);
+  b.prop('sandbags', 0, -8, 0, BOX.sandbags, 1.3);
+
+  // Ways up onto both shoulders. Without these the high ground is scenery;
+  // with them it is a decision that costs you time in the gap.
+  b.steps(-30, -20, 6.0, 0.9, 0.4);
+  b.steps(30, 20, 6.0, -0.9, -0.4);
+
+  // The shoulders themselves: rock, and the wreckage of the old cutting.
+  b.scatter(['rock_0', 'rock_1', 'rock_2', 'rock_3'], 34, -52, 0, 40);
+  b.scatter(['rock_0', 'rock_1', 'rock_2', 'rock_3'], 34, 52, 0, 40);
+  b.scatter(['dead_tree'], 10, 0, 0, 90);
+  b.prop('comms_mast', -44, -34, 0, BOX.comms_mast, 1);
+  b.perimeter(130);
+
+  return {
+    name: 'THE NARROWS',
+    palette: { fog: 0x4a4a46, ground: 0x54503f, groundLow: 0x2c2a20, acc: 0x6a6458, sky: 0x4c4c48, sun: 0xe4d0a0, sunI: 2.9, amb: 0x60606a, ambI: 1.9 },
+    playerSpawn: { x: 0, z: 92, ry: 0 },
+    extraction: { x: 0, z: 96 },
+    enemyFaction: 'raider',
+    objectivePoint: { x: 0, z: -20 },
+    garrison: [[-6, -14], [6, -18], [0, -30], [-16, 4], [16, -2]],
+    patrols: [[[-8, -40], [8, -40], [8, 10], [-8, 10], [-8, -40]]],
+  };
+}
+
+function siteHighway(b) {
+  // THE LONG HAUL — a broken roadway running the length of the field with
+  // an embankment along one side. A fighting corridor: long sightlines for
+  // bows, wrecks to break them, and one bank worth owning.
+  b.protect(10, 0, 14, 130);
+
+  // The roadway's ruined guard barrier, in runs with gaps blown through it.
+  for (let i = -11; i <= 11; i++) {
+    if (((i + 33) % 5) === 4) continue;              // blown sections
+    b.prop('barrier', 24, i * 11, 0, BOX.barrier, 1.15);
+  }
+  // Dead traffic, thickening where the road bends.
+  const wrecks = [[8, -84], [16, -52], [4, -30], [14, -4], [6, 26], [18, 54], [10, 86]];
+  wrecks.forEach(([x, z], i) => b.prop('truck_wreck', x, z, i * 0.9, BOX.truck_wreck, 1));
+  b.prop('container', 20, -66, 0, BOX.container, 1);
+  b.prop('container', 2, 8, Math.PI / 2, BOX.container, 1);
+  b.prop('checkpoint_boom', 12, 0, 0, null, 1);
+  b.prop('checkpoint', 18, 2, -0.3, 'auto', 1);
+
+  // Up onto the embankment at two points — the shooting positions.
+  b.steps(-18, -30, 4.2, 0.8, 0.5);
+  b.steps(-18, 34, 4.2, 0.8, -0.5);
+  b.prop('pipe_run', -34, -10, 0, BOX.pipe_run, 1);
+  b.prop('generator', -30, 40, 0.3, BOX.generator, 1);
+  b.prop('hab_block', -40, -60, 0, BOX.hab_block, 1);
+  b.prop('hab_block', -38, 70, Math.PI / 2, BOX.hab_block, 1);
+
+  b.scatter(['rock_0', 'rock_2', 'rock_3'], 22, -55, 0, 45);
+  b.scatter(['dead_tree'], 12, 0, 0, 100);
+  b.perimeter(140);
+
+  return {
+    name: 'THE LONG HAUL',
+    palette: { fog: 0x504a40, ground: 0x504a3a, groundLow: 0x2a261c, acc: 0x5e5648, sky: 0x4e4a42, sun: 0xe8c88c, sunI: 3.0, amb: 0x5e5c60, ambI: 1.85 },
+    playerSpawn: { x: 10, z: 100, ry: 0 },
+    extraction: { x: 10, z: 104 },
+    enemyFaction: 'raider',
+    objectivePoint: { x: 10, z: -30 },
+    garrison: [[6, -26], [16, -34], [10, -50], [-14, -20], [20, -12]],
+    patrols: [
+      [[8, -70], [8, 70], [8, -70]],
+      [[-22, -40], [-22, 40], [-22, -40]],
+    ],
+  };
+}
+
+function siteRelay(b) {
+  // THE RELAY FIELD — antenna stumps and concrete pads on hummocky ground
+  // (LANDFORMS.relay). No hill worth taking outright, which makes every
+  // fold of it worth arguing over. The most open of the field battles.
+  const masts = [[-58, -44], [-20, -66], [24, -50], [58, -18], [30, 34], [-14, 52], [-52, 26]];
+  masts.forEach(([x, z], i) => {
+    b.prop(i % 3 === 0 ? 'comms_mast' : 'antenna_small', x, z, i * 0.7,
+      i % 3 === 0 ? BOX.comms_mast : BOX.antenna_small, i % 3 === 0 ? 1 : 1.6);
+    // Every mast stands on its pad, and the pads are the cover.
+    b.prop('barrier', x + 3, z + 2, i * 0.5, BOX.barrier, 1.1);
+  });
+  b.prop('radar_dish', 0, -70, 0.4, BOX.radar_dish, 1.3);
+  b.prop('bunker', -6, -6, 0.2, BOX.bunker, 1);          // the switch house
+  b.prop('blast_door', -6, 0.5, 0, BOX.blast_door, 1);
+  b.prop('pipe_run', 14, -14, Math.PI / 2, BOX.pipe_run, 1);
+  b.prop('container', -30, 6, 0, BOX.container, 1);
+  b.prop('container', 34, -6, Math.PI / 2, BOX.container, 1);
+  b.prop('fuel_tank', 44, 44, 0, BOX.fuel_tank, 1.1);
+  b.prop('sandbags', -20, 20, 0.6, BOX.sandbags, 1.3);
+  b.prop('sandbags', 22, -28, -0.4, BOX.sandbags, 1.3);
+  b.prop('truck_wreck', -44, -8, 1.7, BOX.truck_wreck, 1);
+
+  b.scatter(['rock_0', 'rock_1', 'rock_2', 'rock_3'], 30, 0, 0, 96);
+  b.scatter(['dead_tree'], 14, 0, 0, 100);
+  b.perimeter(126);
+
+  return {
+    name: 'THE RELAY FIELD',
+    palette: { fog: 0x4c4e4a, ground: 0x4e5040, groundLow: 0x272a20, acc: 0x5a5c4a, sky: 0x4a4e4c, sun: 0xdcd4a8, sunI: 2.85, amb: 0x5c626a, ambI: 1.95 },
+    playerSpawn: { x: 0, z: 88, ry: 0 },
+    extraction: { x: 0, z: 92 },
+    enemyFaction: 'raider',
+    objectivePoint: { x: 0, z: -10 },
+    garrison: [[-8, -10], [8, -14], [0, -30], [-24, 4], [26, -4]],
+    patrols: [
+      [[-40, -30], [40, -30], [40, 20], [-40, 20], [-40, -30]],
+      [[0, -60], [0, 40], [0, -60]],
+    ],
   };
 }
 
@@ -1552,11 +1729,56 @@ function siteBastion(b) {
 
 // Keyed by layout, not by location: several places in the Reach share a layout
 // and every layout can host any mission template.
+/**
+ * The ground each battlefield fights on, before a single prop is placed.
+ *
+ * These are the tactical questions the directive asks the terrain to pose:
+ * a ridge is worth taking archers up, a saddle between two spurs is worth
+ * holding with spears, a hollow is worth hiding a flanking company in, and
+ * a slope is worth not charging up in armour.
+ */
+const LANDFORMS = {
+  // THE APPROACHES: one long spine across the north, so the defender's
+  // archers have somewhere to stand and the attacker can see them there.
+  field: {
+    ridges: [{ x: 0, z: -74, ang: Math.PI / 2, len: 150, w: 26, h: 5.4 }],
+    bowls: [{ x: -58, z: 10, r: 34, d: 2.2 }],
+  },
+  // THE NARROWS: two shoulders of high ground with a gap between them. The
+  // whole battle is the question of who holds the gap — spears, in a rank,
+  // or nobody.
+  pass: {
+    ridges: [
+      { x: -46, z: 0, ang: 0, len: 150, w: 34, h: 10.5 },
+      { x: 46, z: 0, ang: 0, len: 150, w: 34, h: 10.5 },
+    ],
+  },
+  // THE LONG HAUL: an embankment running the length of the roadway, so the
+  // road is a corridor with shooting positions above it on one side.
+  highway: {
+    ridges: [{ x: -30, z: 0, ang: 0, len: 150, w: 20, h: 4.4 }],
+    bowls: [{ x: 40, z: 30, r: 30, d: 1.8 }],
+  },
+  // THE RELAY FIELD: broken, hummocky ground — no single hill worth taking,
+  // which makes every piece of it worth arguing over.
+  relay: {
+    ridges: [
+      { x: -34, z: -30, ang: 0.7, len: 60, w: 18, h: 3.6 },
+      { x: 38, z: 22, ang: -0.5, len: 66, w: 20, h: 3.2 },
+      { x: 4, z: 58, ang: 1.4, len: 44, w: 14, h: 2.6 },
+    ],
+    bowls: [{ x: 0, z: -8, r: 40, d: 2.6 }],
+  },
+};
+
 const SITES = {
   array: siteGrellan,
   outpost: siteRampart,
   reclaimer: sitePerran,
   roadside: siteRoadside,
+  pass: sitePass,
+  highway: siteHighway,
+  relay: siteRelay,
   quarry: siteQuarry,
   wreckyard: siteWreckyard,
   depot: siteDepot,
@@ -1589,7 +1811,12 @@ export function build(siteId, seed, override = {}) {
   };
   const fl = FLATTENS[siteId];
   FLAT = null;                                     // never inherit a pad
-  if (fl) FLAT = { ...fl, y: rawHeight(fl.x, fl.z) };
+  // Landforms come BEFORE the pad is measured, so a graded town sits on the
+  // ground the shape made rather than the ground underneath it. Both are
+  // module state and both are cleared here: a site that asks for neither
+  // fights on the basin's own roll, the way every layout used to.
+  SHAPE = LANDFORMS[siteId] || null;
+  if (fl) FLAT = { ...fl, y: rawHeight(fl.x, fl.z) + shapeAt(fl.x, fl.z) };
   // How much ground this particular fight gets.
   //
   // Every site used to be the same size whatever was happening on it, so a

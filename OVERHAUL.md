@@ -136,6 +136,37 @@ Markets sell steel now (`weaponStock` in ui.js); guns remain in WEAPONS
 as pre-charter relics with no shelf space. Starting armoury, the
 commander's own weapon, allied militia and field spoils all re-armed.
 
+## Battlefields (phase 9, landed)
+
+`LANDFORMS` in level.js is module state beside `FLAT`, applied inside
+`heightAt` via `shapeAt()` — ridges (rounded whalebacks, cosine falloff
+along and across) and bowls (shallow depressions). Set per-build from
+the site id, cleared every build, and measured BEFORE the flatten pad
+so a graded town still sits on whatever the landform made.
+
+Sites: `pass` (THE NARROWS — two 10.5m shoulders with a ~12m gap; the
+battle is who holds the gap), `highway` (THE LONG HAUL — embankment
+down one side of a wreck-strewn roadway, two stair points up to the
+shooting positions), `relay` (THE RELAY FIELD — three low hummocks and
+a central hollow, nothing commanding), plus a spine added to `field`
+(THE APPROACHES) so its defender has ground worth holding.
+
+Terrain now poses the directive's questions mechanically:
+- **Uphill costs**, scaled by heft — `moveToward` samples the grade
+  1.6m ahead and taxes the step (maul ×1.5, other melee ×1.0, bow ×0.6,
+  floor 0.45; downhill gives back up to 15%).
+- **Height helps a bow** — `looseArrow` adds up to +25% flight speed for
+  shooting downhill, so the arrow gets there flatter and lands harder.
+- **Chokepoints favour spears** — emergent: the gap is narrower than a
+  line's frontage, and spear reach dominates a frontage that narrow.
+
+`handleEncounter` in main.js picks the field from `State.regionAt` —
+sarn→pass/relay, weal→highway/field, scour→pass/highway,
+littoral→highway/relay, kettle→relay/field — keyed by party id so the
+same band on the same ground fights the same field twice. Parties under
+8 strong still fight at the roadside: five men do not need a hundred
+metres of frontage.
+
 ## Asset state
 
 wpn_sword / wpn_spear / wpn_heavy / wpn_bow / wpn_blade / wpn_shield
