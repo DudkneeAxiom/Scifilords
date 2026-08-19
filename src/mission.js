@@ -779,6 +779,19 @@ export class Mission {
   spawnPointFor(x, z, minDist = ARRIVE_MIN_DIST) {
     const p = this.player;
     if (!p) return this.safeSpawn(x, z);
+    // A PENNED site — the pit — is a floor with walls round it, and
+    // everything below is wrong inside one: it searches the whole playable
+    // field, and it PREFERS ground the player cannot see, which in a bowl
+    // means the far side of the wall. That is how pit fighters ended up in
+    // the stands instead of in the ring. Inside a pen the asked-for point
+    // IS the point: clamp it to the floor and put them down on it.
+    const pen = this.level.penned;
+    if (pen) {
+      const dx = x - pen.x, dz = z - pen.z;
+      const d = Math.hypot(dx, dz) || 1;
+      const r = Math.min(d, pen.r);
+      return this.safeSpawn(pen.x + (dx / d) * r, pen.z + (dz / d) * r);
+    }
     const b = this.level.bounds - 4;
     let best = null;
     // Walk outward around the requested bearing looking for somewhere that is
@@ -1176,6 +1189,34 @@ export class Mission {
     for (const t of theirs) { cx += t.x; cz += t.z; }
     cx /= theirs.length; cz /= theirs.length;
     this.foeAdvanceOn = { x: cx, z: cz };
+    // AND IT MARCHES IN A LINE. Each man is given his own place in a
+    // frontage abreast of the advance, so a host crosses the field as
+    // ranks rather than as a crowd that happens to share a heading —
+    // infantry forward, spears behind them, bows at the back, the same
+    // shape the player's own battle line uses.
+    let mx = 0, mz = 0;
+    for (const e of mine) { mx += e.x; mz += e.z; }
+    mx /= mine.length; mz /= mine.length;
+    const head = Math.atan2(cx - mx, cz - mz);           // the way they face
+    const rx = Math.sin(head + Math.PI / 2), rz = Math.cos(head + Math.PI / 2);
+    const bx = Math.sin(head), bz = Math.cos(head);
+    const arms = { inf: [], spear: [], ranged: [] };
+    for (const e of mine) arms[this.battleGroup(e)].push(e);
+    const DEPTH = { inf: 0, spear: 5.5, ranged: 13 };
+    for (const [arm, list] of Object.entries(arms)) {
+      const perRank = Math.max(6, Math.ceil(Math.sqrt(list.length) * 2.2));
+      list.forEach((e, i) => {
+        const rank = Math.floor(i / perRank);
+        const across = ((i % perRank) - (Math.min(perRank, list.length) - 1) / 2) * 2.3;
+        const back = DEPTH[arm] + rank * 2.6;
+        // Abreast of the host's centre, and set BACK along the facing so
+        // the line has depth behind its front rank rather than ahead of it.
+        e.linePost = {
+          x: mx + rx * across - bx * back,
+          z: mz + rz * across - bz * back,
+        };
+      });
+    }
     for (const e of mine) {
       e.holdGround = posture === 'hold' && (e.weapon?.bow || e.bowStowed);
       e.withdrawing = posture === 'withdraw' && !(e.weapon?.bow);
@@ -2371,10 +2412,29 @@ export class Mission {
     // Zoom belongs to the tactical view; the shoulder view has no use for the
     // wheel and Chrome would scroll the page.
     add(el, 'wheel', (e) => {
-      if (!this.rts) return;
       e.preventDefault();
+      const dir = Math.sign(e.deltaY);
+      if (!this.rts) {
+        // ONE CONTINUOUS EYE. Rolling out over the shoulder pulls you up
+        // into command; rolling back in puts you down in the line. The
+        // toggle key still works — this is the same move without having to
+        // remember a letter, and it means the two cameras read as two ends
+        // of one motion rather than two modes.
+        if (dir > 0) {
+          this.wheelOut = (this.wheelOut || 0) + 1;
+          if (this.wheelOut >= 2) { this.wheelOut = 0; this.toggleTactical(); }
+        } else {
+          this.wheelOut = 0;
+        }
+        return;
+      }
+      this.wheelOut = 0;
+      // Rolling in past the closest tactical height drops you back into the
+      // body you are commanding.
+      const cur = this.rtsZoomT ?? this.rtsZoom;
+      if (dir < 0 && cur <= 24.5) { this.toggleTactical(); return; }
       // The wheel sets a TARGET; the camera glides to it per-frame.
-      this.rtsZoomT = clamp((this.rtsZoomT ?? this.rtsZoom) + Math.sign(e.deltaY) * 7, 22, 78);
+      this.rtsZoomT = clamp(cur + dir * 7, 22, 78);
     });
     // The field map takes clicks in tactical mode: the eye goes where you
     // point. Bound here rather than in the UI layer because the click is an
@@ -2450,11 +2510,15 @@ export class Mission {
       this.rtsYaw = this.camYaw;
       this.rtsCursorLive = false;
       this.rtsVel = { x: 0, z: 0 };
-      this.rtsZoomT = this.rtsZoom;
+      // Come up from just above the shoulder rather than snapping to
+      // wherever the eye was last time — the wheel is meant to feel like
+      // one continuous rise out of the line, and the glide does the rest.
+      this.rtsZoom = 26;
+      this.rtsZoomT = 44;
       this.mouse.down = false;
       this.mouse.right = false;
       if (document.pointerLockElement) document.exitPointerLock();
-      this.onToast('TACTICAL', 'Drag selects · right-click orders · T returns', 'order');
+      this.onToast('TACTICAL', 'Wheel in to rejoin the line · drag selects · right-click orders', 'order');
     } else {
       this.rtsDrag = null;
       this.rtsDrawBox();
@@ -5052,7 +5116,15 @@ export class Mission {
       if (e.advanceOn && !e.withdrawing) {
         const ad = Math.hypot(e.advanceOn.x - e.x, e.advanceOn.z - e.z);
         if (ad > 6) {
-          this.moveToward(dt, e, e.advanceOn.x, e.advanceOn.z, e.speed * 0.85);
+          // Dress on the line first, then walk it forward together: a man
+          // out of his place closes on his POST, a man in it advances with
+          // the rest. That is the difference between a line crossing the
+          // field and a crowd arriving in ones and twos.
+          const post = e.linePost;
+          const off = post ? Math.hypot(post.x - e.x, post.z - e.z) : 0;
+          const goal = post && off > 3.5 ? post : e.advanceOn;
+          this.moveToward(dt, e, goal.x, goal.z,
+            e.speed * (goal === post ? 0.95 : 0.72));
           this.faceMotion(e, dt);
           return;
         }

@@ -7716,3 +7716,100 @@ test('standards on the field: each arm plants one, and the shooter HUD is gone',
   expect(Math.abs(r.moved)).toBeLessThan(40);
   expect(r.melee).toBe(true);
 });
+
+test('in the ring and in a line: pit fighters stay on the floor, hosts march abreast', async ({ page }) => {
+  test.setTimeout(150000);
+  await boot(page);
+  await newCampaign(page);
+  // 1) THE PIT. Every fighter every round lands inside the bowl.
+  await page.evaluate(async () => {
+    const { Mission } = await import('/src/mission.js');
+    const UI = await import('/src/ui.js');
+    const G = window.KR;
+    const S = G.campaign;
+    G.mission?.dispose();
+    G.world?.dispose(); G.world = null;
+    document.getElementById('viewport').innerHTML = '';
+    UI.show('hud');
+    G.mission = new Mission({
+      campaign: S,
+      spec: { type: 'pit', site: 'arena', layout: 'arena', enemyFaction: 'raider' },
+      squad: S.roster.slice(0, 1),
+      container: document.getElementById('viewport'),
+      onHud: () => {}, onToast: () => {}, onIntro: () => {}, onWheel: () => {}, onEnd: () => {},
+    });
+    await G.mission.start();
+    G.mission.paused = true;
+  });
+  await page.waitForFunction(() => window.KR.mission?.player, null, { timeout: 40000 });
+  const pit = await page.evaluate(() => {
+    const m = window.KR.mission;
+    const pen = m.level.penned;
+    const out = [];
+    // Walk several rounds; every fighter must be on the floor, not in the stands.
+    for (let round = 0; round < 8; round++) {
+      for (const e of m.entities) {
+        if (e.side === 'enemy' && !e.dead) { e.dead = true; e.hp = 0; }
+      }
+      m.nextPitWave();
+      for (const e of m.entities) {
+        if (e.side !== 'enemy' || e.dead) continue;
+        out.push(Number(Math.hypot(e.x - pen.x, e.z - pen.z).toFixed(1)));
+      }
+    }
+    return { pen: pen ? pen.r : null, worst: Math.max(...out), n: out.length };
+  });
+  expect(pit.pen).toBeGreaterThan(0);
+  expect(pit.n).toBeGreaterThan(8);
+  // Nobody in the crowd. The floor is the floor.
+  expect(pit.worst).toBeLessThanOrEqual(pit.pen + 1.5);
+
+  // 2) THE LINE. A host given an advance dresses into ranks abreast of it.
+  await page.evaluate(async () => {
+    const { Mission } = await import('/src/mission.js');
+    const UI = await import('/src/ui.js');
+    const G = window.KR;
+    const S = G.campaign;
+    G.mission?.dispose();
+    G.world?.dispose(); G.world = null;
+    document.getElementById('viewport').innerHTML = '';
+    UI.show('hud');
+    G.mission = new Mission({
+      campaign: S,
+      spec: { type: 'skirmish', site: 'field', layout: 'field',
+        enemyFaction: 'trust', party: { kind: 'column_trust', strength: 24, quality: 0.9 } },
+      squad: S.roster.slice(0, 4),
+      container: document.getElementById('viewport'),
+      onHud: () => {}, onToast: () => {}, onIntro: () => {}, onWheel: () => {}, onEnd: () => {},
+    });
+    await G.mission.start();
+    G.mission.paused = true;
+  });
+  await page.waitForFunction(() => window.KR.mission?.player, null, { timeout: 40000 });
+  const line = await page.evaluate(() => {
+    const m = window.KR.mission;
+    m.foeThinkAt = 0;
+    m.updateEnemyCommander(0);
+    const foes = m.entities.filter((e) => e.side === 'enemy' && !e.dead);
+    const posted = foes.filter((e) => e.linePost).length;
+    // The posts describe a FRONTAGE: wide across the advance, shallow along it.
+    const p = m.player;
+    const head = Math.atan2(p.x - foes[0].x, p.z - foes[0].z);
+    const rx = Math.sin(head + Math.PI / 2), rz = Math.cos(head + Math.PI / 2);
+    const bx = Math.sin(head), bz = Math.cos(head);
+    let minA = 1e9, maxA = -1e9, minB = 1e9, maxB = -1e9;
+    for (const e of foes) {
+      if (!e.linePost) continue;
+      const a = e.linePost.x * rx + e.linePost.z * rz;
+      const b = e.linePost.x * bx + e.linePost.z * bz;
+      minA = Math.min(minA, a); maxA = Math.max(maxA, a);
+      minB = Math.min(minB, b); maxB = Math.max(maxB, b);
+    }
+    return { posted, n: foes.length,
+      frontage: +(maxA - minA).toFixed(1), depth: +(maxB - minB).toFixed(1) };
+  });
+  expect(line.posted).toBe(line.n);
+  // Wider than it is deep — that is what makes it a line and not a column.
+  expect(line.frontage).toBeGreaterThan(line.depth);
+  expect(line.frontage).toBeGreaterThan(8);
+});

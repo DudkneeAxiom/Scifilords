@@ -1522,6 +1522,12 @@ function siteArena(b) {
     playerSpawn: { x: 0, z: 14, ry: Math.PI },
     extraction: { x: 0, z: 14 },
     objectivePoint: { x: 0, z: 0 },
+    // THE FIGHTING FLOOR. A bowl has walls and a crowd behind them, and
+    // nothing may be put down outside it — the spawn placer works on the
+    // whole playable field and prefers ground the player CANNOT see, and
+    // in a walled arena the only such ground is on the far side of the
+    // wall. That is how pit fighters ended up in the stands.
+    penned: { x: 0, z: 0, r: 19 },
     enemyFaction: 'raider',
     garrison: [],
     patrols: [],
@@ -1885,6 +1891,8 @@ export function build(siteId, seed, override = {}) {
     // The optional second breach. Explicit in this whitelist, because a meta
     // field that is not is a meta field that never arrives.
     culvert: meta.culvert || null,
+    // A ring nothing may spawn outside of. See siteArena.
+    penned: meta.penned || null,
     // Every layout hand-places its defenders and its patrol routes, and for a
     // long time none of that reached the mission — these two lines were simply
     // missing from the returned object, so spawnGarrison() always fell through
