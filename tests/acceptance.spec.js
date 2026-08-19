@@ -1147,10 +1147,18 @@ test('renown raises the deployment limit', async ({ page }) => {
     S.renown = 2200; names.push([St.renownName(S), St.deployLimit(S)]);
     return { start, names };
   });
-  expect(r.start).toBe(5);
-  expect(r.names[0][1]).toBe(5);
+  // Asserted as SHAPE, not as constants. This test used to pin the opening
+  // rung at exactly 5 and broke the moment the ladder was rescaled into army
+  // numbers — which is a test failing for being out of date rather than for
+  // catching anything. What actually matters is that the limit starts small,
+  // climbs with renown, and reaches numbers a formation can be built from.
+  expect(r.start).toBe(r.names[0][1]);
+  expect(r.names[0][1]).toBeGreaterThanOrEqual(5);
   expect(r.names[1][1]).toBeGreaterThan(r.names[0][1]);
-  expect(r.names[2][1]).toBeGreaterThanOrEqual(12);
+  expect(r.names[2][1]).toBeGreaterThan(r.names[1][1]);
+  // Enough bodies at the top to form ranks with, or the formations the whole
+  // combat overhaul is built on have nothing to arrange.
+  expect(r.names[2][1]).toBeGreaterThanOrEqual(24);
   expect(r.names[2][0]).not.toBe(r.names[0][0]);
 });
 
