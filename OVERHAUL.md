@@ -526,3 +526,59 @@ for each was tuned against rendered sweeps rather than guessed.
 `tools/holdview.mjs` photographs every weapon in every state and
 `tools/pitchsweep.mjs` renders one pose across a range of values,
 because a claim about a pose has to be looked at.
+
+## Round: the eye, and the shooter's commands
+
+Two things at once: the control scheme is a third-person shooter's and
+keeps producing collisions, and the camera claimed a continuity it did
+not have.
+
+### The commands were the old game's
+
+`V` did two things. Lock-on was bound to it last round and `V` was
+already FALL BACK, so one press locked a man AND told the company to
+break contact. There is no free key left in the hand's reach that is not
+already a verb, so the wheel button learned to tell a tap from a hold:
+tap locks, hold gives orders. Nothing else had to move.
+
+SUPPRESS is retired. "Pour fire into that position, pin whoever is
+behind it" needs automatic weapons, an ammunition economy and an enemy
+who takes cover from volume rather than from arrows. The X binding said
+so itself — *"it keeps its gun-era meaning while guns remain in the
+world"*. X is fire discipline now and nothing else; with no bows in hand
+it refuses rather than falling through to the gun verb.
+
+`tools/controls.mjs` checks the PROPERTIES rather than the specifics: no
+order named in gun language, no two orders sharing a key, tap-locks and
+hold-orders. That is the check that would have caught the V collision on
+the day it was made.
+
+### The transition was a cut wearing a move's clothes
+
+The wheel comment has claimed since the tactical view was built that
+rolling out "pulls you up into command" and that the two cameras "read
+as two ends of one motion rather than two modes". Toggling flipped a
+boolean. The glide afterwards was the tactical rig easing its own
+height — a cut, dressed. Coming back down had no glide at all.
+
+Both rigs compute a transform now and the eye interpolates between them:
+position, orientation and field of view, on a smoothstep. Measured with
+`tools/camerafeel.mjs`, which judges a cut the only way a still cannot —
+by the largest single-frame step as a fraction of the whole move. It
+peaks at 2.66m of a 40m rise, under 7%, on a continuous path. The first
+attempt was smooth but covered four metres a frame, which reads as a
+smear rather than a rise; it is slower now.
+
+Locked, the eye frames the PAIR: pulling back and rising as the range
+opens, widening a little, and swinging the shoulder to whichever side
+keeps him clear of your own back. 6.04 to 7.16 of pullback as a duel
+spreads from two metres to eight.
+
+### And a bug of my own making
+
+At 60 v 100 the battle reported `committed=60/100` — forty men never
+entered the fight. Making both sides share one body budget shrank the
+enemy's share, which pushed the reinforcement gate above what was ever
+alive; and `checkRout` will not call a field with reserves unspent, so
+that battle could not be won. Reserves feed whenever there is ROOM now,
+not only when the line has nearly collapsed.

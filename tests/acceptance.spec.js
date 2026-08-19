@@ -727,7 +727,7 @@ test('individual selection routes orders to one soldier only', async ({ page }) 
   expect(r.orders.slice(1).every((o) => o !== 'hold')).toBe(true);
 });
 
-test('suppress and flank orders put soldiers into those behaviours', async ({ page }) => {
+test('fire discipline and flank orders put soldiers into those behaviours', async ({ page }) => {
   test.setTimeout(180000);
   await boot(page);
   await newCampaign(page);
@@ -739,15 +739,44 @@ test('suppress and flank orders put soldiers into those behaviours', async ({ pa
   await waitForControl(page);
   await waitForControl(page);
 
+  // X USED TO BE SUPPRESS.
+  //
+  // "Pour fire into that position, pin whoever is behind it" needs automatic
+  // weapons, an ammunition economy and an enemy who takes cover from volume
+  // rather than from arrows — a verb from the third-person shooter this was
+  // before the combat overhaul. The key now carries the only fire discipline
+  // a company of bowmen has: hold the volley, or send it. On a selection
+  // with no bows in hand it refuses rather than falling through to the
+  // gun-era behaviour, which is what it used to do.
+  const bows = await page.evaluate(() => {
+    const m = window.KR.mission;
+    // Put a bow in somebody's hands so there is a volley to discipline.
+    const s = m.squad.find((e) => !e.militia);
+    s.weapon = { ...s.weapon, bow: true, id: 'bow' };
+    s.holdFire = false;
+    return { armed: !!s.weapon.bow };
+  });
+  expect(bows.armed).toBe(true);
+
   await page.keyboard.press('x');
   await page.waitForTimeout(300);
-  const sup = await page.evaluate(() => {
+  const held = await page.evaluate(() => {
     const m = window.KR.mission;
     const s = m.squad.find((e) => !e.militia);
-    return { order: s.order, hasPoint: !!s.suppressPoint };
+    return { holdFire: !!s.holdFire, suppressing: s.order === 'suppress' };
   });
-  expect(sup.order).toBe('suppress');
-  expect(sup.hasPoint).toBe(true);
+  // The bows are holding, and nobody was told to suppress anything.
+  expect(held.holdFire, 'X did not put the bows on hold').toBe(true);
+  expect(held.suppressing, 'X still issues the retired SUPPRESS order').toBe(false);
+
+  // And again releases them.
+  await page.keyboard.press('x');
+  await page.waitForTimeout(300);
+  const loosed = await page.evaluate(() => {
+    const m = window.KR.mission;
+    return !!m.squad.find((e) => !e.militia).holdFire;
+  });
+  expect(loosed, 'X did not release the volley again').toBe(false);
 
   await page.keyboard.press('z');
   await page.waitForTimeout(300);
@@ -8503,6 +8532,13 @@ test('a company big enough to be a line, and a wage bill that decides its size',
   test.setTimeout(120000);
   await boot(page);
   await newCampaign(page);
+  // Pinned: recruit pools, manpower and relations all come off the campaign
+  // seed, so an unpinned run measures a different economy every time. Same
+  // trap that made the arrows test flake one run in three.
+  await page.evaluate(async () => {
+    const State = await import('/src/state.js');
+    window.KR.campaign = State.newCampaign(4242);
+  });
 
   // The deploy ceiling was raised to army numbers and encounters stayed at
   // four, because the ROSTER was four and recruiting added two a town. The
@@ -8521,7 +8557,15 @@ test('a company big enough to be a line, and a wage bill that decides its size',
     // What a town will put forward, and what it costs to say yes.
     const towns = DATA.LOCATIONS.filter((l) => l.kind === 'settlement');
     const pool = State.recruitPool(S, towns[0].id);
-    const cost = pool.length ? State.hireCost(S, pool[0]) : null;
+    // The claim is that a GREEN recruit is cheap, so price a green one —
+    // built here rather than taken from the pool, because what a town puts
+    // forward depends on the seed and some offer nothing but trained hands.
+    const Roster = await import("/src/roster.js");
+    const green = Roster.makeSoldier(() => 0.5, { role: "rifleman", rank: 0 });
+    const veteran = Roster.makeSoldier(() => 0.5, { role: "rifleman", rank: 2 });
+    green.equip = {}; veteran.equip = {};
+    const cost = State.hireCost(S, green);
+    const vetCost = State.hireCost(S, veteran);
 
     // Play the recruiting loop for a month with a plausible income, and see
     // what the company settles at.
@@ -8538,7 +8582,7 @@ test('a company big enough to be a line, and a wage bill that decides its size',
       State.advanceTime(S, 24);
     }
     return {
-      startRoster, arms: [...arms], poolSize: pool.length, cost,
+      startRoster, arms: [...arms], poolSize: pool.length, cost, vetCost,
       afterMonth: State.living(S).length,
       deploy: State.deployLimit(S),
       wages: State.upkeepOf(S).wages,
@@ -8555,6 +8599,8 @@ test('a company big enough to be a line, and a wage bill that decides its size',
   // And a green recruit is cheap: the cost of an army is what it eats, not
   // what it costs to sign.
   expect(r.cost).toBeLessThan(300);
+  // And a trained one is not — rank is what you pay for.
+  if (r.vetCost !== null) expect(r.vetCost).toBeGreaterThan(r.cost);
 
   // A month in, the company is army-shaped and the deploy limit is not the
   // thing holding it back.

@@ -1776,8 +1776,24 @@ export class Mission {
     const alive = this.entities.filter((e) => e.side === 'enemy' && !e.dead).length;
     const left = this.skirmishTotal - (this.skirmishCommitted || 0);
     const budget = enemyBudget(ownSideCount(this));
-    if (left > 0 && alive < Math.max(4, budget * 0.45)) {
-      const n = Math.min(left, Math.round(budget * 0.5), Math.max(0, budget - alive));
+    // RESERVES MUST BE ABLE TO REACH THE FIELD.
+    //
+    // The old gate only fed the next rank once the field had thinned below
+    // 45% of the budget. That was fine when the budget was the whole cap;
+    // it is not now that the player's own company is taken out of it first.
+    // Bring sixty and the enemy budget falls to sixty, 45% of which is
+    // twenty-seven — so a party of a hundred committed sixty, sat at
+    // thirty-four alive, and never sent the other forty. checkRout needs
+    // reserves spent before it will call the field, so that battle could
+    // not be won: measured at 60 v 100, committed 60/100, unresolved after
+    // ten minutes.
+    //
+    // Feed whenever there is ROOM, not only when the line has nearly
+    // collapsed. The budget still caps how many stand at once; this only
+    // decides how quickly the ones behind them arrive.
+    const room = Math.max(0, budget - alive);
+    if (left > 0 && room >= 4) {
+      const n = Math.min(left, Math.round(budget * 0.5), room);
       const roles = this.doctrineRoles(PARTY_TIERS[this.spec.party?.kind]?.roles
         || ['rifleman', 'breacher', 'marksman']);
       if (this.spec.defend) {
@@ -2332,9 +2348,15 @@ export class Mission {
   get ORDERS() {
     return [
       { id: 'move', name: 'MOVE / ATTACK', key: '',
-        desc: 'Aimed at a body: focus fire. Aimed at ground: move up and spread.' },
-      { id: 'suppress', name: 'SUPPRESS', key: 'X',
-        desc: 'Pour fire into that position. Pins whoever is behind it.' },
+        desc: 'Aimed at a man: go for him. Aimed at ground: move up and take it.' },
+      // SUPPRESS is gone. "Pour fire into that position, pin whoever is
+      // behind it" is a verb from the game this used to be: it needs
+      // automatic weapons, an ammunition economy and an enemy who takes
+      // cover from volume rather than from arrows. X is now what it should
+      // always have been in a company that carries bows — the order to
+      // hold or loose.
+      { id: 'volley', name: 'HOLD / LOOSE', key: 'X',
+        desc: 'The bows hold their volley, or send it.' },
       { id: 'charge', name: 'CHARGE', key: 'R',
         desc: 'Run them down. No cover, no stopping, until nothing stands.' },
       { id: 'flank', name: 'FLANK', key: 'Z',
@@ -2356,9 +2378,9 @@ export class Mission {
       { id: 'battle', name: 'BATTLE LINE', key: '',
         desc: 'Infantry forward, spears behind them, ranged at the back.' },
       { id: 'line', name: 'LINE', key: '',
-        desc: 'Abreast of you. Every gun forward, wide frontage.' },
+        desc: 'Abreast of you. Every blade forward, wide frontage.' },
       { id: 'spread', name: 'SPREAD', key: '',
-        desc: 'Wide intervals. One burst cannot take three of you.' },
+        desc: 'Wide intervals. One volley cannot take three of you.' },
       { id: 'wedge', name: 'WEDGE', key: '',
         desc: 'Compact behind you. The shape that moves best.' },
     ];
@@ -2447,7 +2469,14 @@ export class Mission {
   issueOrder(id, aim = null) {
     if (FORMATIONS[id]) { this.setFormation(id); return; }
     if (id === 'move') this.issueContextOrder(aim);
-    else if (id === 'suppress') this.orderSuppress(aim);
+    else if (id === 'volley') {
+      // The wheel's ranged entry is fire discipline now, the same as X.
+      // orderSuppress survives underneath for the emplacements that still
+      // fire, but nothing the player can press reaches it any more.
+      const bows = this.commanded().filter((e) => e.weapon?.bow || e.bowStowed);
+      if (bows.length) this.toggleHoldFire(bows);
+      else { Audio.uiDeny(); this.onToast('', 'NO BOWS IN HAND', 'order'); }
+    }
     else if (id === 'flank') this.orderFlank(aim);
     else if (id === 'fallback') this.orderFallBack();
     else if (id === 'wall') this.orderShieldWall();
@@ -2489,21 +2518,19 @@ export class Mission {
       }
       // B: jump the tactical eye to wherever the fighting last was.
       if (k === 'b' && this.rts) this.jumpToCombat();
-      // The duel key. Steel only: locking onto a man while carrying a bow
-      // would be an aim assist, which is a different game.
-      if (k === 'v' && !this.rts && this.player?.weapon?.melee) this.toggleLock();
       if (k === 'c') this.crouchHeld = !this.crouchHeld;
       if (k === 'control') this.crouchHeld = true;
       if (k === 't') this.toggleTactical();
       if (k === 'f') this.setSquadOrder('follow');
       if (k === 'h') this.setSquadOrder('hold');
       if (k === 'x') {
-        // On a pure ranged selection X is fire discipline; anywhere else it
-        // keeps its gun-era meaning while guns remain in the world.
+        // Fire discipline, and only that. It used to fall through to
+        // SUPPRESS for anybody who was not an archer, which meant the key
+        // did one thing for bows and a gun-era thing for everyone else.
         const sel = this.commanded();
-        if (sel.length && sel.every((s) => this.battleGroup(s) === 'ranged'
-          && (s.weapon?.bow || s.bowStowed))) this.toggleHoldFire(sel);
-        else this.orderSuppress();
+        const bows = sel.filter((s) => s.weapon?.bow || s.bowStowed);
+        if (bows.length) this.toggleHoldFire(bows);
+        else { Audio.uiDeny(); this.onToast('', 'NO BOWS IN HAND', 'order'); }
       }
       if (k === 'z') this.orderFlank();
       if (k === 'v') this.orderFallBack();
@@ -2548,7 +2575,23 @@ export class Mission {
       }
       if (document.pointerLockElement !== el) { el.requestPointerLock(); return; }
       if (e.button === 0) this.mouse.down = true;
-      if (e.button === 1) { e.preventDefault(); this.openWheel(); }
+      if (e.button === 1) {
+        e.preventDefault();
+        // TAP TO LOCK, HOLD FOR ORDERS.
+        //
+        // The duel key was V, and V was already FALL BACK — one press
+        // locked a man and told the company to break contact at the same
+        // time. There is no free key left in the hand's reach that is not
+        // already a verb, and adding a far one for the most-used action in
+        // a melee is how a control scheme rots.
+        //
+        // So the wheel waits to see what this press turns out to be. Let go
+        // quickly and it was a lock; keep holding and the wheel comes up as
+        // it always did. Both live on the button that already means "the
+        // thing in front of me", and nothing else had to move.
+        this.mmbAt = this.time;
+        this.wheelPend = setTimeout(() => { this.wheelPend = null; this.openWheel(); }, 180);
+      }
       if (e.button === 2) this.mouse.right = true;
     });
     add(window, 'mouseup', (e) => {
@@ -2557,7 +2600,14 @@ export class Mission {
         return;
       }
       if (e.button === 0) this.mouse.down = false;
-      if (e.button === 1) this.closeWheel(true);
+      if (e.button === 1) {
+        if (this.wheelPend) {
+          // Released before the wheel came up: that was a tap.
+          clearTimeout(this.wheelPend);
+          this.wheelPend = null;
+          if (this.player?.weapon?.melee) this.toggleLock();
+        } else this.closeWheel(true);
+      }
       if (e.button === 2) this.mouse.right = false;
     });
     // Zoom belongs to the tactical view; the shoulder view has no use for the
@@ -2664,8 +2714,9 @@ export class Mission {
       this.rtsVel = { x: 0, z: 0 };
       // Come up from just above the shoulder rather than snapping to
       // wherever the eye was last time — the wheel is meant to feel like
-      // one continuous rise out of the line, and the glide does the rest.
-      this.rtsZoom = 26;
+      // one continuous rise out of the line. The blend in updateCamera does
+      // the travelling now; this only decides where the rise ends up.
+      this.rtsZoom = 18;
       this.rtsZoomT = 44;
       this.mouse.down = false;
       this.mouse.right = false;
@@ -6714,10 +6765,59 @@ export class Mission {
     this.onToast(`CONTACT IMMINENT — ${this.level.name}`, this.objective.text, 'deploy');
   }
 
+  /**
+   * ONE CONTINUOUS EYE — actually continuous this time.
+   *
+   * The comment on the mouse wheel has claimed since the tactical view was
+   * built that rolling out "pulls you up into command" and that the two
+   * cameras "read as two ends of one motion rather than two modes". They
+   * did not. Toggling flipped a boolean: one frame you were over a
+   * shoulder, the next you were forty metres up, and the glide afterwards
+   * was the tactical camera easing its own height — a cut dressed up as a
+   * move. Going the other way was a hard cut with no glide at all.
+   *
+   * Both rigs now compute their transform and the eye is interpolated
+   * between them, position and orientation and field of view together. The
+   * blend is eased, so the rise out of the line accelerates away from the
+   * body and settles into the overview, which is the shape of the motion a
+   * cut cannot fake.
+   */
   updateCamera(dt) {
-    if (this.rts && (!this.intro?.active || this.intro.setup)) {
-      this.updateTacticalCamera(dt); return;
+    const wantTac = !!(this.rts && (!this.intro?.active || this.intro.setup));
+    const target = wantTac ? 1 : 0;
+    if (this.tacBlend === undefined) this.tacBlend = target;
+    // Fast enough not to feel like a load screen, slow enough to read as a
+    // MOVE rather than a whip. At 6.5 the eye covered forty metres in half a
+    // second — continuous, but four metres a frame through the middle, which
+    // the eye reads as a smear rather than as rising out of the line.
+    const rate = 1 - Math.exp(-dt * 3.6);
+    this.tacBlend += (target - this.tacBlend) * rate;
+    if (Math.abs(target - this.tacBlend) < 0.002) this.tacBlend = target;
+
+    if (this.tacBlend <= 0) { this.updateShoulderCamera(dt); return; }
+    if (this.tacBlend >= 1) { this.updateTacticalCamera(dt); return; }
+
+    // Mid-move: run both rigs and sit between them. Smoothstep so the ends
+    // are gentle and the middle carries the speed.
+    const t = this.tacBlend * this.tacBlend * (3 - 2 * this.tacBlend);
+    this.updateShoulderCamera(dt);
+    const sp = this.camera.position.clone();
+    const sq = this.camera.quaternion.clone();
+    const sf = this.camera.fov;
+    this.updateTacticalCamera(dt);
+    this.camera.position.lerpVectors(sp, this.camera.position, t);
+    this.camera.quaternion.slerpQuaternions(sq, this.camera.quaternion, t);
+    const fov = sf + (this.camera.fov - sf) * t;
+    if (Math.abs(this.camera.fov - fov) > 0.01) {
+      this.camera.fov = fov;
+      this.camera.updateProjectionMatrix();
     }
+    // Halfway out the body is a speck and the overview is not yet readable;
+    // showing the model the whole way keeps something to hold onto.
+    this.hidePlayerModel = false;
+  }
+
+  updateShoulderCamera(dt) {
     const p = this.player;
     const aim = this.aiming;
     // Over-the-shoulder, tighter and closer when aiming.
@@ -6768,10 +6868,23 @@ export class Mission {
       const t = this.lockOn;
       const bearing = Math.atan2(t.x - p.x, t.z - p.z) + Math.PI;
       this.camYaw = approachAngle(this.camYaw, bearing, dt * 6.5);
-      // Pull back and up a touch: a duel wants both men in frame, not one
-      // shoulder filling it.
-      want.back += 0.55;
-      want.up += 0.20;
+      // FRAME THE PAIR. A duel is two men and the shot has to hold both:
+      // the eye pulls back as the range opens so he does not walk out of
+      // frame, and rises a little so the ground between them reads. Capped,
+      // because past a few metres this stops being a duel and the lock is
+      // about to break anyway.
+      const gap = Math.hypot(t.x - p.x, t.z - p.z);
+      const frame = clamp((gap - 1.5) / 6, 0, 1);
+      want.back += 0.55 + frame * 1.5;
+      want.up += 0.20 + frame * 0.45;
+      // And a touch wider, so the pair sit inside the frame rather than
+      // filling it corner to corner.
+      want.fov += frame * 4;
+      // The shoulder swings to whichever side keeps him clearest of your own
+      // back — the small thing that stops a locked camera looking through
+      // the commander's shoulder blade for the whole fight.
+      const across = angleDelta(Math.atan2(t.x - p.x, t.z - p.z), p.yaw);
+      want.side *= across > 0.12 ? -1 : 1;
     }
     // The shoulder offset is signed, so swapping mirrors the whole rig — the
     // camera, the aim origin beside the head, and the body's occlusion.
