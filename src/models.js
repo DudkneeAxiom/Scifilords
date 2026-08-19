@@ -454,6 +454,9 @@ export function makeCharacter(variant, weaponModel = null, tint = null) {
     pitch = 0, reload = 0, sprint = false, turn = 0,
     slopePitch = 0, slopeRoll = 0,
     melee = false, swing: swingPh = 0, swingDir = 'right', guard = 0,
+    // How this particular weapon sits in the hand. See WEAPONS[*].hold —
+    // one shared pose put a spear through its owner's chest.
+    hold = null, guardPose = null,
   } = {}) {
     const s = state;
 
@@ -578,15 +581,25 @@ export function makeCharacter(variant, weaponModel = null, tint = null) {
       }
       setX(rig.elbowL, rest.elbowL.x + lerp(-0.5, -1.15, g));
       if (weapon) {
-        // Blade vertical-ish at carry, levelled on guard, and the swing
-        // whips its pitch through the chop.
+        // The weapon hangs off the arm chain, so an ABSOLUTE pose has to
+        // subtract what the shoulder and elbow already did — same trick the
+        // rifle uses, and the reason a shared constant could never work for
+        // arms of different lengths and balance.
         const armDelta = (rig.armR ? rig.armR.rotation.x - rest.armR.x : 0)
           + (rig.elbowR ? rig.elbowR.rotation.x - rest.elbowR.x : 0);
-        const restPitch = lerp(0.85, 0.15, g);
-        const swingPitch = ph > 0 ? lerp(-0.5 * wind, 1.1, chop) : 0;
-        weapon.rotation.x = restPitch + swingPitch - armDelta * 0.6;
-        weapon.rotation.z = lerp(0.12, 0.02, g);
-        weapon.position.z = 0;
+        const H = hold || { pitch: 1.0, roll: 0.1, pos: [0, 0, 0] };
+        const Gp = guardPose || H;
+        const pitch0 = lerp(H.pitch, Gp.pitch, g);
+        const roll0 = lerp(H.roll ?? 0, Gp.roll ?? 0, g);
+        // The swing: the steel rises through the windup and drives through
+        // the chop, around whatever pose it started in.
+        const swingPitch = ph > 0 ? lerp(-1.1 * wind, 1.25, chop) : 0;
+        weapon.rotation.x = pitch0 + swingPitch - armDelta;
+        weapon.rotation.z = roll0;
+        const hp = H.pos || [0, 0, 0];
+        const gp = Gp.pos || hp;
+        weapon.position.set(
+          lerp(hp[0], gp[0], g), lerp(hp[1], gp[1], g), lerp(hp[2], gp[2], g));
       }
     } else {
       if (rig.armR) {

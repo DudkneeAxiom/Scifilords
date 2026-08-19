@@ -1066,9 +1066,21 @@ export const WEAPONS = {
   // fires). Melee-only fields: melee/bow flags, reach, arc, stagger weight,
   // shieldMul (damage vs shield HP), brace/inside (spears), flight/dmgFar
   // (bows).
+  //
+  // HOW IT IS HELD. `hold` and `guard` are the weapon's pose in the hand,
+  // as ABSOLUTE pitch/roll (radians) plus a grip offset in metres — carry
+  // pose and ready pose respectively. They exist because one shared pose
+  // for all steel put a two-and-a-half metre spear vertically through its
+  // owner's chest: a sword hangs blade-down, a spear rides level with the
+  // butt back, a maul rests head-down over the shoulder, and a bow stands
+  // upright in the hand. Pitch is the rifle convention (0 is level and
+  // forward, +1.57 points the business end at the ground); models.js
+  // subtracts the arm chain so these read as the pose you actually see.
   // ------------------------------------------------------------------------
   sword: {
     id: 'sword', name: 'Plate Sword', abbr: 'SWD', model: 'wpn_sword', melee: true,
+    hold: { pitch: 1.05, roll: 0.10, pos: [0, -0.02, 0] },
+    guard: { pitch: -0.15, roll: 0.55, pos: [0, 0, 0.06] },
     damage: 26, reach: 2.2, arc: 1.6, stagger: 1, shieldMul: 1,
     rpm: 109, mag: 999, reload: 0, spread: 0, adsSpread: 0, range: 2.2,
     recoil: 0, auto: false, price: 220,
@@ -1076,6 +1088,8 @@ export const WEAPONS = {
   },
   spear: {
     id: 'spear', name: 'Mast Spear', abbr: 'SPR', model: 'wpn_spear', melee: true,
+    hold: { pitch: 0.30, roll: 0.0, pos: [0, 0.25, 0] },
+    guard: { pitch: 0.02, roll: 0.0, pos: [0, 0.35, 0.04] },
     damage: 24, reach: 3.6, arc: 0.7, stagger: 1, shieldMul: 1,
     brace: 2.0, insideMin: 1.2, insideMul: 0.6,
     rpm: 86, mag: 999, reload: 0, spread: 0, adsSpread: 0, range: 3.6,
@@ -1084,6 +1098,8 @@ export const WEAPONS = {
   },
   heavy: {
     id: 'heavy', name: 'Breaker Maul', abbr: 'MAUL', model: 'wpn_heavy', melee: true,
+    hold: { pitch: 1.15, roll: -0.20, pos: [0, 0, 0] },
+    guard: { pitch: -0.55, roll: 0.25, pos: [0, 0.04, 0.05] },
     damage: 48, reach: 2.6, arc: 1.9, stagger: 2, shieldMul: 3, noBlockWindup: true,
     rpm: 55, mag: 999, reload: 0, spread: 0, adsSpread: 0, range: 2.6,
     recoil: 0, auto: false, price: 340,
@@ -1091,6 +1107,8 @@ export const WEAPONS = {
   },
   bow: {
     id: 'bow', name: 'Batten Bow', abbr: 'BOW', model: 'wpn_bow', bow: true,
+    hold: { pitch: 0.15, roll: 1.57, pos: [0, 0, 0] },
+    guard: { pitch: 0.0, roll: 1.57, pos: [0, 0.02, 0.04] },
     damage: 30, dmgFar: 16, reach: 1.2, arc: 0, stagger: 0, shieldMul: 0.07,
     flight: 28, volley: 4.0,
     rpm: 15, mag: 999, reload: 0, spread: 0.008, adsSpread: 0.004, range: 60,
@@ -1099,6 +1117,8 @@ export const WEAPONS = {
   },
   blade: {
     id: 'blade', name: 'Bracket Blade', abbr: 'BLD', model: 'wpn_blade', melee: true,
+    hold: { pitch: 1.10, roll: 0.10, pos: [0, -0.01, 0] },
+    guard: { pitch: -0.10, roll: 0.50, pos: [0, 0, 0.05] },
     damage: 14, reach: 1.6, arc: 1.4, stagger: 0, shieldMul: 0.5,
     rpm: 130, mag: 999, reload: 0, spread: 0, adsSpread: 0, range: 1.6,
     recoil: 0, auto: false, price: 60,

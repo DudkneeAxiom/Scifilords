@@ -6269,10 +6269,16 @@ export class Mission {
         slopeRoll,
         // The melee era: swing phase 0..1, its thrown direction, and the
         // guard blend. The rig turns these into arms; nothing else does.
-        melee: !!e.weapon?.melee,
+        // Bows take the same branch: they need a pose of their own too, and
+        // the rifle pose stands a recurve sideways in the fist.
+        melee: !!(e.weapon?.melee || e.weapon?.bow),
         swing: e.swing ? Math.min(1, e.swing.t / e.swing.dur) : 0,
         swingDir: e.swing?.dir || 'right',
         guard: e.guard || 0,
+        // How THIS weapon sits in the hand — a spear is not a sword held
+        // longer, and one shared pose put the shaft through the ribs.
+        hold: e.weapon?.hold || null,
+        guardPose: e.weapon?.guard || null,
       });
       // Anything standing on top of the camera is removed from the render.
       // A squadmate holding formation directly behind the commander sits almost
