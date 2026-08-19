@@ -59,6 +59,30 @@ const BLEED_OUT = 55;      // seconds a downed soldier has before it is permanen
 // spare anywhere else.
 export const FIELD_CAP = 120;
 
+/**
+ * How many HOSTILES may stand on the field, given who is already standing on
+ * it beside you.
+ *
+ * FIELD_CAP was being spent entirely on the enemy, because when it was set
+ * the player's side was five people and rounding error. Now that a company
+ * can be sixty and a hired band can be more, both sides have to be drawn
+ * from one budget or a big deployment quietly doubles the body count — the
+ * exact frame cliff the cap exists to prevent.
+ *
+ * A floor of a third keeps this honest in the other direction: bringing an
+ * army must not make the opposition evaporate. What it cannot fit still
+ * arrives, in waves, as it always did.
+ */
+export function enemyBudget(mine) {
+  return Math.max(Math.round(FIELD_CAP * 0.34), FIELD_CAP - Math.max(0, mine));
+}
+
+/** Everyone standing on the field who is not a hostile. */
+export function ownSideCount(m) {
+  return m.entities.filter((e) => e.side === 'player' && !e.dead).length
+    + Math.min(16, m.spec?.allies || 0);
+}
+
 // How many bodies each instance pool can hold. It has to exceed the WHOLE
 // field — hostiles at the cap, plus allied waves, plus the squad — because
 // an InstancedMesh silently stops drawing past its capacity, which reads as
@@ -1150,6 +1174,19 @@ export class Mission {
    * That is the whole difference between an army and a mob sprinting at
    * the nearest target.
    */
+  /**
+   * Is this a battle both sides turned up for?
+   *
+   * A road engagement, a siege from either end: two forces that know exactly
+   * where the other one is. As opposed to a hideout, a sabotage run or a
+   * recovery, where not being noticed is the whole approach and an enemy who
+   * starts the mission hunting you has deleted a system.
+   */
+  pitchedBattle() {
+    const t = this.spec.type;
+    return t === 'skirmish' || t === 'siege' || !!this.spec.defend;
+  }
+
   updateEnemyCommander(dt) {
     this.foeThinkAt = (this.foeThinkAt || 0) - dt;
     if (this.foeThinkAt > 0) return;
@@ -1172,6 +1209,30 @@ export class Mission {
     if (odds < 0.55) posture = 'withdraw';
     else if (rangedEdge > 1.6 && bows(mine) >= 2) posture = 'hold';
     else if (exposed.length && mine.length >= 4) posture = 'snipe';
+    // A WITHDRAWAL HAS TO END IN LEAVING.
+    //
+    // Giving ground backed the remnant out to a hundred metres and left it
+    // there — out of reach, unwilling to return, and still counting as an
+    // enemy force in the field, so the battle stayed open for as long as
+    // anyone cared to watch. Measured at 22 v 30: three survivors standing
+    // in a field at ten minutes with sixteen of their friends still running.
+    //
+    // So a force that has been giving ground and has not been in contact for
+    // half a minute has quit. They go, and the field is called.
+    const contact = mine.some((o) => theirs.some(
+      (t) => Math.hypot(o.x - t.x, o.z - t.z) < 30));
+    if (posture === 'withdraw' && !contact) {
+      this.foeQuitFor = (this.foeQuitFor || 0) + 3;   // this runs every 3s
+      if (this.foeQuitFor >= 30) {
+        for (const e of mine) this.breakEntity(e);
+        this.onToast('', 'THEY HAVE HAD ENOUGH', 'good');
+        this.checkRout();
+        return;
+      }
+    } else {
+      this.foeQuitFor = 0;
+    }
+
     if (posture !== this.foePosture) {
       this.foePosture = posture;
       const line = { advance: 'THEY ADVANCE BEHIND SHIELDS',
@@ -1204,6 +1265,29 @@ export class Mission {
     const arms = { inf: [], spear: [], ranged: [] };
     for (const e of mine) arms[this.battleGroup(e)].push(e);
     const DEPTH = { inf: 0, spear: 7, ranged: 15 };
+
+    // THE GUIDE. Every post used to be measured BACK from the host's own
+    // centre — and the host's centre is wherever the host just walked, so
+    // each think-tick told every man to stand a little further behind where
+    // he already was, and the whole line reversed away from a battle it had
+    // been ordered to advance into. Measured: a sixty-strong host opening at
+    // 77m and ending 116m away, marching backwards for a minute and a half.
+    // Small hosts hid it, because with one shallow rank nobody was ever far
+    // enough off his post for the post to outrank the advance.
+    //
+    // So the ranks are laid out from a guide set the depth of the formation
+    // AHEAD of the centre. The front rank stands forward, the rear ranks
+    // fall on the centre, and the deepest post the line can be given is the
+    // ground it is already holding. A line can now stand or advance. It can
+    // no longer retreat by arithmetic.
+    let deepest = 0;
+    for (const [arm, list] of Object.entries(arms)) {
+      if (!list.length) continue;
+      const per = Math.max(8, Math.ceil(Math.sqrt(list.length) * 3.0));
+      deepest = Math.max(deepest, DEPTH[arm] + Math.floor((list.length - 1) / per) * 3.4);
+    }
+    const gx = mx + bx * deepest, gz = mz + bz * deepest;
+
     for (const [arm, list] of Object.entries(arms)) {
       // WIDE, and few ranks deep. At a hundred metres a two-metre interval
       // closes into one smudge and a host stops reading as ranks at all —
@@ -1215,11 +1299,11 @@ export class Mission {
         const rank = Math.floor(i / perRank);
         const across = ((i % perRank) - (Math.min(perRank, list.length) - 1) / 2) * 3.5;
         const back = DEPTH[arm] + rank * 3.4;
-        // Abreast of the host's centre, and set BACK along the facing so
-        // the line has depth behind its front rank rather than ahead of it.
+        // Abreast of the guide, and set BACK along the facing so the line
+        // has depth behind its front rank rather than ahead of it.
         e.linePost = {
-          x: mx + rx * across - bx * back,
-          z: mz + rz * across - bz * back,
+          x: gx + rx * across - bx * back,
+          z: gz + rz * across - bz * back,
         };
       });
     }
@@ -1232,6 +1316,24 @@ export class Mission {
       // campaign-loop probe caught as a battle that produced no result.
       e.advanceOn = posture === 'advance' || posture === 'snipe'
         ? this.foeAdvanceOn : null;
+      // AND THE ADVANCE HAS TO BE REACHABLE. The branch that consumes
+      // advanceOn lives under state 'hunt', which a body only enters once it
+      // has SEEN something — and sight is 55 metres while two deployed
+      // armies start eighty apart. So both lines stood in a field looking at
+      // an empty horizon until something else woke them, which in a pitched
+      // battle is nothing: measured at 60 v 60, ninety seconds, no
+      // casualties, no contact, the gap closing three metres a minute out of
+      // sheer drift.
+      //
+      // A host that marched here to fight does not need to be introduced to
+      // the enemy. Only for battles that ARE pitched: a hideout or a
+      // sabotage run still has to be noticed, and taking that away would
+      // delete stealth from the game.
+      if (e.advanceOn && this.pitchedBattle() && (e.state === 'guard' || e.state === 'patrol')) {
+        e.state = 'hunt';
+        e.huntUntil = this.time + 1e9;
+        e.alert = 1;
+      }
       if (detail.includes(e) && exposed.length) {
         // Pick the exposed archer nearest this man, and go for them.
         let best = exposed[0], bd = Infinity;
@@ -1537,7 +1639,9 @@ export class Mission {
       progress: 0, need: total, done: false, type: 'skirmish',
     };
 
-    const first = Math.min(total, FIELD_CAP);
+    // Both sides come out of one body budget. A sixty-strong company used
+    // to be sixty EXTRA bodies on top of a full enemy field.
+    const first = Math.min(total, enemyBudget(ownSideCount(this)));
     this.deployEnemyWave(first, roles, true);
     this.skirmishCommitted = first;
 
@@ -1638,8 +1742,9 @@ export class Mission {
     if (!this.skirmishTotal) return;
     const alive = this.entities.filter((e) => e.side === 'enemy' && !e.dead).length;
     const left = this.skirmishTotal - (this.skirmishCommitted || 0);
-    if (left > 0 && alive < Math.max(4, FIELD_CAP * 0.45)) {
-      const n = Math.min(left, Math.round(FIELD_CAP * 0.5));
+    const budget = enemyBudget(ownSideCount(this));
+    if (left > 0 && alive < Math.max(4, budget * 0.45)) {
+      const n = Math.min(left, Math.round(budget * 0.5), Math.max(0, budget - alive));
       const roles = this.doctrineRoles(PARTY_TIERS[this.spec.party?.kind]?.roles
         || ['rifleman', 'breacher', 'marksman']);
       if (this.spec.defend) {
@@ -1948,7 +2053,7 @@ export class Mission {
     this.skirmishRemaining = total;
     this.enemyQuality = party.quality || 0.8;
     const roles = ['rifleman', 'breacher', 'marksman', 'gunner'];
-    const first = Math.min(total, FIELD_CAP);
+    const first = Math.min(total, enemyBudget(ownSideCount(this)));
     this.deployEnemyWave(first, roles, true);
     this.skirmishCommitted = first;
     // You leave the way you came in; there is no other way out of a gully.
@@ -2092,7 +2197,7 @@ export class Mission {
 
     // The first assault rank, coming up the lanes from the south edge.
     this.skirmishTotal = army;
-    const first = Math.min(Math.round(FIELD_CAP * 0.7), army);
+    const first = Math.min(Math.round(enemyBudget(ownSideCount(this)) * 0.85), army);
     for (let i = 0; i < first; i++) this.spawnAssaulter();
     this.skirmishCommitted = first;
   }
@@ -3691,20 +3796,39 @@ export class Mission {
         if (e.down || e.dead) continue;
         if (e.nerve === undefined) e.nerve = this.baseNerve(e);
         if (e.routing) continue;
-        let drift = 1.4 + banner;             // nerve creeps back on its own
+        // THE NUMBERS THAT MAKE A LINE BREAKABLE.
+        //
+        // These used to recover +1.4 twice a second — nearly three nerve per
+        // second — against a shock of 2.6 for watching a friend die. So a
+        // soldier needed to see roughly one death per second just to hold
+        // steady, and nothing on any battlefield produces that. Measured: a
+        // hundred-strong host ground down to nineteen with every survivor
+        // pinned at the ceiling of 120 and not one man routing. Armies
+        // fought to the last body, every time, which is not how any battle
+        // in history has gone and is not what the morale system was written
+        // to do.
+        //
+        // Recovery is now slow enough to be worth something — about forty
+        // nerve over a minute of not being shot at — and the things that
+        // break men are worth what they should be. Being outnumbered two to
+        // one is now a reason to look over your shoulder rather than a
+        // rounding error.
+        let drift = 0.35 + banner;            // nerve creeps back on its own
         // Friends going down and friends running are the two things that
-        // actually break a line. Everything else is a nudge — being
-        // outnumbered is a fact of the job, not a reason to run on its own.
-        drift -= (e.casualtySeen || 0) * 2.6;
+        // actually break a line. Being badly outnumbered is the third, and
+        // it used to be worth almost nothing.
+        drift -= (e.casualtySeen || 0) * 9;
         e.casualtySeen = 0;
-        drift -= routing * 1.5;
-        if (odds < 0.4) drift -= 1.2;
-        else if (odds < 0.7) drift -= 0.5;
-        else if (odds > 1.6) drift += 0.6;
-        // Somebody in charge, standing where they can be seen.
+        drift -= Math.min(6, routing * 0.9);
+        if (odds < 0.4) drift -= 2.2;
+        else if (odds < 0.7) drift -= 1.0;
+        else if (odds > 1.6) drift += 0.5;
+        // Somebody in charge, standing where they can be seen. Worth real
+        // steadiness, but no longer worth more than the entire rest of the
+        // battle put together.
         if (side === 'player' && p && !p.down
-          && Math.hypot(p.x - e.x, p.z - e.z) < 20) drift += 3.2;
-        if (e.hp < e.maxHp * 0.35) drift -= 1.2;
+          && Math.hypot(p.x - e.x, p.z - e.z) < 20) drift += 1.2;
+        if (e.hp < e.maxHp * 0.35) drift -= 1.5;
         e.nerve = clamp(e.nerve + drift, 0, 120);
         // Veterans hold past the point where recruits do not.
         const breakAt = 12 + (3 - Math.min(3, e.soldier?.rank ?? 1)) * 6;
@@ -3763,11 +3887,54 @@ export class Mission {
       if (!e.down && !e.routing) standing++;
     }
     const reserves = (this.skirmishTotal || 0) - (this.skirmishCommitted || 0);
-    if (total >= 4 && reserves <= 0 && standing === 0) {
+    // A BEATEN ARMY DOES NOT HAVE TO BE AN ANNIHILATED ONE.
+    //
+    // This demanded that the last enemy standing be down or running before
+    // the field was called, which a battle almost never delivers: the line
+    // breaks, eighty men run, and four survivors back away to a hundred
+    // metres and stand there. Nothing could reach them, they would not come
+    // back, and the engagement simply never ended — measured at 22 v 30 and
+    // 60 v 100, both still unresolved after four minutes with the enemy
+    // beaten and scattered.
+    //
+    // So a force concedes when it has been broken as a force: its reserves
+    // spent, most of it running or down, and only a remnant on its feet.
+    // What is left of them leaves with the rest.
+    const remnant = Math.max(2, Math.round(total * 0.15));
+    const inContact = this.entities.some((e) => e.side === 'enemy'
+      && !e.dead && !e.down && !e.routing
+      && this.entities.some((o) => o.side === 'player' && !o.dead && !o.down
+        && Math.hypot(o.x - e.x, o.z - e.z) < 26));
+    // Out of contact, a remnant has conceded. IN contact, it still has to be
+    // finished — except when it is down to one or two men out of a force
+    // this size, which is not a fight anyone is still having. That last
+    // clause is not a nicety: a single survivor standing among sixteen of
+    // your soldiers held one measured battle open for ten minutes.
+    const beaten = standing === 0
+      || (standing <= remnant && !inContact)
+      || (standing <= 2 && total >= 8);
+    if (total >= 4 && reserves <= 0 && beaten) {
       this.routCalled = true;
       this.onToast('THE FIELD IS YOURS', 'What is left of them is running', 'good');
       for (const e of this.entities) {
         if (e.side === 'enemy' && !e.dead && !e.routing) this.breakEntity(e);
+      }
+      // BREAKING THEM IS WINNING. This was the hole underneath the whole
+      // complaint that battles do not finish: the objective counted BODIES,
+      // and a broken army runs away rather than dying on the spot. Rout
+      // twenty of thirty and the count stops at ten, the objective never
+      // completes, the extraction never arms — and the player stands on the
+      // extraction point having won the field with no way to leave it. The
+      // morale system and the win condition disagreed about what a victory
+      // was, and the morale system was right.
+      if (!this.objective.done) this.completeObjective();
+      // A commander who is down cannot walk to the extraction, so winning
+      // the field has to be able to end the battle on its own — otherwise
+      // the fight the army just won never resolves and the player is stuck
+      // watching an empty map. They are carried out.
+      if (this.commanderDown) {
+        this.onToast('CARRIED OUT', 'The company took the field without you', 'good');
+        this.endMission(true, 'carried');
       }
     }
   }
@@ -4217,8 +4384,38 @@ export class Mission {
         this.endMission(false, 'pit');
         return;
       }
-      this.onToast('COMMANDER DOWN', 'Bracket is breaking contact', 'bad');
-      this.endMission(false, 'commander');
+      // GOING DOWN IS NOT LOSING THE BATTLE.
+      //
+      // This ended the mission outright, which was a fair reading when the
+      // squad was four people and you were most of its fighting power. At
+      // army scale it produced the worst moment in the game: sixty of your
+      // soldiers standing, the enemy line breaking, and the whole engagement
+      // scored a defeat because the commander caught a spear. It also
+      // quietly made the player the only thing that mattered on a field
+      // built to be about the army — the exact superhero framing the melee
+      // overhaul set out to remove.
+      //
+      // So the battle goes on without you. You are down and out of it; your
+      // line fights on and can still win it. If they break or die, THEN the
+      // field is lost — and that is decided by the same rout and wipe checks
+      // that decide it for everybody else.
+      const standing = this.entities.filter(
+        (o) => o.side === 'player' && !o.dead && !o.down && !o.militia).length;
+      if (standing > 0) {
+        this.commanderDown = true;
+        this.onToast('COMMANDER DOWN', `${standing} still standing — they fight on`, 'bad');
+        // Hand the field to whoever is left rather than leaving the squad
+        // following a body.
+        for (const o of this.entities) {
+          if (o.side === 'player' && !o.dead && !o.down && o.order === 'follow') {
+            o.order = 'attack';
+            o.orderPoint = null;
+          }
+        }
+      } else {
+        this.onToast('COMMANDER DOWN', 'Bracket is breaking contact', 'bad');
+        this.endMission(false, 'commander');
+      }
     } else {
       this.onToast('CASUALTY', `${e.name} is down — reach them`, 'bad');
     }
@@ -5019,8 +5216,19 @@ export class Mission {
       if (e.side === 'player' && !e.stabilised) {
         e.bleed -= dt;
         if (e.bleed <= 0) {
-          e.dead = true;
-          if (!e.isPlayer) this.onToast('CASUALTY', `${e.name} has bled out`, 'bad');
+          // The commander bleeds but does not bleed OUT on the field. Now
+          // that going down no longer ends the battle, letting the clock run
+          // all the way down would kill the player character in the middle
+          // of an engagement their army is still winning — and hand the
+          // campaign a dead commander by timer rather than by decision.
+          // They lie there until the field is decided; what it cost them is
+          // settled in the after-action with everybody else.
+          if (e.isPlayer) {
+            e.bleed = 0;
+          } else {
+            e.dead = true;
+            this.onToast('CASUALTY', `${e.name} has bled out`, 'bad');
+          }
         }
       }
       return;

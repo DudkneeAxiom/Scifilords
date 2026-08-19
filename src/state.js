@@ -6,7 +6,8 @@
 
 import {
   LOCATIONS, MISSION_TYPES, FACTIONS, REGION, REGIONS, WEAPONS, KIT, ROLES, GOODS, GOODS_LIST,
-  HOLDING_UPGRADES, UPGRADE_LIST, HOLDING_YIELD, TROOP_PATHS, RANKS, PARTY_TIERS, PARTY_TIER_LIST, renownTier,
+  HOLDING_UPGRADES, UPGRADE_LIST, HOLDING_YIELD, TROOP_PATHS, RANKS, PARTY_TIERS, PARTY_TIER_LIST,
+  renownTier, RENOWN_TIERS,
   ARMOUR, ARMOUR_LIST, ORIGINS, originForLocation, CREEDS, REGARD_TIERS, FAVOURS,
   FIRST_NAMES, LAST_NAMES, POLICIES, POLICY_LIST, COMPANIONS, OFFICERS, RAPPORT, ERRANDS,
   BACKGROUNDS,
@@ -339,6 +340,13 @@ export function generateContract(S, r) {
   const basePay = { recovery: 620, sabotage: 780, defense: 850, skirmish: 520 }[type] || 600;
   // Distance from the company is worth paying for.
   const away = Math.hypot(loc.x - S.pos.x, loc.z - S.pos.z) / 400;
+  // And so is being the company people have heard of. Pay used to be flat
+  // across the whole campaign, which meant a legendary outfit was offered the
+  // same six hundred credits as four recruits with one truck — while paying
+  // eight hundred a DAY in wages. The work a famous company is offered is
+  // bigger work; deriving the multiplier from the same deploy ladder keeps
+  // what you may field and what you are paid from ever drifting apart.
+  const scale = payScale(S);
   const c = {
     id: uid('con'),
     type,
@@ -346,7 +354,7 @@ export function generateContract(S, r) {
     employer,
     title: f.title,
     text: f.text.replace(/%SITE%/g, loc.name),
-    pay: Math.round(basePay * range(r, 0.9, 1.2) * (1 + away * 0.35)),
+    pay: Math.round(basePay * scale * range(r, 0.9, 1.2) * (1 + away * 0.35)),
     days: 8,
     expiresDay: S.day + irange(r, 5, 11),
     accepted: false,
@@ -3810,12 +3818,34 @@ export function claimSpoils(S) {
 // Renown — how many people you can put in the field
 // --------------------------------------------------------------------------
 
+/**
+ * The player's half of the field. FIELD_CAP is the whole body budget for a
+ * battle and the enemy has to stand in it too, so the company may claim a
+ * little over half and no more — past that the other side is a token force
+ * and the battle stops being one.
+ */
+export const DEPLOY_CEILING = 68;
+
+/**
+ * What the work is worth to a company of this standing.
+ *
+ * Derived from the deploy ladder on purpose. These two numbers have to move
+ * together — what you may field decides what you must pay, and what you are
+ * paid decides what you may field — and the surest way to keep them together
+ * is to give them one source. Divided by the opening rung, so an unknown
+ * company is paid exactly what it always was and nothing early changes.
+ */
+export function payScale(S) {
+  return renownTier(S.renown || 0).deploy / RENOWN_TIERS[0].deploy;
+}
+
 /** Maximum deployment size. This is the main progression lever in the game. */
 export function deployLimit(S) {
   const tier = renownTier(S.renown || 0);
-  // Sergeants let you run bigger formations than your name alone would.
+  // Sergeants let you run bigger formations than your name alone would — and
+  // at army scale a sergeant is worth a file rather than half a man.
   const sergeants = living(S).filter((s) => !s.isCommander && s.rank >= 3).length;
-  return Math.min(16, tier.deploy + Math.floor(sergeants / 2));
+  return Math.min(DEPLOY_CEILING, tier.deploy + sergeants * 2);
 }
 
 export const renownName = (S) => renownTier(S.renown || 0).name;

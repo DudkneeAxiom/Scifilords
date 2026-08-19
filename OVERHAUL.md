@@ -272,3 +272,76 @@ running down a moving party into a buzzsaw.
 - The enemy commander's hold/snipe postures still want a directed playtest.
 - Sieges use the field systems but their approach logic predates
   formations.
+
+## Round: the playtest that found the scale was never raised
+
+The complaint was "gameplay and scaling seems off". It was, in seven
+connected places, and the root of most of them is the same: the combat
+overhaul made the ENEMY an army and never made the player one.
+
+`tools/playtest.mjs` puts the two halves side by side. `tools/bigfight.mjs`
+plays battles at each scale and traces the gap, the orders, the nerve and
+the reason the fight ended.
+
+### What the numbers said
+
+The deploy ladder ran 5 to 14, capped at 16. The map produces faction
+battle groups of 32-60 and armoured columns of 60-110, on a field built
+for 120 bodies. The campaign's own resolver gave a legendary company
+**22%** against a column it was expected to fight. Meanwhile the whole
+overhaul was about formations, and the player's formation was three
+ranks of four.
+
+| | before | after |
+| --- | --- | --- |
+| deploy at Unknown | 5 | 8 |
+| deploy at Legendary | 14 (cap 16) | 60 (cap 68) |
+| contract pay | flat 520-850 all campaign | scales with the same ladder |
+| 60 v 100 odds | n/a — could not field 60 | 55% |
+| 8 v 6 odds | 67% | 77% |
+| 8 v 18 odds | 40% | 45% |
+
+Pay is derived from the deploy rung on purpose: what you may field
+decides what you must pay, and what you are paid decides what you may
+field. One source keeps them from drifting.
+
+### Four bugs that stopped battles being battles
+
+Found by playing them rather than reading them:
+
+1. **The advance was unreachable.** It lives under AI state `hunt`, which
+   a body only enters once it has SEEN something. Sight is 55m; two
+   armies deploy 78m apart. Both lines stood in a field looking at an
+   empty horizon — 60 v 60, ninety seconds, no contact, no casualties.
+   Now a host in a PITCHED battle starts hunting; a hideout or a sabotage
+   run still has to notice you, or stealth is deleted.
+2. **The line advanced backwards.** Frontage was measured back from the
+   host's own centre, and the centre is wherever the host just walked —
+   so every think-tick told each man to stand further behind where he
+   already was. A host ordered to advance opened from 77m and ended
+   116m away. Ranks now lay out from a guide set the formation's own
+   depth ahead of the centre: a line can stand or advance, never recede.
+3. **Nerve could not be spent.** Regen was +2.8/second against 2.6 for
+   watching a friend die, so a soldier needed a death a second just to
+   hold steady. A hundred-strong host was ground to nineteen with every
+   survivor pinned at the ceiling and not one man routing. Regen is now
+   0.7/second, a seen casualty costs 9, and being outnumbered two to one
+   is worth looking over your shoulder for.
+4. **Winning did not count as winning.** The objective counted BODIES,
+   and a broken army runs rather than dying. Rout twenty of thirty and
+   the count stopped at ten: objective never completed, extraction never
+   armed, and the player stood on the extraction point having won the
+   field with no way to leave it. Breaking them now completes it.
+
+Two more from the same sweep: a beaten force concedes rather than
+requiring annihilation (a remnant that backs off, or one or two men left
+of thirty), and a withdrawal that loses contact for half a minute
+actually leaves.
+
+### The commander is no longer the battle
+
+Going down ended the mission outright — fair when the squad was four
+people, absurd when sixty of your soldiers are standing and the enemy
+line is breaking. The battle now continues without you and can still be
+won; you are carried out. The commander also no longer bleeds out on a
+timer mid-battle, which that change would otherwise have made possible.

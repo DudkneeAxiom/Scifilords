@@ -755,15 +755,29 @@ export const PARTY_TIER_LIST = Object.keys(PARTY_TIERS);
 // important progression lever in the game.
 // --------------------------------------------------------------------------
 
+// These numbers are ARMY numbers now, and they were not before.
+//
+// The ladder used to run 5 to 14 and cap at 16, which was correct when you
+// commanded a fireteam and every fight was a handful of rifles in a ditch.
+// The combat overhaul made the other side an army — faction battle groups of
+// 32 to 60, armoured columns of 60 to 110, a field that holds a hundred and
+// twenty bodies and formations built to manoeuvre them — and never raised
+// this. The result was a game about formation warfare in which the player's
+// formation was three ranks of four, and the campaign's own resolver gave a
+// legendary company 22% against a column it was expected to fight.
+//
+// So the ladder climbs into real numbers. Early game is unchanged in
+// practice — a company of four cannot fill eight slots — and the ceiling is
+// the thing that moved.
 export const RENOWN_TIERS = [
-  { at: 0, name: 'Unknown', deploy: 5 },
-  { at: 120, name: 'Spoken Of', deploy: 6 },
-  { at: 300, name: 'Known', deploy: 7 },
-  { at: 550, name: 'Notable', deploy: 8 },
-  { at: 900, name: 'Respected', deploy: 9 },
-  { at: 1400, name: 'Renowned', deploy: 10 },
-  { at: 2100, name: 'Feared', deploy: 12 },
-  { at: 3200, name: 'Legendary', deploy: 14 },
+  { at: 0, name: 'Unknown', deploy: 8 },
+  { at: 120, name: 'Spoken Of', deploy: 12 },
+  { at: 300, name: 'Known', deploy: 16 },
+  { at: 550, name: 'Notable', deploy: 22 },
+  { at: 900, name: 'Respected', deploy: 30 },
+  { at: 1400, name: 'Renowned', deploy: 38 },
+  { at: 2100, name: 'Feared', deploy: 48 },
+  { at: 3200, name: 'Legendary', deploy: 60 },
 ];
 
 export function renownTier(renown) {

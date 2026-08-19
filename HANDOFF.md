@@ -1168,3 +1168,62 @@ for the table). Two things to know if you touch it:
 
 A save carrying a retired perk still loads — `perkMod` skips ids it does
 not recognise — and the acceptance suite asserts that.
+
+## Scale: the player is an army now (read before touching battle numbers)
+
+The deploy ladder in `DATA.RENOWN_TIERS` runs 8 to 60 and `deployLimit`
+caps at `DEPLOY_CEILING` (68). These are ARMY numbers and they are load
+bearing in four places at once:
+
+- **`enemyBudget(mine)` in mission.js.** FIELD_CAP is the budget for the
+  WHOLE field, not for the hostiles. Both sides come out of it. If you
+  add a new battle builder, size its first wave with `enemyBudget(
+  ownSideCount(this))`, never with `FIELD_CAP` directly — otherwise a
+  sixty-strong company is sixty bodies ON TOP of a full enemy field.
+- **`payScale(S)` in state.js** is derived from the same ladder rung,
+  deliberately. A deploy limit you cannot pay wages for is not a limit
+  that exists. Do not give pay its own table.
+- **`estimateFight`** is the campaign's opinion of the difficulty curve.
+  `tools/playtest.mjs` prints it as a company-size × party-strength
+  grid; check it after any change to either side's numbers.
+- **`tools/scale.mjs`** says what the frame can take. 200 bodies held at
+  18 draw calls under *software* rendering, so FIELD_CAP 120 is
+  conservative on purpose, not a measured ceiling.
+
+### Traps that made battles not happen
+
+All four were found by playing battles (`tools/bigfight.mjs`), not by
+reading code, and any of them alone is enough to make a fight into a
+staring contest. If you touch battle AI, re-run that probe.
+
+- **The advance lives under AI state `hunt`.** A body only enters `hunt`
+  once it has SEEN something, sight is 55m, and armies deploy 78m apart.
+  `pitchedBattle()` is what promotes a deployed host into `hunt` at the
+  start — and it is deliberately limited to skirmish/siege/defend,
+  because a hideout or sabotage run that starts hunting you has deleted
+  stealth from the game.
+- **Formation posts must not be anchored to the formation's own
+  centre.** They are laid out from a guide set the formation's depth
+  AHEAD of the centre. Anchor them to the centre and each tick tells
+  every man to stand behind where he already is: the line reverses away
+  from a battle it was ordered into. This is not theoretical; it was
+  measured at 77m opening to 116m.
+- **Morale numbers are a ratio, not a set of independent knobs.** Nerve
+  regen (0.35 per half-second tick) has to stay small against a seen
+  casualty (9). Push regen back up and nothing on any battlefield can
+  break a line — the whole rout system silently stops existing while
+  still appearing to work.
+- **The win condition must agree with the morale system.** Objectives
+  that count bodies cannot be completed by an army that BREAKS AND RUNS.
+  `checkRout` completes the objective when it calls the field; if you
+  add an objective type, make sure a rout can finish it.
+
+### The commander is not the battle
+
+`downEntity` no longer ends the mission when the commander falls and
+anyone is still standing — it sets `commanderDown`, hands the squad to
+`attack`, and lets the fight resolve. Two consequences to preserve: the
+player does NOT bleed out on the field (they would die on a timer in a
+battle their side is winning), and `checkRout` has to end the mission
+itself when the field is won with the commander down, because a downed
+commander cannot walk to the extraction.

@@ -8149,3 +8149,251 @@ test('the perk tree is steel: no gun perks, and every melee perk bites', async (
   expect(r.banner[0]).toBeGreaterThan(0);
   expect(r.banner[1]).toBe(0);
 });
+
+test('army scale: the company you may bring, and what it costs to bring it', async ({ page }) => {
+  test.setTimeout(120000);
+  await boot(page);
+  await newCampaign(page);
+
+  // The deploy ladder outlived the combat overhaul. It ran 5 to 14 and
+  // capped at 16 — correct for a fireteam, absurd against faction hosts of
+  // 60 to 110 on a field built for 120 bodies. The game's own resolver gave
+  // a legendary company 22% against a column it was expected to fight, which
+  // is not a difficulty curve, it is a wall.
+  const r = await page.evaluate(async () => {
+    const State = await import('/src/state.js');
+    const Roster = await import('/src/roster.js');
+    const { DATA } = window.KR.dev;
+    const S = window.KR.campaign;
+
+    const rungs = DATA.RENOWN_TIERS.map((t) => {
+      S.renown = t.at;
+      return { name: t.name, deploy: State.deployLimit(S), pay: State.payScale(S) };
+    });
+
+    const mk = (n) => {
+      const sq = [];
+      for (let i = 0; i < n; i++) {
+        const s = Roster.makeSoldier(() => 0.5, { role: 'rifleman', rank: 1 });
+        s.equip = {}; s.perks = []; s.id = 'sc' + i;
+        sq.push(s);
+      }
+      sq[0].isCommander = true;
+      return sq;
+    };
+    const oddsFor = (n, strength) => {
+      const keep = S.roster;
+      S.roster = mk(n);
+      const e = State.estimateFight(S, S.roster, { strength, quality: 0.7 });
+      S.roster = keep;
+      return e.odds;
+    };
+    const out = {
+      rungs,
+      topVsColumn: oddsFor(60, 100),
+      topVsGroup: oddsFor(60, 45),
+      greenVsLooters: oddsFor(8, 6),
+      greenVsBand: oddsFor(8, 18),
+    };
+    S.renown = 0;
+    return out;
+  });
+
+  // The ladder climbs into army numbers and never goes backwards.
+  expect(r.rungs[0].deploy).toBeGreaterThanOrEqual(8);
+  expect(r.rungs[r.rungs.length - 1].deploy).toBeGreaterThanOrEqual(48);
+  for (let i = 1; i < r.rungs.length; i++) {
+    expect(r.rungs[i].deploy, r.rungs[i].name + ' fields fewer than the rung below')
+      .toBeGreaterThan(r.rungs[i - 1].deploy);
+  }
+  // Pay climbs with it, or the limit is one you cannot afford to reach.
+  expect(r.rungs[0].pay).toBeCloseTo(1, 5);
+  expect(r.rungs[r.rungs.length - 1].pay).toBeGreaterThan(4);
+
+  // A curve, not a wall: hard fights are winnable, easy ones are not certain.
+  expect(r.topVsColumn).toBeGreaterThan(0.4);
+  expect(r.topVsColumn).toBeLessThan(0.8);
+  expect(r.topVsGroup).toBeGreaterThan(0.6);
+  expect(r.greenVsLooters).toBeGreaterThan(0.6);
+  expect(r.greenVsBand).toBeLessThan(0.6);
+});
+
+test('a pitched battle is fought: lines close, break, and the field is decided', async ({ page }) => {
+  test.setTimeout(180000);
+  await boot(page);
+  await newCampaign(page);
+
+  // Four separate holes turned a big battle into a staring contest, and all
+  // four are guarded here because each one alone was enough to stop a fight
+  // happening at all:
+  //   1. the advance lived under state 'hunt', which needs SIGHT — and two
+  //      armies deploy eighty metres apart with fifty-five metres of it;
+  //   2. the frontage was measured back from the host's own moving centre,
+  //      so a line ordered to advance walked backwards away from the enemy;
+  //   3. nerve regenerated faster than casualties could spend it, so no line
+  //      ever broke and every battle went to the last body;
+  //   4. the objective counted corpses, so an army that broke and RAN never
+  //      completed it and the extraction never armed.
+  const r = await page.evaluate(async () => {
+    const { Mission } = await import('/src/mission.js');
+    const Roster = await import('/src/roster.js');
+    const UI = await import('/src/ui.js');
+    const G = window.KR;
+    const S = G.campaign;
+
+    let seed = 20260818;
+    const rng = () => { seed = (seed * 1103515245 + 12345) & 0x7fffffff; return seed / 0x7fffffff; };
+    S.roster = [];
+    for (let i = 0; i < 24; i++) {
+      const s = Roster.makeSoldier(rng, {
+        role: ['rifleman', 'gunner', 'marksman', 'breacher'][i % 4], rank: 1,
+      });
+      s.id = 'pb' + i; s.equip = {}; s.perks = [];
+      if (i === 0) s.isCommander = true;
+      S.roster.push(s);
+    }
+    G.mission?.dispose();
+    G.world?.dispose(); G.world = null;
+    document.getElementById('viewport').innerHTML = '';
+    UI.show('hud');
+    G.mission = new Mission({
+      campaign: S,
+      spec: { type: 'skirmish', site: 'roadside', layout: 'roadside', siteName: 'Pitched',
+        party: { id: 'pb', kind: 'scrappers', name: 'Pitched', strength: 40, tier: 3, quality: 0.8 } },
+      squad: S.roster,
+      container: document.getElementById('viewport'),
+      onHud: () => {}, onToast: () => {}, onIntro: () => {}, onWheel: () => {},
+      onEnd: () => {},
+    });
+    await G.mission.start();
+    const m = G.mission;
+    m.paused = false; m.hadLock = true;
+    if (m.intro) { m.intro.active = false; m.time = m.intro.graceUntil + 0.1; }
+
+    const gapNow = () => {
+      let g = Infinity;
+      for (const a of m.entities) {
+        if (a.side !== 'player' || a.dead) continue;
+        for (const b of m.entities) {
+          if (b.side !== 'enemy' || b.dead) continue;
+          const d = Math.hypot(a.x - b.x, a.z - b.z);
+          if (d < g) g = d;
+        }
+      }
+      return g;
+    };
+
+    const bothSides = m.entities.filter((e) => !e.dead).length;
+    const startGap = gapNow();
+    let widest = startGap;
+
+    const realStep = m.step.bind(m);
+    m.step = () => {};
+    let closedAt = null, brokeAt = null;
+    for (let i = 0; i < 10800 && !m.over; i++) {
+      realStep(1 / 60);
+      const g = gapNow();
+      if (g > widest) widest = g;
+      if (closedAt === null && g < 4) closedAt = i / 60;
+      if (brokeAt === null
+        && m.entities.some((e) => e.side === 'enemy' && e.routing)) brokeAt = i / 60;
+    }
+    return {
+      bothSides, startGap: Math.round(startGap), widest: Math.round(widest),
+      closedAt, brokeAt, over: m.over,
+      objectiveDone: !!m.objective.done, extractArmed: !!m.extractArmed,
+      routCalled: !!m.routCalled,
+      // Starts at -1; the first completed stage moves it to 0.
+      stageIndex: m.stageIndex, stages: m.stages?.length || 0,
+    };
+  });
+
+  // Both sides came out of ONE body budget rather than the enemy taking all
+  // of it and the company arriving as extra.
+  expect(r.bothSides).toBeLessThanOrEqual(120);
+
+  // They started apart, and the line never walked backwards on its way in.
+  expect(r.startGap).toBeGreaterThan(40);
+  expect(r.widest - r.startGap,
+    'the advancing line moved away from the enemy').toBeLessThan(18);
+
+  // They closed, and somebody's nerve went.
+  expect(r.closedAt, 'the armies never came to contact').not.toBeNull();
+  expect(r.closedAt).toBeLessThan(90);
+  expect(r.brokeAt, 'no enemy broke — the line fought to the last body').not.toBeNull();
+
+  // And breaking them counts as winning: the objective completes off the rout
+  // rather than off a body count the runaways will never fill.
+  expect(r.routCalled, 'the field was never called').toBe(true);
+  // A party this size is heavy enough to be a staged contract, so breaking
+  // them finishes the FIGHT and hands over the next piece of work. Either
+  // way the mission has to move: an advanced stage, or an armed extraction.
+  // What must never happen again is the state this guards — field won, army
+  // scattered, and a mission that cannot be completed because the runaways
+  // are still counted as bodies owed.
+  expect(r.stageIndex >= 0 || r.extractArmed,
+    'the field was won and the mission did not move on').toBe(true);
+});
+
+test('the commander going down does not lose a battle their army is winning', async ({ page }) => {
+  test.setTimeout(120000);
+  await boot(page);
+  await newCampaign(page);
+
+  // Going down ended the mission outright. At army scale that meant sixty
+  // soldiers standing, the enemy line breaking, and the engagement scored a
+  // defeat because one man caught a spear — and it quietly made the player
+  // the only thing that mattered on a field built to be about the army.
+  const r = await page.evaluate(async () => {
+    const { Mission } = await import('/src/mission.js');
+    const Roster = await import('/src/roster.js');
+    const UI = await import('/src/ui.js');
+    const G = window.KR;
+    const S = G.campaign;
+
+    let seed = 777;
+    const rng = () => { seed = (seed * 1103515245 + 12345) & 0x7fffffff; return seed / 0x7fffffff; };
+    S.roster = [];
+    for (let i = 0; i < 12; i++) {
+      const s = Roster.makeSoldier(rng, { role: 'rifleman', rank: 1 });
+      s.id = 'cd' + i; s.equip = {}; s.perks = [];
+      if (i === 0) s.isCommander = true;
+      S.roster.push(s);
+    }
+    G.mission?.dispose();
+    G.world?.dispose(); G.world = null;
+    document.getElementById('viewport').innerHTML = '';
+    UI.show('hud');
+    G.mission = new Mission({
+      campaign: S,
+      spec: { type: 'skirmish', site: 'roadside', layout: 'roadside', siteName: 'Down',
+        party: { id: 'cd', kind: 'scrappers', name: 'Down', strength: 10, tier: 2, quality: 0.7 } },
+      squad: S.roster,
+      container: document.getElementById('viewport'),
+      onHud: () => {}, onToast: () => {}, onIntro: () => {}, onWheel: () => {},
+      onEnd: () => {},
+    });
+    await G.mission.start();
+    const m = G.mission;
+    m.paused = false; m.hadLock = true;
+    if (m.intro) { m.intro.active = false; m.time = m.intro.graceUntil + 0.1; }
+
+    // Put the commander down with their company untouched around them.
+    m.downEntity(m.player, null);
+    const afterDown = { over: !!m.over, down: !!m.player.down, flagged: !!m.commanderDown };
+
+    // And leave them there well past the bleed clock: a commander must not
+    // die on a timer in the middle of a battle their side is still fighting.
+    const realStep = m.step.bind(m);
+    m.step = () => {};
+    for (let i = 0; i < 3600 && !m.over; i++) realStep(1 / 60);
+
+    return { afterDown, stillAlive: !m.player.dead };
+  });
+
+  expect(r.afterDown.down).toBe(true);
+  expect(r.afterDown.flagged).toBe(true);
+  expect(r.afterDown.over, 'the commander went down and the battle ended').toBe(false);
+  // A full minute later they are down, not dead.
+  expect(r.stillAlive, 'the commander bled out on a timer mid-battle').toBe(true);
+});
