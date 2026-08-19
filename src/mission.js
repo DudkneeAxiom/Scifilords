@@ -23,6 +23,7 @@ import {
 } from './data.js';
 import {
   effective, weaponOf, roleOf, label, makeSoldier, STATUS, resolveCasualty,
+  woundKindOf,
 } from './roster.js';
 import { companyMods } from './perks.js';
 import { hasOfficer } from './state.js';
@@ -4131,6 +4132,10 @@ export class Mission {
   downEntity(e, source) {
     if (e.down || e.dead) return;
     e.hp = 0;
+    // WHAT DID IT. The after-action needs this to write an honest record —
+    // a maul does not leave a graze — and it is only knowable here, where
+    // the thing that struck the last blow is still in hand.
+    e.downedBy = woundKindOf(source?.weapon?.id) || e.downedBy || null;
     // Everybody close enough to see it lose their nerve a little. This is
     // the signal updateMorale reads — a line breaks because of what the
     // people in it watched happen, not because of a global counter.
@@ -6090,12 +6095,15 @@ export class Mission {
           stabilised: success && this.extractArmed ? true : false,
           hasMedic: this.squadHasRole('medic'),
           survivalBonus: this.company.casualtySurvival,
+          cause: ent.downedBy,
         });
         rec.status = st;
         rec.wound = s.wound;
         rec.hp = s.hp;
       } else if (ent.stabilised || ent.hp < ent.maxHp * 0.4) {
-        const st = resolveCasualty(r, s, { stabilised: true, hasMedic: this.squadHasRole('medic') });
+        const st = resolveCasualty(r, s, {
+          stabilised: true, hasMedic: this.squadHasRole('medic'), cause: ent.downedBy,
+        });
         rec.status = st;
         rec.wound = s.wound;
         rec.hp = s.hp;

@@ -24,15 +24,41 @@ export const STATUS = {
   DEAD: 'dead',
 };
 
-// Wounds are named so a roster line reads like a record, not a debuff list.
+// Wounds are named so a roster line reads like a record, not a debuff list —
+// and named for WHAT DID IT. A man who went down under a breaker maul did not
+// take a graze; he has a shoulder that will not hold a shield for a fortnight.
+// `kind` is the damage that caused it: cut (edged), pierce (spears, arrows),
+// crush (mauls and falls), shot (the pre-charter relics, still out there).
+// rollWound draws from the matching set, so the record and the battle agree.
 export const WOUNDS = [
-  { id: 'shoulder', name: 'Shoulder, through', days: 4, acc: -0.10 },
-  { id: 'thigh', name: 'Thigh, grazed', days: 3, speed: -0.18 },
-  { id: 'ribs', name: 'Ribs, cracked', days: 5, hp: -18 },
-  { id: 'hand', name: 'Hand, burned', days: 4, acc: -0.14 },
-  { id: 'concussion', name: 'Concussion', days: 3, acc: -0.08, speed: -0.08 },
-  { id: 'gut', name: 'Abdominal, serious', days: 8, hp: -30, acc: -0.06 },
+  // --- edged: swords, blades. Bleeding and tendon damage. -----------------
+  { id: 'forearm', kind: 'cut', name: 'Forearm, laid open', days: 4, acc: -0.12 },
+  { id: 'brow', kind: 'cut', name: 'Brow, split', days: 3, acc: -0.09, sight: -6 },
+  { id: 'thigh_cut', kind: 'cut', name: 'Thigh, opened', days: 5, speed: -0.20 },
+  { id: 'shoulder_cut', kind: 'cut', name: 'Shoulder, cut deep', days: 6, acc: -0.14, hp: -12 },
+  // --- pierce: spears and arrows. Small holes, deep trouble. --------------
+  { id: 'flank', kind: 'pierce', name: 'Flank, punctured', days: 6, hp: -20 },
+  { id: 'shoulder', kind: 'pierce', name: 'Shoulder, through', days: 4, acc: -0.10 },
+  { id: 'calf', kind: 'pierce', name: 'Calf, pinned', days: 5, speed: -0.22 },
+  { id: 'gut', kind: 'pierce', name: 'Abdominal, serious', days: 9, hp: -30, acc: -0.06 },
+  // --- crush: mauls, and the ground when a horse-sized blow lands. --------
+  { id: 'ribs', kind: 'crush', name: 'Ribs, staved in', days: 7, hp: -24 },
+  { id: 'collar', kind: 'crush', name: 'Collarbone, broken', days: 9, acc: -0.18 },
+  { id: 'concussion', kind: 'crush', name: 'Concussion', days: 4, acc: -0.10, speed: -0.08 },
+  { id: 'knee', kind: 'crush', name: 'Knee, wrecked', days: 10, speed: -0.30 },
+  // --- shot: relics only, but the wound is still a wound. -----------------
+  { id: 'thigh', kind: 'shot', name: 'Thigh, grazed', days: 3, speed: -0.18 },
+  { id: 'hand', kind: 'shot', name: 'Hand, burned', days: 4, acc: -0.14 },
 ];
+
+/** Which wound table a weapon writes into. */
+export function woundKindOf(weaponId) {
+  if (weaponId === 'heavy') return 'crush';
+  if (weaponId === 'spear' || weaponId === 'bow') return 'pierce';
+  if (weaponId === 'sword' || weaponId === 'blade') return 'cut';
+  if (weaponId) return 'shot';
+  return null;
+}
 
 /**
  * Create a persistent soldier. `how` records where they came from so the
@@ -285,20 +311,46 @@ export const awaitingPerk = (roster) =>
  * player standing over them). Unstabilised casualties can die outright —
  * permanently, and that is the point.
  */
-export function resolveCasualty(r, s, { stabilised, hasMedic, survivalBonus = 0 }) {
+/**
+ * What happened to somebody who went down.
+ *
+ * Melee changed the arithmetic in two directions at once, and both belong
+ * here. A man dropped at arm's length is dropped among his own: the line is
+ * RIGHT THERE, and dragging him back over a few metres is a thing that
+ * actually happens, so a steel casualty left on the field survives more
+ * often than one abandoned across open ground under fire. But a maul is not
+ * a rifle — crushing trauma kills people who would have walked away from a
+ * cut, and no amount of luck argues with a staved-in chest.
+ *
+ * Armour finally earns its weight here too. It is the difference between a
+ * blade turning on a plate and a blade finding a body, and it is worth most
+ * against edges and least against the things designed to defeat it.
+ */
+export function resolveCasualty(r, s, {
+  stabilised, hasMedic, survivalBonus = 0, cause = null,
+}) {
+  // How well dressed they were when it happened, 0..1-ish.
+  const plate = Math.min(0.85, armourRating(s) / 90);
+  const CRUSH = cause === 'crush';
+  const CUT = cause === 'cut';
+  // Armour turns edges; a maul is the answer TO armour and barely notices.
+  const shrug = plate * (CUT ? 0.55 : CRUSH ? 0.12 : 0.34);
+
   if (stabilised) {
     s.status = STATUS.WOUNDED;
-    s.wound = rollWound(r, hasMedic ? 0.6 : 1.0);
+    s.wound = rollWound(r, (hasMedic ? 0.6 : 1.0) * (CRUSH ? 1.35 : 1) * (1 - shrug * 0.4), cause);
     s.maxHp = maxHpOf(s);
     s.hp = Math.max(8, Math.round(s.maxHp * 0.3));
     return STATUS.WOUNDED;
   }
-  // Left behind. Luck and a medic in the company both help, but not enough to
-  // make abandoning someone a safe choice.
-  const survival = 0.30 + effective(s).luck + (hasMedic ? 0.12 : 0) + survivalBonus;
+  // Left behind. Luck, a medic, and the fact that a melee casualty falls
+  // among friends rather than a hundred metres from them.
+  const closeQuarters = cause && cause !== 'shot' ? 0.14 : 0;
+  const survival = 0.30 + effective(s).luck + (hasMedic ? 0.12 : 0)
+    + survivalBonus + closeQuarters + shrug * 0.25 - (CRUSH ? 0.16 : 0);
   if (r() < survival) {
     s.status = STATUS.WOUNDED;
-    s.wound = rollWound(r, 1.4);
+    s.wound = rollWound(r, 1.4 * (CRUSH ? 1.3 : 1), cause);
     s.maxHp = maxHpOf(s);
     s.hp = Math.max(5, Math.round(s.maxHp * 0.18));
     return STATUS.WOUNDED;
@@ -308,9 +360,15 @@ export function resolveCasualty(r, s, { stabilised, hasMedic, survivalBonus = 0 
   return STATUS.DEAD;
 }
 
-function rollWound(r, severityScale) {
-  const w = pick(r, WOUNDS);
-  return { id: w.id, name: w.name, days: Math.max(1, Math.round(w.days * severityScale)) };
+function rollWound(r, severityScale, cause = null) {
+  // Draw from what actually hit them; fall back to the whole table for
+  // anything that never said (old saves, scripted losses, the Titan).
+  const pool = cause ? WOUNDS.filter((w) => w.kind === cause) : WOUNDS;
+  const w = pick(r, pool.length ? pool : WOUNDS);
+  return {
+    id: w.id, name: w.name,
+    days: Math.max(1, Math.round(w.days * severityScale)),
+  };
 }
 
 export function woundInfo(s) {

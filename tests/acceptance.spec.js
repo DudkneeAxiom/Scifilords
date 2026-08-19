@@ -7919,3 +7919,85 @@ test('a moment to form up: the tactical eye opens before contact', async ({ page
   expect(r.shaped).toBe('wall');
   expect(r.stillInserting).toBe(true);
 });
+
+test('the record matches the battle: wounds name what did them', async ({ page }) => {
+  await boot(page);
+  await newCampaign(page);
+  const r = await page.evaluate(async () => {
+    const R = await import('/src/roster.js');
+    const { rng } = await import('/src/util.js');
+    const S = window.KR.campaign;
+    const sol = () => {
+      const s = R.makeSoldier(rng(7), { role: 'rifleman', rank: 1, how: 't', day: 1 });
+      s.equip = { head: null, body: null, legs: null };
+      return s;
+    };
+    // A weapon writes into its own table.
+    const kinds = {
+      heavy: R.woundKindOf('heavy'), spear: R.woundKindOf('spear'),
+      bow: R.woundKindOf('bow'), sword: R.woundKindOf('sword'),
+      rifle: R.woundKindOf('rifle'), none: R.woundKindOf(null),
+    };
+    // Stabilised casualties draw from the matching set, every time.
+    const drawn = { crush: new Set(), cut: new Set(), pierce: new Set() };
+    for (const cause of ['crush', 'cut', 'pierce']) {
+      for (let i = 0; i < 40; i++) {
+        const s = sol();
+        R.resolveCasualty(rng(100 + i), s, { stabilised: true, hasMedic: false, cause });
+        drawn[cause].add(R.WOUNDS.find((w) => w.id === s.wound.id).kind);
+      }
+    }
+    // Crushing is deadlier than an edge when nobody carries you out.
+    const survive = (cause) => {
+      let lived = 0;
+      for (let i = 0; i < 400; i++) {
+        const s = sol();
+        const st = R.resolveCasualty(rng(9000 + i), s,
+          { stabilised: false, hasMedic: false, cause });
+        if (st === R.STATUS.WOUNDED) lived++;
+      }
+      return lived / 400;
+    };
+    const cutLive = survive('cut');
+    const crushLive = survive('crush');
+    const shotLive = survive('shot');
+    // And armour is worth wearing — most against edges.
+    const armoured = () => {
+      let lived = 0;
+      for (let i = 0; i < 400; i++) {
+        const s = sol();
+        s.equip = { head: 'head_heavy', body: 'body_heavy', legs: 'legs_plated' };
+        s.maxHp = R.maxHpOf(s);
+        const st = R.resolveCasualty(rng(9000 + i), s,
+          { stabilised: false, hasMedic: false, cause: 'cut' });
+        if (st === R.STATUS.WOUNDED) lived++;
+      }
+      return lived / 400;
+    };
+    const platedLive = armoured();
+    // An unknown cause still produces a wound rather than throwing.
+    const legacy = sol();
+    R.resolveCasualty(rng(3), legacy, { stabilised: true, hasMedic: false });
+    return {
+      kinds, drawn: Object.fromEntries(Object.entries(drawn).map(([k, v]) => [k, [...v]])),
+      cutLive, crushLive, shotLive, platedLive, legacyWound: !!legacy.wound,
+    };
+  });
+  // Each weapon class maps to the right kind of injury.
+  expect(r.kinds).toEqual({
+    heavy: 'crush', spear: 'pierce', bow: 'pierce',
+    sword: 'cut', rifle: 'shot', none: null,
+  });
+  // A cause only ever draws from its own table.
+  expect(r.drawn.crush).toEqual(['crush']);
+  expect(r.drawn.cut).toEqual(['cut']);
+  expect(r.drawn.pierce).toEqual(['pierce']);
+  // Steel casualties fall among friends; gunfire leaves them further out.
+  expect(r.cutLive).toBeGreaterThan(r.shotLive);
+  // But a maul is a maul.
+  expect(r.crushLive).toBeLessThan(r.cutLive);
+  // Plate is worth its weight against an edge.
+  expect(r.platedLive).toBeGreaterThan(r.cutLive);
+  // Old saves and scripted losses still resolve.
+  expect(r.legacyWound).toBe(true);
+});
