@@ -838,36 +838,74 @@ export const GOODS_LIST = Object.keys(GOODS);
 // Troop roles
 // --------------------------------------------------------------------------
 
+/**
+ * The arms of a company.
+ *
+ * The ids are load-bearing — saves, troop trees, wage tables, every
+ * garrison list in mission.js and every recruit pool in ORIGINS name them —
+ * so the melee era KEEPS THE IDS and changes what they mean. A campaign
+ * saved before the overhaul loads with its people intact; they are simply
+ * holding steel now. `accuracy` reads as bladework in a swing and as
+ * scatter at the loose of an arrow; `aggression` decides how hard somebody
+ * closes. `shield` gives them the plate on the off arm.
+ */
 export const ROLES = {
   rifleman: {
-    id: 'rifleman', name: 'Rifleman', abbr: 'RFL',
-    desc: 'Reliable line infantry. Nothing special, always needed.',
-    weapon: 'rifle', hp: 100, accuracy: 0.62, aggression: 0.5, cost: 240,
+    id: 'rifleman', name: 'Swordsman', abbr: 'SWD',
+    desc: 'The line. Plate sword and a shield, and the discipline to hold both.',
+    weapon: 'sword', shield: true, hp: 100, accuracy: 0.62, aggression: 0.55, cost: 240,
   },
   breacher: {
-    id: 'breacher', name: 'Breacher', abbr: 'BRC',
-    desc: 'Close assault. Pushes rooms and doorways, dies in open ground.',
-    weapon: 'shotgun', hp: 120, accuracy: 0.55, aggression: 0.85, cost: 320,
+    id: 'breacher', name: 'Heavy Infantry', abbr: 'HVY',
+    desc: 'Breaks lines. A maul off a girder, armour to wear the answer.',
+    weapon: 'heavy', hp: 130, accuracy: 0.55, aggression: 0.85, cost: 320,
   },
   marksman: {
-    id: 'marksman', name: 'Marksman', abbr: 'MRK',
-    desc: 'Long-range precision. Wants distance and a wall to stand behind.',
-    weapon: 'dmr', hp: 85, accuracy: 0.82, aggression: 0.25, cost: 360,
+    id: 'marksman', name: 'Archer', abbr: 'ARC',
+    desc: 'Batten bow and a bracket blade. Wants distance, elevation, and a line of infantry in front.',
+    weapon: 'bow', hp: 85, accuracy: 0.82, aggression: 0.25, cost: 360,
   },
   gunner: {
-    id: 'gunner', name: 'Support Gunner', abbr: 'GUN',
-    desc: 'Suppressive fire. Slow to move, hard to advance against.',
-    weapon: 'lmg', hp: 115, accuracy: 0.48, aggression: 0.6, cost: 380,
+    id: 'gunner', name: 'Spearman', abbr: 'SPR',
+    desc: 'Holds ground and breaks charges. Strongest in a rank, weakest alone.',
+    weapon: 'spear', shield: true, hp: 110, accuracy: 0.58, aggression: 0.4, cost: 340,
   },
   medic: {
     id: 'medic', name: 'Field Medic', abbr: 'MED',
     desc: 'Stabilises the incapacitated in the field. Keeps veterans alive.',
-    weapon: 'smg', hp: 90, accuracy: 0.5, aggression: 0.2, cost: 420,
+    weapon: 'blade', hp: 90, accuracy: 0.5, aggression: 0.2, cost: 420,
   },
   signals: {
-    id: 'signals', name: 'Signals Tech', abbr: 'SIG',
+    id: 'signals', name: 'Signalist', abbr: 'SIG',
     desc: 'Works objective hardware fast. Halves demolition and console time.',
-    weapon: 'smg', hp: 90, accuracy: 0.52, aggression: 0.3, cost: 400,
+    weapon: 'blade', hp: 90, accuracy: 0.52, aggression: 0.3, cost: 400,
+  },
+};
+
+/**
+ * How a faction fights, as a bias on who turns up.
+ *
+ * Not a recolour: a Trust line is shields and spear ranks that would rather
+ * receive a charge than make one, and a Syndic band is swords and loose
+ * bowmen who would rather be somewhere you are not. The mission layer skews
+ * a party's role draw through this, so the same tier reads differently
+ * depending on whose colours it wears.
+ */
+export const DOCTRINES = {
+  trust: {
+    id: 'trust', name: 'Ordnance line',
+    weights: { rifleman: 3, gunner: 3, breacher: 1, marksman: 1 },
+    note: 'Shield walls and braced spears. Disciplined, slow, hard to move.',
+  },
+  syndic: {
+    id: 'syndic', name: 'Syndic band',
+    weights: { rifleman: 3, marksman: 3, breacher: 2, gunner: 1 },
+    note: 'Fast swords and loose archers. Flanks rather than pushes.',
+  },
+  raider: {
+    id: 'raider', name: 'Scrapper mob',
+    weights: { rifleman: 4, breacher: 2, marksman: 1, gunner: 1 },
+    note: 'Whatever they could sharpen. No line to speak of.',
   },
 };
 
@@ -887,16 +925,16 @@ export const ROLE_LIST = Object.keys(ROLES);
  */
 export const TROOP_PATHS = {
   rifleman: [
-    { to: 'breacher', rank: 1, cost: 260,
-      why: 'Give them a shotgun and the job of going through the door first.' },
+    { to: 'gunner', rank: 1, cost: 300,
+      why: 'Put a mast spear in their hands and teach them to brace it. The rank holds or it does not.' },
     { to: 'marksman', rank: 1, cost: 320,
-      why: 'Hand them a DMR and let them hold the long angle.' },
-    { to: 'gunner', rank: 1, cost: 340,
-      why: 'Put the machine gun on them and let them own a lane.' },
+      why: 'Give them a batten bow and the patience to wait for the volley.' },
+    { to: 'breacher', rank: 1, cost: 340,
+      why: 'Hand them the maul. Somebody has to open a shield wall.' },
   ],
   breacher: [
     { to: 'gunner', rank: 2, cost: 380,
-      why: 'They have survived enough rooms to be trusted with the heavy weapon.' },
+      why: 'They have broken enough lines to know where a line breaks.' },
     { to: 'medic', rank: 2, cost: 420,
       why: 'They have carried enough people out to know how it is done.' },
   ],
@@ -906,7 +944,7 @@ export const TROOP_PATHS = {
   ],
   gunner: [
     { to: 'breacher', rank: 2, cost: 300,
-      why: 'Back to the front of the stack, with something shorter.' },
+      why: 'Out of the rank and into the breach, with something heavier.' },
   ],
   medic: [],
   signals: [],

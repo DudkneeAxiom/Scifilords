@@ -423,7 +423,8 @@ export function startingCompany(r) {
     role: 'rifleman', rank: 0, how: 'Signed the charter', day: 1,
   });
   cmd.isCommander = true;
-  cmd.weapon = 'rifle';
+  // The commander draws the same steel as the line they stand in.
+  cmd.weapon = 'sword';
   // The commander keeps a real name. Calling them "You" produced after-action
   // lines like "You is wounded", and a named officer reads better on a roster
   // that is meant to feel like a personnel record.

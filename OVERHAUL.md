@@ -98,6 +98,44 @@ Gotcha: `charge` advertises key R (:1896) but R is bound to reload
   manifest → build.py branch → role weapon → hireCost/wageOf maps →
   audio voice → fire/AI branches → HUD → tests.
 
+## The roster remap (phase 7, landed)
+
+The six role ids are UNCHANGED — that is the whole save-compatibility
+story, and it also spares the two hardcoded cost maps
+(state.js hireCost/wageOf), TROOP_PATHS, every garrison array in
+mission.js, ORIGINS[*].roles and the perk affinity table. What changed
+is what the ids MEAN:
+
+| id | was | is | arms |
+|----|-----|-----|------|
+| rifleman | Rifleman | **Swordsman** | sword + shield |
+| gunner | Support Gunner | **Spearman** | spear + shield |
+| marksman | Marksman | **Archer** | bow (blade sidearm) |
+| breacher | Breacher | **Heavy Infantry** | breaker maul |
+| medic | Field Medic | Field Medic | blade |
+| signals | Signals Tech | Signalist | blade |
+
+TROOP_PATHS rewired so the line (rifleman) branches into spear, bow and
+maul; the rank ladder (recruit→trooper→veteran→sergeant) is untouched
+and still carries the experience half of the directive's tree.
+
+`ROLES[*].shield` puts the plate on at SPAWN for both sides — which is
+also the fix for the visual-QA finding that a mid-mission weapon swap
+left the old mesh in the hand: the mesh follows `role.weapon` through
+spawnEnemy/buildSquad, so the thing drawn and the thing in the maths
+are now one decision made once.
+
+`DOCTRINES` (data.js) skews who actually turns up per faction, applied
+by `doctrineRoles()` in mission.js at both role-draw sites: trust
+weights spears/swords (and gets +15% shield HP), syndic weights swords
+and bows, raider mostly swords. A signature arm (weight ≥3) turns up
+even when the party tier never listed it, so a Trust column always has
+spears in it.
+
+Markets sell steel now (`weaponStock` in ui.js); guns remain in WEAPONS
+as pre-charter relics with no shelf space. Starting armoury, the
+commander's own weapon, allied militia and field spoils all re-armed.
+
 ## Asset state
 
 wpn_sword / wpn_spear / wpn_heavy / wpn_bow / wpn_blade / wpn_shield

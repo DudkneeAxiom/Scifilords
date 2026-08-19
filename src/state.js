@@ -36,8 +36,10 @@ export function newCampaign(seed = Math.floor(Math.random() * 1e9)) {
     medical: 3,        // field kits — each one stabilises a casualty
     roster: startingCompany(r),
     // Weapons and kit the company owns but nobody is carrying. Counts, not
-    // instances — there is no reason to track individual rifles.
-    armoury: { smg: 1, shotgun: 1 },
+    // instances — there is no reason to track individual blades. The line
+    // already carries swords, so the crate holds the two arms nobody
+    // started with: a first real decision about what this company becomes.
+    armoury: { spear: 1, bow: 1 },
     kitPool: { plate: 1 },
     armourPool: { head_light: 2, body_webbing: 2, legs_fatigues: 2 },
     cargo: {},          // trade goods in the truck
@@ -2072,7 +2074,7 @@ export function applyMissionResult(S, res) {
       res.fieldSpoils = res.fieldSpoils || [];
       for (let i = 0; i < strip; i++) {
         if (sr() < 0.45) {
-          const w = pick(sr, ['rifle', 'smg', 'shotgun', 'dmr']);
+          const w = pick(sr, ['sword', 'spear', 'bow', 'heavy', 'blade']);
           addSpoils(S, 'armoury', w);
           res.fieldSpoils.push({ kind: 'weapon', id: w });
         } else {

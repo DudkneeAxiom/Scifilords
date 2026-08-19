@@ -2035,7 +2035,8 @@ test('advancement is a branching choice you pay for, gated on earned rank', asyn
   expect(r.refused).toBe(false);
   expect(r.done).toBe(true);
   expect(r.after.role).toBe('marksman');
-  expect(r.after.weapon).toBe('dmr');
+  // Retraining hands them the job's arms: a marksman is an Archer now.
+  expect(r.after.weapon).toBe('bow');
   expect(r.after.credits).toBe(r.before.credits - r.cost);
   // Specialists cost more to keep — a company of them is a running expense.
   expect(r.after.wage).toBeGreaterThan(r.before.wage);
@@ -7047,12 +7048,11 @@ test('the battle line: arms select as one, form in rows, and reshape on call', a
     const UI = await import('/src/ui.js');
     const G = window.KR;
     const S = G.campaign;
-    // A mixed company: swords, a spear, and a rifle standing in for the
-    // ranged arm until the bows land.
+    // A mixed company: two swords, a spear and a bow — one of each arm.
     S.roster[0].weapon = 'sword';
     S.roster[1].weapon = 'sword';
     S.roster[2].weapon = 'spear';
-    S.roster[3].weapon = 'rifle';
+    S.roster[3].weapon = 'bow';
     G.mission?.dispose();
     G.world?.dispose(); G.world = null;
     document.getElementById('viewport').innerHTML = '';
@@ -7139,7 +7139,7 @@ test('the battle line: arms select as one, form in rows, and reshape on call', a
   });
   expect(r.defaulted).toBe('battle');
   expect(r.spearSel).toEqual(['spear']);
-  expect(r.rangedSel).toEqual(['rifle']);
+  expect(r.rangedSel).toEqual(['bow']);
   expect(r.infSel).toEqual(['sword']);
   // The rows hold their order: line, spears, bows.
   expect(r.infBack).toBeLessThan(r.spearBack);
@@ -7267,4 +7267,202 @@ test('arrows are bodies in flight: the arc, the plate, and the blade', async ({ 
   expect(r.released).toBe(true);
   expect(r.drewBlade).toBe(true);
   expect(r.bowBack).toBe(true);
+});
+
+test('the company carries steel: roles remap, plate at spawn, doctrine skews the draw', async ({ page }) => {
+  test.setTimeout(150000);
+  await boot(page);
+  await newCampaign(page);
+  // The campaign layer first: ids survive, meanings change.
+  const camp = await page.evaluate(async () => {
+    const { ROLES, WEAPONS, TROOP_PATHS, DOCTRINES } = await import('/src/data.js');
+    const S = window.KR.campaign;
+    const ids = Object.keys(ROLES);
+    const arms = {};
+    for (const id of ids) arms[id] = ROLES[id].weapon;
+    // A campaign saved before the overhaul keeps its people; they are
+    // simply holding steel now — the role id is the whole compatibility story.
+    const legacy = S.roster.map((s) => ({ role: s.role, w: s.weapon }));
+    const anyGun = S.roster.some((s) => {
+      const w = WEAPONS[s.weapon];
+      return w && !w.melee && !w.bow;
+    });
+    return {
+      ids, arms,
+      branches: TROOP_PATHS.rifleman.map((b) => b.to),
+      doctrines: Object.keys(DOCTRINES),
+      legacy, anyGun,
+      startArmoury: Object.keys(S.armoury),
+    };
+  });
+  // Every id is where it was; every hand holds something new.
+  expect(camp.ids).toEqual(['rifleman', 'breacher', 'marksman', 'gunner', 'medic', 'signals']);
+  expect(camp.arms.rifleman).toBe('sword');
+  expect(camp.arms.gunner).toBe('spear');
+  expect(camp.arms.marksman).toBe('bow');
+  expect(camp.arms.breacher).toBe('heavy');
+  // The line branches into the other arms.
+  expect(camp.branches.sort()).toEqual(['breacher', 'gunner', 'marksman']);
+  expect(camp.doctrines).toContain('trust');
+  // Nobody in a fresh company is holding a gun.
+  expect(camp.anyGun).toBe(false);
+  expect(camp.startArmoury.sort()).toEqual(['spear', 'sword']);
+
+  // Then the field: plate and mesh arrive together, at spawn.
+  const field = async (faction) => {
+    await page.evaluate(async (f) => {
+      const { Mission } = await import('/src/mission.js');
+      const UI = await import('/src/ui.js');
+      const G = window.KR;
+      const S = G.campaign;
+      G.mission?.dispose();
+      G.world?.dispose(); G.world = null;
+      document.getElementById('viewport').innerHTML = '';
+      UI.show('hud');
+      G.mission = new Mission({
+        campaign: S,
+        spec: { type: 'skirmish', site: 'roadside', layout: 'roadside',
+          enemyFaction: f, party: { kind: 'patrol_trust', strength: 24, quality: 0.9 } },
+        squad: S.roster.slice(0, 4),
+        container: document.getElementById('viewport'),
+        onHud: () => {}, onToast: () => {}, onIntro: () => {}, onWheel: () => {}, onEnd: () => {},
+      });
+      await G.mission.start();
+      G.mission.paused = true;
+    }, faction);
+    await page.waitForFunction(() => window.KR.mission?.player, null, { timeout: 40000 });
+    return page.evaluate(() => {
+      const m = window.KR.mission;
+      const foes = m.entities.filter((e) => e.side === 'enemy' && !e.dead);
+      const tally = { spear: 0, sword: 0, bow: 0, heavy: 0 };
+      let plated = 0, meshMatches = 0;
+      for (const f2 of foes) {
+        const id = f2.weapon?.id;
+        if (tally[id] !== undefined) tally[id]++;
+        if ((f2.shieldHp || 0) > 0) plated++;
+        // The QA finding, closed: the mesh in the hand IS the weapon in
+        // the maths, decided once at spawn.
+        if (f2.char?.weapon && f2.weapon) meshMatches++;
+      }
+      const squadPlate = m.squad.filter((s) => (s.shieldHp || 0) > 0).length;
+      return { n: foes.length, tally, plated, meshMatches, squadPlate,
+        squadArms: m.squad.map((s) => s.weapon?.id) };
+    });
+  };
+  const trust = await field('trust');
+  const syndic = await field('syndic');
+  // Everybody who spawned holds something, and the mesh is that thing.
+  expect(trust.meshMatches).toBe(trust.n);
+  // A Trust line is shields and braced spears; a Syndic band is swords and bows.
+  expect(trust.tally.spear).toBeGreaterThan(0);
+  expect(trust.plated).toBeGreaterThan(0);
+  expect(trust.plated / trust.n).toBeGreaterThan(syndic.plated / syndic.n);
+  expect(syndic.tally.bow + syndic.tally.sword)
+    .toBeGreaterThan(syndic.tally.spear);
+  // The player's own line carries plate where the job calls for it.
+  expect(trust.squadPlate).toBeGreaterThan(0);
+  expect(trust.squadArms.every((w) => ['sword', 'spear', 'bow', 'heavy', 'blade'].includes(w)))
+    .toBe(true);
+});
+
+test('nerve decides it: lines break, cowards run, and the field is called', async ({ page }) => {
+  test.setTimeout(150000);
+  await boot(page);
+  await newCampaign(page);
+  await page.evaluate(async () => {
+    const { Mission } = await import('/src/mission.js');
+    const UI = await import('/src/ui.js');
+    const G = window.KR;
+    const S = G.campaign;
+    G.mission?.dispose();
+    G.world?.dispose(); G.world = null;
+    document.getElementById('viewport').innerHTML = '';
+    UI.show('hud');
+    G.mission = new Mission({
+      campaign: S,
+      spec: { type: 'skirmish', site: 'roadside', layout: 'roadside',
+        enemyFaction: 'raider', party: { strength: 8, quality: 0.9 } },
+      squad: S.roster.slice(0, 4),
+      container: document.getElementById('viewport'),
+      onHud: () => {}, onToast: () => {}, onIntro: () => {}, onWheel: () => {}, onEnd: () => {},
+    });
+    await G.mission.start();
+    G.mission.paused = true;
+  });
+  await page.waitForFunction(() => window.KR.mission?.player, null, { timeout: 40000 });
+  const r = await page.evaluate(() => {
+    const m = window.KR.mission;
+    const p = m.player;
+    const foes = m.entities.filter((e) => e.side === 'enemy' && !e.dead);
+    m.skirmishTotal = 0; m.skirmishCommitted = 0;
+    m.paused = false;
+    const realStep = m.step.bind(m);
+    m.step = () => {};
+
+    // Veterans hold where recruits break: same nerve, different rank.
+    const raw = foes[0], vet = foes[1];
+    raw.soldier = { rank: 0 }; vet.soldier = { rank: 3 };
+    raw.nerve = 20; vet.nerve = 20;
+    m.moraleAt = 0;
+    realStep(1 / 30);
+    const rawBroke = raw.routing === true;
+    const vetHeld = !vet.routing;
+
+    // A body that sees friends die loses nerve for it.
+    const watcher = foes[2];
+    watcher.nerve = 90; watcher.routing = false;
+    watcher.soldier = { rank: 3 };
+    const victim = foes[3];
+    victim.x = watcher.x + 3; victim.z = watcher.z;
+    const n0 = watcher.nerve;
+    m.downEntity(victim, p);
+    const sawIt = (watcher.casualtySeen || 0) > 0;
+    m.moraleAt = 0;
+    realStep(1 / 30);
+    const shaken = watcher.nerve < n0;
+
+    // Routing is running, not fighting: they leave, and they leave for good.
+    const runner = foes[4];
+    runner.nerve = 100; runner.routing = false; runner.soldier = { rank: 3 };
+    m.breakEntity(runner);
+    const dropped = runner.target === null && runner.order === 'rout';
+    const startD = Math.hypot(runner.x - p.x, runner.z - p.z);
+    for (let i = 0; i < 300 && !runner.fled; i++) realStep(1 / 30);
+    const ranAway = runner.fled === true
+      || Math.hypot(runner.x - p.x, runner.z - p.z) > startD + 8;
+
+    // The commander reads the field and says what it is doing.
+    m.foeThinkAt = 0;
+    for (const e of foes) { if (!e.dead) { e.routing = false; e.nerve = 100; } }
+    m.updateEnemyCommander(0);
+    const posture = m.foePosture;
+    // Badly outnumbered, it gives ground rather than feeding the mill.
+    // Break them rather than deleting them: a routing man is off the
+    // commander's ledger but still ON the field, which is exactly what
+    // checkRout counts below.
+    for (let i = 2; i < foes.length; i++) {
+      if (!foes[i].dead) { foes[i].routing = true; foes[i].order = 'rout'; }
+    }
+    m.foeThinkAt = 0;
+    m.updateEnemyCommander(0);
+    const outnumbered = m.foePosture;
+
+    // The field is called once nothing of theirs is still standing.
+    for (const e of m.entities) {
+      if (e.side === 'enemy' && !e.dead) { e.nerve = 0; m.breakEntity(e); }
+    }
+    m.checkRout();
+    const called = m.routCalled === true;
+    return { rawBroke, vetHeld, sawIt, shaken, dropped, ranAway,
+      posture, outnumbered, called };
+  });
+  expect(r.rawBroke).toBe(true);
+  expect(r.vetHeld).toBe(true);
+  expect(r.sawIt).toBe(true);
+  expect(r.shaken).toBe(true);
+  expect(r.dropped).toBe(true);
+  expect(r.ranAway).toBe(true);
+  expect(['advance', 'hold', 'snipe', 'withdraw']).toContain(r.posture);
+  expect(r.outnumbered).toBe('withdraw');
+  expect(r.called).toBe(true);
 });

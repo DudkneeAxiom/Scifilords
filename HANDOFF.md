@@ -1070,7 +1070,16 @@ as rare relic props, not combat.
    groupShape line/wall/loose per arm ('n' cycles, refuses mixed
    selections), keys 6/7/8/9 = ALL/INF/SPEAR/RANGED, melee squads
    default to 'battle'.
-6-10. per task list #60-#64.
+6. ARCHERY — done (`3f8fc15`): looseArrow/updateArrows ballistic arcs,
+   arrows as real meshes that stick, plate eats frontal arrows, volley
+   cadence, holdFire discipline (X on a pure ranged selection), and the
+   bow→blade swap inside 5m.
+7. ROSTER REMAP — done: the six role ids keep their names in code and
+   change meaning (rifleman=Swordsman, gunner=Spearman, marksman=Archer,
+   breacher=Heavy); DOCTRINES skew who turns up per faction; shields
+   arrive at spawn so mesh and maths are one decision. See OVERHAUL.md
+   for the table.
+8-10. per task list #62-#64.
 
 **Sim-test traps, hard-earned:** (a) `step()` gates on `this.paused`
 AND `this.over` — a staged test that KILLS all enemies completes the

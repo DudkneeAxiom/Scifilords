@@ -2586,7 +2586,7 @@ export function settlementPanel(S, loc, cbs) {
           ${weaponStock(loc).map((w) => `<div class="card" data-weapon="${w.id}">
             <div class="card-top"><span class="card-title">${esc(w.name)}</span>
               <span class="card-pay">${w.price}</span></div>
-            <div class="card-meta">${w.damage} DMG · ${w.rpm} RPM · ${w.range}M · ${w.mag} RDS</div>
+            <div class="card-meta">${weaponLine(w)}</div>
             <div class="card-text">${esc(w.note)}</div>
           </div>`).join('')}
 
@@ -2669,10 +2669,31 @@ export function settlementPanel(S, loc, cbs) {
  * doctrine's weapons; the neutral crossing sells whatever it can get, which is
  * why it is worth the trip.
  */
+/**
+ * What a weapon's card says about it. Steel is read by reach and how fast
+ * it comes back round; a bow by how far and how often. Rounds-per-minute
+ * and magazine size are gun facts and belong only to the relics.
+ */
+function weaponLine(w) {
+  if (w.melee) {
+    const per = (60 / w.rpm).toFixed(2);
+    return `${w.damage} DMG · ${w.reach}M REACH · ${per}s SWING`
+      + `${w.shieldMul > 1 ? ` · ×${w.shieldMul} vs SHIELDS` : ''}`
+      + `${w.brace ? ` · ×${w.brace} BRACED` : ''}`;
+  }
+  if (w.bow) {
+    return `${w.damage} DMG (${w.dmgFar} FAR) · ${w.range}M · ${(60 / w.rpm).toFixed(1)}s DRAW`;
+  }
+  return `${w.damage} DMG · ${w.rpm} RPM · ${w.range}M · ${w.mag} RDS`;
+}
+
 function weaponStock(loc) {
-  const ids = loc.faction === 'trust' ? ['rifle', 'lmg', 'shotgun']
-    : loc.faction === 'syndic' ? ['smg', 'dmr', 'shotgun']
-      : ['rifle', 'smg', 'shotgun', 'dmr', 'lmg'];
+  // What a market actually sells now: steel, staves and bows, cut to the
+  // doctrine of whoever holds the town. Guns are pre-charter relics — they
+  // are not on any shelf in the Reach.
+  const ids = loc.faction === 'trust' ? ['sword', 'spear', 'heavy', 'bow', 'blade']
+    : loc.faction === 'syndic' ? ['sword', 'bow', 'heavy', 'blade', 'spear']
+      : ['sword', 'spear', 'bow', 'blade'];
   return ids.map((id) => WEAPONS[id]).filter((w) => w && w.price > 0);
 }
 

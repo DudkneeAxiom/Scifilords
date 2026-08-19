@@ -19,7 +19,7 @@ import { NavGrid } from './nav.js';
 import * as Audio from './audio.js';
 import {
   WEAPONS, ROLES, FACTIONS, MISSION_TYPES, PARTY_TIERS, ORIGINS,
-  ARMOUR, ARMOUR_LIST, KIT,
+  ARMOUR, ARMOUR_LIST, KIT, DOCTRINES,
 } from './data.js';
 import {
   effective, weaponOf, roleOf, label, makeSoldier, STATUS, resolveCasualty,
@@ -882,7 +882,7 @@ export class Mission {
     if (this.player.weapon) {
       this.player.ammo = Math.round(this.player.weapon.mag * (ef.magMul || 1));
     }
-    if (cmd.kit === 'shield') {
+    if (cmd.kit === 'shield' || roleOf(cmd).shield) {
       this.player.shieldHp = KIT.shield.shieldHp;
       this.player.blockArc = KIT.shield.blockArc;
     }
@@ -921,9 +921,9 @@ export class Mission {
       ent.maxHp = e2.maxHp;
       ent.hp = Math.min(s.hp, e2.maxHp);
       if (ent.weapon) ent.ammo = Math.round(ent.weapon.mag * (e2.magMul || 1));
-      // The plate shield rides the gear slot: carry one and the guard has
-      // something real behind it.
-      if (s.kit === 'shield') {
+      // The plate comes with the job for the arms that carry one, and a
+      // shield bought into the gear slot upgrades anybody else's guard.
+      if (s.kit === 'shield' || roleOf(s).shield) {
         ent.shieldHp = KIT.shield.shieldHp;
         ent.blockArc = KIT.shield.blockArc;
       }
@@ -1009,10 +1009,99 @@ export class Mission {
       sight: 34 + this.r() * 12,
       aggression: rd.aggression,
       coverPref: f === 'trust' ? 0.75 : 0.45,  // doctrine, expressed as behaviour
+      // The plate comes with the job, and it comes at SPAWN — which is what
+      // makes the mesh in the hand and the rules in the maths the same
+      // decision. A Trust line carries more of them than anybody else.
+      shieldHp: rd.shield
+        ? Math.round(KIT.shield.shieldHp * (f === 'trust' ? 1.15 : 0.9))
+        : 0,
       name: `${FACTIONS[f].short} ${rd.abbr}`,
       state: patrol ? 'patrol' : 'guard',
       patrol,
     });
+  }
+
+  /**
+   * The other side's commander.
+   *
+   * Not cleverness — readable intent. It looks at what it has against what
+   * it faces and picks one of four postures, holds it for a few seconds so
+   * the player can SEE it, and lets the individual bodies carry it out.
+   * That is the whole difference between an army and a mob sprinting at
+   * the nearest target.
+   */
+  updateEnemyCommander(dt) {
+    this.foeThinkAt = (this.foeThinkAt || 0) - dt;
+    if (this.foeThinkAt > 0) return;
+    this.foeThinkAt = 3;
+    const mine = [], theirs = [];
+    for (const e of this.entities) {
+      if (e.dead || e.isTitan || e.follower || e.down || e.routing) continue;
+      if (e.side === 'enemy') mine.push(e);
+      else if (e.side === 'player') theirs.push(e);
+    }
+    if (!mine.length || !theirs.length) return;
+    const bows = (list) => list.filter((e) => e.weapon?.bow || e.bowStowed).length;
+    const odds = mine.length / theirs.length;
+    const rangedEdge = (bows(mine) + 0.5) / (bows(theirs) + 0.5);
+    // Their archers, standing where nothing of ours is near them.
+    const exposed = theirs.filter((t) => (t.weapon?.bow || t.bowStowed)
+      && !mine.some((o) => Math.hypot(o.x - t.x, o.z - t.z) < 14));
+
+    let posture = 'advance';
+    if (odds < 0.55) posture = 'withdraw';
+    else if (rangedEdge > 1.6 && bows(mine) >= 2) posture = 'hold';
+    else if (exposed.length && mine.length >= 4) posture = 'snipe';
+    if (posture !== this.foePosture) {
+      this.foePosture = posture;
+      const line = { advance: 'THEY ADVANCE BEHIND SHIELDS',
+        hold: 'THEY HOLD AND SHOOT', snipe: 'THEY MOVE ON YOUR ARCHERS',
+        withdraw: 'THEY ARE GIVING GROUND' }[posture];
+      this.onToast('', line, 'order');
+    }
+    // The posture as orders on bodies. Everything else — pairing, spacing,
+    // swings — is the melee layer doing its job underneath.
+    const fast = [...mine].sort((a, b) => (b.aggression || 0) - (a.aggression || 0));
+    const detail = posture === 'snipe'
+      ? fast.slice(0, Math.max(2, Math.floor(mine.length * 0.3))) : [];
+    for (const e of mine) {
+      e.holdGround = posture === 'hold' && (e.weapon?.bow || e.bowStowed);
+      e.withdrawing = posture === 'withdraw' && !(e.weapon?.bow);
+      if (detail.includes(e) && exposed.length) {
+        // Pick the exposed archer nearest this man, and go for them.
+        let best = exposed[0], bd = Infinity;
+        for (const t of exposed) {
+          const d = Math.hypot(t.x - e.x, t.z - e.z);
+          if (d < bd) { bd = d; best = t; }
+        }
+        e.forceTarget = best;
+        e.state = 'engage';
+      } else if (e.forceTarget && posture !== 'snipe') {
+        e.forceTarget = null;
+      }
+    }
+  }
+
+  /**
+   * Who a party actually fields. The tier says what kind of outfit it is;
+   * the doctrine says whose colours it wears, and skews the draw so a
+   * Trust column and a Syndic band of the same size do not fight alike.
+   */
+  doctrineRoles(base) {
+    const f = this.level.enemyFaction;
+    const w = DOCTRINES[f]?.weights;
+    if (!w) return base;
+    const out = [];
+    for (const r of base) {
+      out.push(r);
+      // Weight above the baseline of one buys extra tickets in the draw.
+      for (let i = 1; i < (w[r] || 1); i++) out.push(r);
+    }
+    // A doctrine's signature arm turns up even when the tier never listed it.
+    for (const [role, weight] of Object.entries(w)) {
+      if (weight >= 3 && !out.includes(role)) out.push(role);
+    }
+    return out;
   }
 
   difficultyScale() {
@@ -1268,8 +1357,8 @@ export class Mission {
   buildSkirmish() {
     const party = this.spec.party || {};
     const total = clamp(party.strength || 4, 2, 120);
-    const roles = PARTY_TIERS[party.kind]?.roles
-      || ['rifleman', 'rifleman', 'breacher', 'marksman'];
+    const roles = this.doctrineRoles(PARTY_TIERS[party.kind]?.roles
+      || ['rifleman', 'rifleman', 'breacher', 'marksman']);
     this.skirmishTotal = total;
     this.skirmishRemaining = total;
     this.enemyQuality = party.quality || 0.75;
@@ -1308,7 +1397,7 @@ export class Mission {
     const ent = this.spawnEntity({
       id: `ally_`, side: 'player', faction: this.spec.allyFaction || 'syndic',
       x: sp.x - 8 + (i % 4) * 5, z: sp.z + 4 + Math.floor(i / 4) * 4,
-      yaw: 0, hp: 80, weapon: i % 3 ? 'rifle' : 'smg',
+      yaw: 0, hp: 80, weapon: i % 3 ? 'sword' : 'spear',
       model: this.spec.allyFaction === 'trust' ? 'soldier_trust' : 'soldier_syndic',
       acc: 0.46, speed: 4.0, aggression: 0.55, coverPref: 0.6,
       name: 'Allied fighter',
@@ -1371,8 +1460,8 @@ export class Mission {
     const left = this.skirmishTotal - (this.skirmishCommitted || 0);
     if (left > 0 && alive < Math.max(4, FIELD_CAP * 0.45)) {
       const n = Math.min(left, Math.round(FIELD_CAP * 0.5));
-      const roles = PARTY_TIERS[this.spec.party?.kind]?.roles
-        || ['rifleman', 'breacher', 'marksman'];
+      const roles = this.doctrineRoles(PARTY_TIERS[this.spec.party?.kind]?.roles
+        || ['rifleman', 'breacher', 'marksman']);
       if (this.spec.defend) {
         // A besieging army's next rank comes up the lanes, not out of thin
         // air beside the defenders.
@@ -3264,6 +3353,123 @@ export class Mission {
     this.onToast('RANGED', on ? 'HOLD FIRE' : 'FIRE AT WILL', 'order');
   }
 
+  // ------------------------------------------------------------------
+  // Morale, and the way a battle ends.
+  //
+  // Battles are decided by nerve long before they are decided by
+  // arithmetic. Everybody carries a nerve pool; casualties nearby,
+  // friends running and being badly outnumbered spend it, and a
+  // commander standing where they can be seen pays it back. Empty is a
+  // rout: they drop what they are doing and run for the edge of the
+  // field — and once a side has stopped being an army, the fight is
+  // called rather than chased across the basin.
+  // ------------------------------------------------------------------
+
+  /** Starting nerve for a body: rank and temperament, so veterans hold. */
+  baseNerve(e) {
+    const rank = e.soldier?.rank ?? 1;
+    return 55 + rank * 12 + (e.aggression || 0.5) * 20;
+  }
+
+  updateMorale(dt) {
+    this.moraleAt = (this.moraleAt || 0) - dt;
+    if (this.moraleAt > 0) return;
+    this.moraleAt = 0.5;                      // twice a second is plenty
+    const p = this.player;
+    const live = { player: [], enemy: [] };
+    for (const e of this.entities) {
+      if (e.dead || e.isTitan || e.follower) continue;
+      if (e.side === 'player' || e.side === 'enemy') live[e.side].push(e);
+    }
+    for (const side of ['player', 'enemy']) {
+      const mine = live[side];
+      const theirs = live[side === 'player' ? 'enemy' : 'player'];
+      const standing = mine.filter((e) => !e.down && !e.routing).length;
+      const routing = mine.filter((e) => e.routing).length;
+      const facing = theirs.filter((e) => !e.down && !e.routing).length;
+      const odds = standing / Math.max(1, facing);
+      for (const e of mine) {
+        if (e.down || e.dead) continue;
+        if (e.nerve === undefined) e.nerve = this.baseNerve(e);
+        if (e.routing) continue;
+        let drift = 1.1;                      // nerve creeps back on its own
+        // Friends going down and friends running are the two things that
+        // actually break a line.
+        drift -= (e.casualtySeen || 0) * 3.2;
+        e.casualtySeen = 0;
+        drift -= routing * 1.6;
+        if (odds < 0.6) drift -= 2.4;
+        else if (odds > 1.6) drift += 0.8;
+        // Somebody in charge, standing where they can be seen.
+        if (side === 'player' && p && !p.down
+          && Math.hypot(p.x - e.x, p.z - e.z) < 20) drift += 2.6;
+        if (e.hp < e.maxHp * 0.35) drift -= 1.4;
+        e.nerve = clamp(e.nerve + drift, 0, 120);
+        // Veterans hold past the point where recruits do not.
+        const breakAt = 12 + (3 - Math.min(3, e.soldier?.rank ?? 1)) * 6;
+        if (e.nerve <= breakAt && !e.isPlayer) this.breakEntity(e);
+      }
+    }
+    this.checkRout();
+  }
+
+  /** One body's nerve goes: they run for the edge and stop fighting. */
+  breakEntity(e) {
+    if (e.routing || e.isPlayer || e.dead) return;
+    e.routing = true;
+    e.order = 'rout';
+    e.target = null;
+    e.forceTarget = null;
+    e.swing = null;
+    e.guard = 0;
+    // Away from whoever is nearest, and keep going.
+    let away = null, ad = Infinity;
+    for (const o of this.entities) {
+      if (o.dead || o.side === e.side || o.isTitan) continue;
+      const d = Math.hypot(o.x - e.x, o.z - e.z);
+      if (d < ad) { ad = d; away = o; }
+    }
+    const a = away ? Math.atan2(e.x - away.x, e.z - away.z) : this.r() * 6.28;
+    e.routPoint = { x: e.x + Math.sin(a) * 220, z: e.z + Math.cos(a) * 220 };
+    if (e.side === 'player') this.onToast('BREAKING', `${e.name} has had enough`, 'bad');
+  }
+
+  /** A routing body: no fighting, just distance. Off the field, it is gone. */
+  updateRouting(dt, e) {
+    const rp = e.routPoint;
+    if (!rp) { e.routing = false; return; }
+    this.moveToward(dt, e, rp.x, rp.z, e.speed * 1.25);
+    this.faceMotion(e, dt);
+    const edge = (this.level.bounds || Level.BOUNDS) - 6;
+    if (Math.abs(e.x) > edge || Math.abs(e.z) > edge) {
+      e.fled = true;
+      e.dead = true;                          // off the board, not killed
+      if (e.char?.group) e.char.group.visible = false;
+    }
+  }
+
+  /**
+   * Has a side stopped being an army? A fight ends when one side breaks,
+   * not when the last man on it is hunted down.
+   */
+  checkRout() {
+    if (this.over || this.routCalled) return;
+    let standing = 0, total = 0;
+    for (const e of this.entities) {
+      if (e.dead || e.isTitan || e.follower || e.side !== 'enemy') continue;
+      total++;
+      if (!e.down && !e.routing) standing++;
+    }
+    const reserves = (this.skirmishTotal || 0) - (this.skirmishCommitted || 0);
+    if (total >= 4 && reserves <= 0 && standing === 0) {
+      this.routCalled = true;
+      this.onToast('THE FIELD IS YOURS', 'What is left of them is running', 'good');
+      for (const e of this.entities) {
+        if (e.side === 'enemy' && !e.dead && !e.routing) this.breakEntity(e);
+      }
+    }
+  }
+
   /** The commander's wind: swings and sprint spend it, standing still buys it back. */
   updateStamina(dt, sprinting) {
     if (sprinting) this.pStamina = Math.max(0, this.pStamina - dt * 0.1);
@@ -3665,6 +3871,15 @@ export class Mission {
   downEntity(e, source) {
     if (e.down || e.dead) return;
     e.hp = 0;
+    // Everybody close enough to see it lose their nerve a little. This is
+    // the signal updateMorale reads — a line breaks because of what the
+    // people in it watched happen, not because of a global counter.
+    for (const o of this.entities) {
+      if (o === e || o.dead || o.down || o.side !== e.side) continue;
+      if (Math.hypot(o.x - e.x, o.z - e.z) < 14) {
+        o.casualtySeen = (o.casualtySeen || 0) + 1;
+      }
+    }
 
     if (e.side === 'enemy') {
       // Enemies are simply killed. Persistence is a player-side concept.
@@ -4498,6 +4713,9 @@ export class Mission {
     // Steel in flight resolves whoever is driving the body.
     this.updateSwing(dt, e);
     if (e.guardBreak > 0) e.guardBreak -= dt;
+    // Nerve gone: no orders reach them, they are running. Ahead of every
+    // other branch, because a routing soldier is not soldiering.
+    if (e.routing) { this.updateRouting(dt, e); return; }
     // Archers pressed to contact draw the blade; room draws the bow back.
     if ((e.weapon?.bow || e.bowStowed) && !e.isPlayer) this.updateSidearm(e);
     // A reinforcement is on the field but not yet in the fight.
@@ -4673,6 +4891,13 @@ export class Mission {
       }
 
       if (w.melee) {
+        // The commander's posture reaches the body here: told to give
+        // ground, they give it rather than trading at the point.
+        if (e.withdrawing && d < 26) {
+          this.moveToward(dt, e, e.x - (t.x - e.x), e.z - (t.z - e.z), e.speed * 0.85);
+          this.faceMotion(e, dt);
+          return;
+        }
         // Steel has no standoff band: close hard, then fight at the reach
         // edge with the in-out rhythm the spacing helper carries.
         const reach = (w.reach || 2) + 0.3;
@@ -4686,6 +4911,13 @@ export class Mission {
             e.moveSpeed = 0;
           }
         }
+        this.aiShoot(dt, e, t, d);
+        return;
+      }
+      // Bows told to hold the ground they have: stand and shoot, make the
+      // other side cross the open part.
+      if (e.holdGround && w.bow) {
+        e.moveSpeed = 0;
         this.aiShoot(dt, e, t, d);
         return;
       }
@@ -5327,7 +5559,7 @@ export class Mission {
             id: `late_ally_${i}`, side: 'player',
             faction: this.spec.allyFaction || 'syndic',
             x: sp.x - 10 + (i % 3) * 6, z: sp.z + 6 + Math.floor(i / 3) * 5,
-            yaw: 0, hp: 80, weapon: i % 2 ? 'rifle' : 'smg',
+            yaw: 0, hp: 80, weapon: i % 2 ? 'sword' : 'spear',
             model: this.spec.allyFaction === 'trust' ? 'soldier_trust' : 'soldier_syndic',
             acc: 0.46, speed: 4.0, aggression: 0.55, coverPref: 0.6,
             name: 'Allied fighter',
@@ -5526,7 +5758,19 @@ export class Mission {
       if (!ent.soldier) continue;
       const s = ent.soldier;
       const rec = { id: s.id, kills: ent.killCount || 0 };
-      if (ent.dead) {
+      if (ent.fled) {
+        // Broke and ran. They are not a casualty — they are a man who was
+        // somewhere else when it mattered, and they come back knowing it.
+        // Recording them dead (they leave the field with `dead` set, which
+        // is how the sim takes them off the board) would quietly execute
+        // everyone whose nerve failed.
+        s.status = STATUS.HEALTHY;
+        s.hp = Math.max(1, Math.round(ent.maxHp * 0.5));
+        s.regard = clamp((s.regard || 0) - 8, -100, 100);
+        rec.status = STATUS.HEALTHY;
+        rec.hp = s.hp;
+        rec.fled = true;
+      } else if (ent.dead) {
         // Already bled out in the field. The HUD counted that timer down to
         // zero and announced it, so there is no second chance here — giving
         // one made the bleed-out timer meaningless.
@@ -6102,6 +6346,8 @@ export class Mission {
       e.turnRate = dt > 0 ? angleDelta(e.lastYaw, e.yaw) / dt : 0;
     }
     this.updateArrows(dt);
+    this.updateEnemyCommander(dt);
+    this.updateMorale(dt);
     this.updateMark();
     this.updateMissionLogic(dt);
     this.hurtFlash = Math.max(0, (this.hurtFlash || 0) - dt * 1.6);
