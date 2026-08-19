@@ -3573,11 +3573,48 @@ const SIDE_TABS = {
   log: { name: 'THE LOG', render: sideLog },
 };
 
-/** Draw the board. Cheap enough to call every world tick. */
-export function renderSideBoard(S, cbs = null) {
+let sideSig = '';
+
+/**
+ * Draw the board — but only when it would actually differ.
+ *
+ * This is called every world tick, and the first version rewrote its own
+ * innerHTML each time. At sixty frames a second that destroys and rebuilds
+ * every button under the player's cursor every sixteen milliseconds: a
+ * click lands or does not depending on which side of a repaint it falls,
+ * which is a coin toss the player cannot see and cannot learn. (Playwright
+ * caught it honestly — 183 attempts, "element was detached from the DOM".)
+ *
+ * So: a cheap signature of what this tab shows. Same signature, same
+ * markup, leave the DOM alone.
+ */
+function sideSignature(S) {
+  const t = sideTab;
+  if (t === 'company') {
+    return 't' + State.living(S).map((x) => `${x.id}:${x.hp}:${x.status}:${x.rank}`).join()
+      + `|${Math.round(S.morale ?? 70)}|${Math.round(S.renown || 0)}`;
+  }
+  if (t === 'stores') {
+    return 's' + JSON.stringify(S.cargo || {}) + JSON.stringify(S.armoury || {})
+      + `|${S.credits}|${S.rations}|${S.medical}|${S.supplies}`;
+  }
+  if (t === 'contracts') {
+    return 'c' + (S.contracts || []).map((c) => `${c.id}:${c.accepted ? 1 : 0}`).join()
+      + `|${S.day}`;
+  }
+  if (t === 'holdings') return 'h' + Object.keys(S.holdings || {}).join() + (S.ownFaction?.name || '');
+  if (t === 'standing') return `p${S.rep?.trust}|${S.rep?.syndic}|${Math.round(S.renown || 0)}`;
+  return 'l' + (S.log?.length || 0) + (S.log?.[0]?.text || '');
+}
+
+/** Draw the board. Called every world tick; repaints only on a real change. */
+export function renderSideBoard(S, cbs = null, force = false) {
   if (cbs) sideCbs = cbs;
   const body = $('side-body');
   if (!body || !S) return;
+  const sig = sideTab + '|' + sideSignature(S);
+  if (!force && sig === sideSig) return;
+  sideSig = sig;
   const tab = SIDE_TABS[sideTab] || SIDE_TABS.company;
   $('side-title').textContent = tab.name;
   body.innerHTML = tab.render(S);
@@ -3605,7 +3642,7 @@ export function bindSideBoard(getS, cbs) {
     el.onclick = () => {
       sideTab = el.dataset.side;
       Audio.uiMove();
-      renderSideBoard(getS());
+      renderSideBoard(getS(), null, true);
     };
   }
   const fold = (on) => {
@@ -3616,8 +3653,8 @@ export function bindSideBoard(getS, cbs) {
   const wide = $('side-wide');
   if (wide) wide.onclick = () => fold(true);
   const unfold = $('wh-unfold');
-  if (unfold) unfold.onclick = () => { fold(false); renderSideBoard(getS()); };
-  renderSideBoard(getS());
+  if (unfold) unfold.onclick = () => { fold(false); renderSideBoard(getS(), null, true); };
+  renderSideBoard(getS(), null, true);
 }
 
 /** Jump the board to a tab — used by the old hotkeys, which still work. */
@@ -3626,6 +3663,6 @@ export function showSideTab(S, id) {
   sideTab = id;
   $('wh-side')?.classList.remove('folded');
   $('wh-unfold')?.classList.add('hidden');
-  renderSideBoard(S);
+  renderSideBoard(S, null, true);
   return true;
 }

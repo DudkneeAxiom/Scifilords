@@ -3211,7 +3211,11 @@ test('the company screens are one window with tabs, not seven panels', async ({ 
   await page.evaluate(() => { window.KR.campaign.renown = 800; });
 
   const TABS = await page.evaluate(() => window.KR.dev.UI.COMPANY_TABS);
+  // C jumps the side board to COMPANY; FULL ROSTER on that board opens the
+  // company screens. That is the player's route now, so it is the test's.
   await page.keyboard.press('c');
+  await page.waitForTimeout(300);
+  await page.click('#side-body [data-sb="roster"]');
   await page.waitForSelector('#modal .mtabs', { timeout: 15000 });
 
   // The strip has to be on every one of them. The one that lacks it is a dead
@@ -3309,6 +3313,8 @@ test('the company has opinions, and they do not all agree', async ({ page }) => 
 
   // And the roster shows what they believe.
   await page.keyboard.press('c');
+  await page.waitForTimeout(300);
+  await page.click('#side-body [data-sb="roster"]');
   await page.waitForTimeout(500);
   expect(await page.evaluate(() => !!document.querySelector('#modal .sol-creed'))).toBe(true);
 });
