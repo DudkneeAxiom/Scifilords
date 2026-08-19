@@ -1159,6 +1159,7 @@ test('a large party fields a real battle in waves', async ({ page }) => {
   await boot(page);
   await newCampaign(page);
   await page.evaluate(async () => {
+    const { FIELD_CAP } = await import('/src/mission.js');
     const { makeSoldier } = await import('/src/roster.js');
     const { rng } = await import('/src/util.js');
     const S = window.KR.campaign;
@@ -1169,7 +1170,7 @@ test('a large party fields a real battle in waves', async ({ page }) => {
     }
     window.__spec = {
       type: 'skirmish', site: 'roadside', layout: 'roadside', siteName: 'Test Field',
-      party: { id: 'p', kind: 'column_trust', name: 'Column', strength: 60, tier: 5, quality: 1.1 },
+      party: { id: 'p', kind: 'column_trust', name: 'Column', strength: FIELD_CAP + 45, tier: 5, quality: 1.1 },
     };
   });
   await page.evaluate(async () => {
@@ -1209,7 +1210,8 @@ test('a large party fields a real battle in waves', async ({ page }) => {
       friendly: m.squad.length + 1,
     };
   });
-  expect(first.total).toBe(60);
+  // Sized off the cap: the point is a party the FIELD cannot hold at once.
+  expect(first.total).toBeGreaterThan(first.onField);
   expect(first.friendly).toBeGreaterThanOrEqual(10);
   // The whole party is not standing on the field at once...
   expect(first.onField).toBeLessThan(first.total);
@@ -4087,7 +4089,8 @@ test('the company arrives facing the job, with no crosshair over the cinematic',
     for (let i = 0; i < 60; i++) m.step(0.016);
     UI.renderMissionHud(m.buildHud());
     const hiddenAfter = document.getElementById('reticle').classList.contains('hidden');
-    return { atSpawn, duringCine, hiddenDuring, hiddenAfter, afterHandover: off(m.player) };
+    return { atSpawn, duringCine, hiddenDuring, hiddenAfter,
+      melee: !!m.player.weapon?.melee, afterHandover: off(m.player) };
   });
 
   // Everyone starts pointed at the job. Every layout used to declare ry:0 while
@@ -4100,7 +4103,11 @@ test('the company arrives facing the job, with no crosshair over the cinematic',
   expect(r.afterHandover, 'taking control turned the commander around').toBeLessThan(20);
 
   expect(r.hiddenDuring, 'crosshair sits over the insertion cinematic').toBe(true);
-  expect(r.hiddenAfter, 'crosshair never comes back').toBe(false);
+  // The crosshair comes back for a company that AIMS. A melee company has
+  // nothing to aim — the arc is where you face — so the reticle is gone for
+  // good behind steel and this only asserts the gun case.
+  if (!r.melee) expect(r.hiddenAfter, 'crosshair never comes back').toBe(false);
+  else expect(r.hiddenAfter, 'a sword does not get a crosshair').toBe(true);
 });
 
 test('the shooter verb is gone: no take-cover order, a shield wall in its place', async ({ page }) => {
@@ -4228,7 +4235,7 @@ test('a hideout bigger than the field cap still commits every defender', async (
   await newCampaign(page);
 
   const r = await page.evaluate(async () => {
-    const { Mission } = await import('/src/mission.js');
+    const { Mission, FIELD_CAP } = await import('/src/mission.js');
     const State = await import('/src/state.js');
     const G = window.KR;
     const S = State.newCampaign(12345);
@@ -4239,8 +4246,12 @@ test('a hideout bigger than the field cap still commits every defender', async (
     const m = new Mission({
       campaign: S,
       // Deliberately far above the field cap: this is the case that stalled.
+      // Sized OFF the cap rather than hardcoded — the raise from 48 to 120
+      // made a fixed 54 fit in one wave, which quietly retired the very
+      // path this test exists to cover.
       spec: { type: 'lair', site: 'grellan', layout: 'grellan', siteName: 'T',
-        enemyFaction: 'raider', party: { strength: 54, quality: 0.8, kind: 'lair' } },
+        enemyFaction: 'raider',
+        party: { strength: FIELD_CAP + 40, quality: 0.8, kind: 'lair' } },
       squad: S.roster.slice(0, 4),
       container: document.getElementById('viewport'),
       onHud: () => {}, onToast: () => {}, onIntro: () => {}, onWheel: () => {}, onEnd: () => {},

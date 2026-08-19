@@ -56,7 +56,7 @@ const BLEED_OUT = 55;      // seconds a downed soldier has before it is permanen
 // headroom a weaker machine needs. Bigger numbers are AVAILABLE and are
 // deliberately not taken: 240 measured fine here and would leave nothing
 // spare anywhere else.
-const FIELD_CAP = 120;
+export const FIELD_CAP = 120;
 
 // How many bodies each instance pool can hold. It has to exceed the WHOLE
 // field — hostiles at the cap, plus allied waves, plus the squad — because
@@ -1520,7 +1520,11 @@ export class Mission {
    */
   buildSkirmish() {
     const party = this.spec.party || {};
-    const total = clamp(party.strength || 4, 2, 120);
+    // A party can be far larger than the field: that is what the waves are
+    // FOR. This ceiling used to sit at 120 — which, once FIELD_CAP was
+    // raised to 120 too, meant no party could ever exceed the field and the
+    // streaming path quietly stopped being reachable.
+    const total = clamp(party.strength || 4, 2, 400);
     const roles = this.doctrineRoles(PARTY_TIERS[party.kind]?.roles
       || ['rifleman', 'rifleman', 'breacher', 'marksman']);
     this.skirmishTotal = total;
