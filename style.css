@@ -1374,3 +1374,20 @@ kbd {
   background: rgba(216, 211, 200, 0.5);
   border-color: rgba(216, 211, 200, 0.7);
 }
+
+
+/* The duel readout: who, how hurt, how far. Sits above the guard rose so
+   the two read as one instrument. */
+.lock-hud {
+  position: absolute; left: 50%; top: calc(50% - 118px);
+  transform: translateX(-50%);
+  display: flex; align-items: center; gap: 8px;
+  padding: 3px 10px; z-index: 6; pointer-events: none;
+  background: rgba(14,14,11,0.6);
+  border: 1px solid rgba(200,106,90,0.5);
+}
+.lock-hud.hidden { display: none; }
+.lock-hud .nm { font-size: 10px; letter-spacing: 0.14em; color: var(--bone, #d8d3c8); }
+.lock-hud .bar { display: block; width: 84px; height: 4px; background: #2a2a22; }
+.lock-hud .bar i { display: block; height: 100%; background: #c86a5a; }
+.lock-hud .d { font-size: 9.5px; color: #8f8a7b; }

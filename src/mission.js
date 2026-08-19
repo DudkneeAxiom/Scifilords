@@ -62,6 +62,13 @@ const BLEED_OUT = 55;      // seconds a downed soldier has before it is permanen
 // disagree about what the directions ARE.
 export const SWING_DIRS = ['overhead', 'thrust', 'left', 'right'];
 
+// How far a duel reaches. Acquiring is deliberately shorter than breaking,
+// so a man you have chosen to fight does not slip the lock the moment he
+// takes a step back — but chasing one across the field is a decision you
+// have to make with the camera, not one the lock makes for you.
+const LOCK_RANGE = 16;
+const LOCK_BREAK = 24;
+
 export const FIELD_CAP = 120;
 
 /**
@@ -239,6 +246,10 @@ export class Mission {
     // The line the hand is currently in. Persists between frames so a swing
     // is a decision rather than a sample of mouse noise.
     this.aimDir = 'right';
+    // THE MAN YOU ARE FIGHTING. Null means the open field and a free
+    // camera; an entity means a duel, and everything below reads from it.
+    this.lockOn = null;
+    this.lockLost = 0;
     this.pStamina = 1;                     // the commander's wind, 0..1
     // Per-arm formation shapes for THE BATTLE LINE. Ranged default loose:
     // bunched bows are one volley's worth of casualties.
@@ -2478,6 +2489,9 @@ export class Mission {
       }
       // B: jump the tactical eye to wherever the fighting last was.
       if (k === 'b' && this.rts) this.jumpToCombat();
+      // The duel key. Steel only: locking onto a man while carrying a bow
+      // would be an aim assist, which is a different game.
+      if (k === 'v' && !this.rts && this.player?.weapon?.melee) this.toggleLock();
       if (k === 'c') this.crouchHeld = !this.crouchHeld;
       if (k === 'control') this.crouchHeld = true;
       if (k === 't') this.toggleTactical();
@@ -3473,11 +3487,34 @@ export class Mission {
     // A fast hand is a SHORTER swing, not a stronger one — Swordhand buys
     // steel in the air and leaves the damage per blow alone.
     let dur = (60 / w.rpm) / (1 + (e.eff?.swingSpeed || 0));
+    const cost = 0.18 * (1 - (e.eff?.wind || 0) * 0.5);
     if (e.isPlayer) {
       // Tired swings drag. The bar also gates sprint — one wind, all of it.
       if (this.pStamina < 0.2) dur *= 1.5;
-      this.pStamina = Math.max(0, this.pStamina - 0.18 * (1 - (e.eff?.wind || 0) * 0.5));
+      this.pStamina = Math.max(0, this.pStamina - cost);
+      // Wind does not come back WHILE you are swinging it away. Without
+      // this the arithmetic quietly permitted a flurry for ever: a blow
+      // costs 0.18 and standing still pays 0.25 a second, so anybody
+      // swinging about once a second was net POSITIVE on breath and could
+      // mash until the other man died. The pause is what turns three quick
+      // blows into a decision with a price.
+      this.pHold = 0.75;
       this.stats.swings = (this.stats.swings || 0) + 1;
+    } else {
+      // AND SO DOES EVERYBODY ELSE. Soldiers had no wind at all: the melee
+      // AI swung the instant its cooldown cleared, for ever, which is most
+      // of why a fight read as two people mashing at each other. A body that
+      // cannot run out of breath cannot be baited, cannot be worn down, and
+      // never gives the opening that makes a duel a conversation.
+      if (e.wind === undefined) e.wind = 1;
+      if (e.wind < 0.2) dur *= 1.5;
+      e.wind = Math.max(0, e.wind - cost);
+      // Shorter than the commander's. A line that pauses for three quarters
+      // of a second between every blow reads as a crowd standing about
+      // rather than as men fighting — measured at 0.40 blows a second, two
+      // thirds of the duel spent recovering. The pause has to be an OPENING,
+      // which is a beat, not a rest.
+      e.windHold = 0.5;
     }
     e.swing = { t: 0, dur, dir, hitDone: false };
     e.cooldown = dur + 0.12;               // recovery beyond the follow-through
@@ -3526,7 +3563,18 @@ export class Mission {
       if (Math.abs(angleDelta(Math.atan2(dx, dz), e.yaw)) > halfArc) continue;
       if (d < bd) { bd = d; best = t; }
     }
-    if (!best) return;
+    if (!best) {
+      // MISSING COSTS. The recovery used to be identical whether the blow
+      // landed or went through empty air, so there was never a reason not
+      // to throw one — swing on cooldown, always, and let the arc find
+      // somebody. A blow that hits nothing carries its own weight through
+      // and leaves the arm out of position; that overreach is the punish
+      // that makes a wild attack a decision rather than a free roll.
+      e.cooldown += (e.weapon?.heftRecover ?? 0.34);
+      if (e.isPlayer) this.pStamina = Math.max(0, this.pStamina - 0.06);
+      else if (e.wind !== undefined) e.wind = Math.max(0, e.wind - 0.06);
+      return;
+    }
 
     let dmg = w.damage;
     // A spear is a wall at its point and a walking stick inside it.
@@ -3982,8 +4030,11 @@ export class Mission {
     // nothing back faster. It is the difference between a soldier who is
     // spent by the second charge and one who is not.
     const w = this.player?.eff?.wind || 0;
+    this.pHold = Math.max(0, (this.pHold || 0) - dt);
     if (sprinting) this.pStamina = Math.max(0, this.pStamina - dt * 0.1 * (1 - w * 0.5));
-    else this.pStamina = Math.min(1, this.pStamina + dt * 0.25 * (1 + w * 0.8));
+    else if (this.pHold <= 0) {
+      this.pStamina = Math.min(1, this.pStamina + dt * 0.25 * (1 + w * 0.8));
+    }
   }
 
   /** Read the swing direction off recent hand motion. */
@@ -4017,6 +4068,67 @@ export class Mission {
 
   swingDirFromMouse() {
     return this.aimDir || 'right';
+  }
+
+  /**
+   * LOCK ON.
+   *
+   * A melee is a conversation with ONE man, and until now the game had no
+   * way to say which. The camera looked wherever the mouse last went, the
+   * body followed the camera, and keeping a specific opponent framed while
+   * circling him was a manual tracking exercise the player lost every time
+   * two more walked into the fight. That is most of what made the melee
+   * unreadable: not that the information was missing, but that the thing it
+   * was about kept sliding off the screen.
+   *
+   * Locked, the camera holds him, the body faces him, and movement becomes
+   * footwork AROUND him rather than steering. Guard and swing lines are
+   * already read off the hand, so they resolve against the man for free.
+   *
+   * Picks who you are most plainly looking at: nearest to the centre of the
+   * view, weighted by distance, never behind you.
+   */
+  acquireLock() {
+    const p = this.player;
+    if (!p || p.down || p.dead) return null;
+    let best = null, bestScore = Infinity;
+    for (const e of this.entities) {
+      if (e.dead || e.down || e.isTitan || e.side === p.side || e.inserting) continue;
+      const dx = e.x - p.x, dz = e.z - p.z;
+      const d = Math.hypot(dx, dz);
+      if (d > LOCK_RANGE) continue;
+      // How far off the middle of the screen he is. Straight ahead wins.
+      const off = Math.abs(angleDelta(Math.atan2(dx, dz), this.camYaw + Math.PI));
+      if (off > 1.15) continue;
+      if (!Level.hasLOS(this.level.obstacles, p.x, p.z, e.x, e.z, 1.6)) continue;
+      const score = off * 9 + d;
+      if (score < bestScore) { bestScore = score; best = e; }
+    }
+    return best;
+  }
+
+  toggleLock() {
+    if (this.lockOn) { this.lockOn = null; Audio.uiMove(); return; }
+    const t = this.acquireLock();
+    if (!t) { Audio.uiDeny(); return; }
+    this.lockOn = t;
+    Audio.uiSelect();
+    this.onToast('', `LOCKED — ${t.name || 'THEM'}`, 'order');
+  }
+
+  /** Drop the lock when there is nothing left to hold it on. */
+  updateLock(dt) {
+    const t = this.lockOn;
+    if (!t) return;
+    const p = this.player;
+    if (!p || p.down || p.dead || t.dead || t.down || t.routing) { this.lockOn = null; return; }
+    const d = Math.hypot(t.x - p.x, t.z - p.z);
+    // A short grace on losing sight, so a man stepping behind a post for
+    // half a second does not throw the camera off him.
+    if (d > LOCK_BREAK || !Level.hasLOS(this.level.obstacles, p.x, p.z, t.x, t.z, 1.6)) {
+      this.lockLost += dt;
+      if (this.lockLost > 0.9) { this.lockOn = null; this.lockLost = 0; }
+    } else this.lockLost = 0;
   }
 
   /**
@@ -4676,8 +4788,16 @@ export class Mission {
     if (!this.grounded) speed *= 0.72;
     if (mag > 0) {
       mx /= mag; mz /= mag;
-      // Movement is camera-relative, which is what every player expects.
-      const sin = Math.sin(this.camYaw), cos = Math.cos(this.camYaw);
+      // Movement is camera-relative, which is what every player expects —
+      // except in a duel, where it is relative to the MAN. Locked, W closes
+      // on him and S backs off him and A/D circle him, so a sidestep stays a
+      // sidestep however the camera happens to be sitting. That is the
+      // difference between footwork and steering, and it is most of why a
+      // one-on-one fight reads as a fight.
+      const basis = this.lockOn && !this.lockOn.dead
+        ? Math.atan2(this.lockOn.x - p.x, this.lockOn.z - p.z) + Math.PI
+        : this.camYaw;
+      const sin = Math.sin(basis), cos = Math.cos(basis);
       let wx = mx * cos - mz * sin;
       let wz = -mx * sin - mz * cos;
       if (this.cover) {
@@ -4707,8 +4827,15 @@ export class Mission {
     // which stops the character snapping around under the camera. A standing
     // tactical order owns the body until it arrives — it faces its path.
     if (!this.playerAuto) {
-      const targetYaw = this.camYaw + Math.PI;
-      p.yaw = this.aiming ? targetYaw : approachAngle(p.yaw, targetYaw, dt * 7);
+      // Locked, the body belongs to the man you are fighting, not to the
+      // camera — which is what lets you back away, sidestep or circle
+      // without ever turning your shield away from him.
+      const targetYaw = this.lockOn && !this.lockOn.dead
+        ? Math.atan2(this.lockOn.x - p.x, this.lockOn.z - p.z)
+        : this.camYaw + Math.PI;
+      p.yaw = (this.aiming || this.lockOn)
+        ? approachAngle(p.yaw, targetYaw, dt * 12)
+        : approachAngle(p.yaw, targetYaw, dt * 7);
     }
 
     if (p.reloading > 0) {
@@ -5283,6 +5410,15 @@ export class Mission {
 
   updateAI(dt, e) {
     if (e.dead) return;
+    // Wind recovers whenever the arm is not moving — the same trade the
+    // commander makes, so a soldier who has just thrown three blows is as
+    // open as a player who has.
+    if (e.wind !== undefined && !e.swing) {
+      e.windHold = Math.max(0, (e.windHold || 0) - dt);
+      if (e.windHold <= 0) {
+        e.wind = Math.min(1, e.wind + dt * 0.30 * (1 + (e.eff?.wind || 0) * 0.8));
+      }
+    }
 
     if (e.down) {
       if (e.side === 'player' && !e.stabilised) {
@@ -5855,7 +5991,10 @@ export class Mission {
       } else {
         e.guard = 0;
       }
-      if (e.cooldown <= 0 && !e.swing) this.strike(e);
+      // Blown men do not swing. They hold what guard they have and get
+      // their breath back, which is the moment a player is meant to take.
+      if (e.wind === undefined) e.wind = 1;
+      if (e.cooldown <= 0 && !e.swing && e.wind > 0.16) this.strike(e);
       return;
     }
     // Losing the shot decays readiness rather than erasing it, so a target
@@ -6622,6 +6761,18 @@ export class Mission {
     const crowd = clamp(press / 7, 0, 1);
     want.up += crowd * 1.35;
     want.back += crowd * 0.9;
+    // LOCKED: the camera keeps him on screen. It is steered TOWARD the
+    // bearing rather than snapped to it, so circling him is a smooth orbit
+    // and the player can still lead the view a little with the mouse.
+    if (this.lockOn && !this.lockOn.dead) {
+      const t = this.lockOn;
+      const bearing = Math.atan2(t.x - p.x, t.z - p.z) + Math.PI;
+      this.camYaw = approachAngle(this.camYaw, bearing, dt * 6.5);
+      // Pull back and up a touch: a duel wants both men in frame, not one
+      // shoulder filling it.
+      want.back += 0.55;
+      want.up += 0.20;
+    }
     // The shoulder offset is signed, so swapping mirrors the whole rig — the
     // camera, the aim origin beside the head, and the body's occlusion.
     want.side *= this.shoulder;
@@ -6916,6 +7067,12 @@ export class Mission {
     return {
       threat, incoming,
       guardDir: (p.guard || 0) > 0 ? (p.guardDir || null) : null,
+      // Who the duel is with, if anyone.
+      locked: this.lockOn && !this.lockOn.dead ? {
+        name: this.lockOn.name || 'THEM',
+        hp: Math.max(0, this.lockOn.hp) / Math.max(1, this.lockOn.maxHp || 100),
+        dist: +Math.hypot(this.lockOn.x - p.x, this.lockOn.z - p.z).toFixed(1),
+      } : null,
       // What the next swing will BE, so the player can see it before they
       // commit rather than discovering it afterwards.
       aimDir: (p.guard || 0) > 0 ? null : (this.aimDir || null),
@@ -7107,6 +7264,7 @@ export class Mission {
       e.turnRate = dt > 0 ? angleDelta(e.lastYaw, e.yaw) / dt : 0;
     }
     this.updateArrows(dt);
+    this.updateLock(dt);
     this.updateEnemyCommander(dt);
     this.updateMorale(dt);
     this.updateMark();

@@ -1266,3 +1266,42 @@ written and that is exactly the problem.
 `partySpeed` had the same shape of staleness: the crowding penalty began
 at six people because a company WAS six. It now begins at twenty, where a
 company stops being a party and becomes a column.
+
+## KNOWN FLAKE: "arrows are bodies in flight" (fix this)
+
+Fails roughly one run in three, and **it fails at HEAD too** — verified by
+stashing a round's source changes and re-running: 2 of 6 failed with none
+of that round's work present. The full-suite run that shipped it green
+simply drew a kind site seed. Do not assume a change you are making
+caused it; check against a stash first, which is the step that would have
+saved half a day.
+
+**The diagnosis, which is solid.** Step 3 of the test lifts fire
+discipline and asserts the archers loose at a target placed twenty metres
+away. The archers are in AI state `hunt`, which owns movement, so they
+WALK while the measurement runs — across fourteen site seeds the target
+ended up 27 to 54 metres away and usually behind something, and the
+archers held their arrows because they genuinely could not see him. The
+roadside got terrain and scattered props in the battlefields round, so a
+line that used to be guaranteed clear on a flat plate no longer is.
+
+**Four things already tried, none sufficient:**
+
+1. Sweeping for level ground — wrong: a diagnostic showed archers loosing
+   fine on the new terrain. The obstruction was a PROP, not a rise.
+2. Sweeping bearings with `Level.hasLOS` at a fixed 18m — helped
+   (one in three to one in eight) but the seed still beat it.
+3. Re-seating the target every tick — made it far WORSE (nine in ten),
+   because arrows in flight were chasing a man who teleported out from
+   under them. Do not do this.
+4. Pinning the archers' positions each tick and clearing `advanceOn` —
+   still four in ten. Position alone does not hold them.
+
+**Where to look next.** The pin fails, which suggests the archers are not
+the whole story — check whether `near` itself is being moved by its own
+AI, whether the exiled foes are re-acquiring, and whether the volley
+cooldown (`volley: 4.0`) plus the 14s measurement window is simply too
+tight when anything at all goes wrong. Consider asserting on a directly
+driven `looseArrow` rather than on emergent AI behaviour: the claim being
+tested is FIRE DISCIPLINE — held bows are quiet, released bows shoot —
+and that does not need a live pathing simulation to demonstrate.

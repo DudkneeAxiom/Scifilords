@@ -455,3 +455,74 @@ first two attempts to fix it guessed — level ground, then a hand-rolled
 terrain sample — and both were wrong, because what was actually in the
 way was a PROP. It now sweeps bearings using `Level.hasLOS`, the game's
 own sight test, rather than an approximation of it.
+
+## Round: the duel — lock-on, the wind, and how the steel is held
+
+"Combat should feel more fluid; players and AI can just spam; the
+animations and how they hold the weapons are way off; it should feel
+like For Honor with a lock-on."
+
+### The lock
+
+A melee is a conversation with ONE man and the game had no way to say
+which. The camera looked wherever the mouse last went, the body followed
+the camera, and keeping a chosen opponent framed while circling him was
+a manual tracking exercise the player lost the moment two more joined
+in. That is most of what made the melee unreadable — not that the
+information was missing, but that the thing it was about kept sliding
+off the screen.
+
+`V` locks the man you are most plainly looking at (nearest to the centre
+of view, weighted by distance, never behind you, never through a wall).
+Locked:
+
+- the camera holds him and orbits as he moves, steered toward the
+  bearing rather than snapped to it, so circling is smooth;
+- the body faces him, so you can back off or sidestep without ever
+  turning your shield away;
+- **movement becomes footwork**: W closes, S backs off, A/D circle. A
+  sidestep stays a sidestep however the camera is sitting, which is the
+  difference between footwork and steering;
+- a readout names him, his condition and the range.
+
+Acquire range is shorter than break range on purpose, so a man you have
+chosen does not slip the lock when he takes a step back. Steel only — a
+lock while carrying a bow is an aim assist, which is a different game.
+
+Verified in a live duel with `tools/lockon.mjs`: through a 290-degree
+circle the camera and body both hold him with zero steady-state error,
+a sidestep sweeps 2.7 radians round him while the range moves 0.45m, and
+the lock lets go of a dead man.
+
+### The wind
+
+Soldiers had NO stamina at all. The melee AI swung the instant its
+cooldown cleared, for ever. A body that cannot run out of breath cannot
+be baited or worn down and never gives the opening that makes a duel a
+conversation, which is the whole of "they just spam".
+
+Everyone has a wind now. Missing costs more than landing — the recovery
+used to be identical whether the blow found somebody or went through
+empty air, so there was never a reason not to throw one. And a swing
+shuts the bellows for three quarters of a second, without which the
+arithmetic quietly permitted infinite mashing: a blow cost 0.18 and
+standing still paid back 0.25 a second, so anybody swinging about once a
+second was net POSITIVE on breath.
+
+Measured over a 30s duel that cannot end (`tools/spamcheck.mjs`): the AI
+went from unlimited to 0.47 blows a second with eight seconds of
+openings in it, and a player mashing the button now bottoms out at zero.
+
+### The guard poses were my own regression
+
+The direction offsets added last round were ADDED to an already-raised
+guard: the base lifts the shoulder to -1.10 and the high line put
+another -0.55 on top, which is -1.65 — ninety-five degrees, an arm
+straight up with the sword flung back behind the head. Every screenshot
+of somebody blocking looked like a dislocated shoulder.
+
+Each line is an absolute pose blended toward now, and the weapon pitch
+for each was tuned against rendered sweeps rather than guessed.
+`tools/holdview.mjs` photographs every weapon in every state and
+`tools/pitchsweep.mjs` renders one pose across a range of values,
+because a claim about a pose has to be looked at.

@@ -8744,3 +8744,145 @@ test('a swing goes where the hand meant, and the field is sized for both sides',
   expect(r.big, 'the field ignored the size of the company deployed into it')
     .toBeGreaterThan(r.small);
 });
+
+test('a duel: the lock holds the man, and nobody can swing for ever', async ({ page }) => {
+  test.setTimeout(180000);
+  await boot(page);
+  await newCampaign(page);
+
+  // Two halves of the same complaint — that a melee is unreadable and that
+  // both sides just mash.
+  //
+  // A melee is a conversation with ONE man and the game had no way to say
+  // which. The camera looked wherever the mouse last went, the body followed
+  // the camera, and keeping a chosen opponent framed while circling him was
+  // a manual tracking exercise lost the moment two more joined in.
+  //
+  // And nobody could ever run out of breath: soldiers had NO stamina at all,
+  // so the melee AI swung the instant its cooldown cleared, for ever. A body
+  // that cannot tire cannot be baited or worn down, and never gives the
+  // opening that makes a duel a conversation rather than two people mashing.
+  const r = await page.evaluate(async () => {
+    const { Mission } = await import('/src/mission.js');
+    const UI = await import('/src/ui.js');
+    const G = window.KR;
+    const S = G.campaign;
+    G.mission?.dispose();
+    G.world?.dispose(); G.world = null;
+    document.getElementById('viewport').innerHTML = '';
+    UI.show('hud');
+    G.mission = new Mission({
+      campaign: S,
+      spec: { type: 'skirmish', site: 'roadside', layout: 'roadside', siteName: 'Duel',
+        party: { id: 'du', kind: 'looters', name: 'Duel', strength: 5, tier: 1, quality: 0.6 } },
+      squad: S.roster.slice(0, 2),
+      container: document.getElementById('viewport'),
+      onHud: (hh) => UI.renderMissionHud(hh),
+      onToast: () => {}, onIntro: () => {}, onWheel: () => {}, onEnd: () => {},
+    });
+    await G.mission.start();
+    const m = G.mission;
+    m.paused = false; m.hadLock = true;
+    if (m.intro) { m.intro.active = false; m.time = m.intro.graceUntil + 0.1; }
+    const realStep = m.step.bind(m);
+    m.step = () => {};
+    // updateCamera lives in the render loop, not step(), so a hand-driven
+    // sim has to turn it over itself or the camera never moves at all.
+    const tick = (dt) => { realStep(dt); m.updateCamera(dt); };
+
+    const p = m.player;
+    const foe = m.entities.find((e) => e.side === 'enemy' && !e.dead);
+    for (const o of m.entities) {
+      if (o.side === 'enemy' && o !== foe) { o.x = 600; o.z = 600; }
+    }
+    p.hp = p.maxHp = 1e6; foe.hp = foe.maxHp = 1e6;
+    foe.x = p.x + 5; foe.z = p.z;
+    m.camYaw = Math.atan2(foe.x - p.x, foe.z - p.z) + Math.PI;
+
+    // --- THE LOCK -------------------------------------------------------
+    m.toggleLock();
+    const acquired = !!m.lockOn;
+
+    const dAng = (x) => Math.abs(Math.atan2(Math.sin(x), Math.cos(x)));
+    let camErr = 0, bodyErr = 0;
+    for (let i = 0; i < 240; i++) {
+      const a = (i / 240) * Math.PI * 1.6;          // he circles the player
+      foe.x = p.x + Math.cos(a) * 5;
+      foe.z = p.z + Math.sin(a) * 5;
+      tick(1 / 60);
+      // Past the first second: before that the body is TURNING to him, and
+      // counting the initial swing measures the snap rather than the hold.
+      if (i > 60) {
+        const bearing = Math.atan2(foe.x - p.x, foe.z - p.z);
+        camErr = Math.max(camErr, dAng(m.camYaw + Math.PI - bearing));
+        bodyErr = Math.max(bodyErr, dAng(p.yaw - bearing));
+      }
+    }
+
+    // Footwork: sidestep must CIRCLE him, not walk off across the field.
+    foe.x = p.x + 4; foe.z = p.z;
+    for (let i = 0; i < 30; i++) tick(1 / 60);
+    const r0 = Math.hypot(foe.x - p.x, foe.z - p.z);
+    const b0 = Math.atan2(p.x - foe.x, p.z - foe.z);
+    m.keys.add('d');
+    for (let i = 0; i < 60; i++) tick(1 / 60);
+    m.keys.delete('d');
+    const r1 = Math.hypot(foe.x - p.x, foe.z - p.z);
+    const b1 = Math.atan2(p.x - foe.x, p.z - foe.z);
+    const swept = dAng(b1 - b0);
+
+    // The readout names him.
+    UI.renderMissionHud(m.buildHud());
+    const lockShown = !document.getElementById('lock-hud').classList.contains('hidden');
+
+    // --- THE WIND -------------------------------------------------------
+    foe.x = p.x + 1.6; foe.z = p.z;
+    foe.yaw = Math.atan2(p.x - foe.x, p.z - foe.z);
+    let foeSwings = 0, foeRest = 0, last = null;
+    for (let i = 0; i < 1800; i++) {
+      tick(1 / 60);
+      if (foe.swing && foe.swing !== last) { foeSwings++; last = foe.swing; }
+      if (!foe.swing && foe.cooldown <= 0) foeRest++;
+      foe.x = p.x + 1.6; foe.z = p.z;
+    }
+
+    // A player mashing as fast as the button allows must run dry.
+    m.pStamina = 1;
+    for (let i = 0; i < 1800; i++) {
+      if (!p.swing && p.cooldown <= 0) m.strike(p, 'right');
+      tick(1 / 60);
+    }
+    const mashedDry = m.pStamina;
+
+    // And the lock lets go of a dead man.
+    foe.dead = true;
+    tick(1 / 60);
+    const droppedOnDeath = !m.lockOn;
+
+    return {
+      acquired, camErr: +camErr.toFixed(2), bodyErr: +bodyErr.toFixed(2),
+      r0: +r0.toFixed(2), r1: +r1.toFixed(2), swept: +swept.toFixed(2),
+      lockShown, foeSwings, foeRest, mashedDry: +mashedDry.toFixed(2),
+      droppedOnDeath,
+    };
+  });
+
+  // THE LOCK holds him through most of a circle.
+  expect(r.acquired, 'nothing was locked').toBe(true);
+  expect(r.camErr, 'the camera lost him while he moved').toBeLessThan(0.5);
+  expect(r.bodyErr, 'the body stopped facing him').toBeLessThan(0.5);
+  // Sidestep is FOOTWORK: it sweeps round him without opening the range.
+  expect(r.swept, 'sidestep did not circle him').toBeGreaterThan(0.25);
+  expect(Math.abs(r.r1 - r.r0),
+    'sidestep changed the range instead of circling').toBeLessThan(1.8);
+  expect(r.lockShown, 'the duel readout never appeared').toBe(true);
+  expect(r.droppedOnDeath, 'the lock held onto a dead man').toBe(true);
+
+  // THE WIND. Thirty seconds of a duel that cannot end: he has to stop.
+  expect(r.foeRest, 'the AI never had to stop for breath').toBeGreaterThan(60);
+  expect(r.foeSwings / 30, 'the AI still swings faster than once a second')
+    .toBeLessThan(1.4);
+  expect(r.foeSwings, 'the AI stopped fighting altogether').toBeGreaterThan(4);
+  // And mashing empties the commander rather than paying for itself.
+  expect(r.mashedDry, 'a player could mash for ever').toBeLessThan(0.3);
+});

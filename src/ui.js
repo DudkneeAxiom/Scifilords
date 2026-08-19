@@ -217,6 +217,20 @@ export function renderMissionHud(h) {
   // they are the same blade it reads as met. Reach is a ring that closes as
   // somebody who can reach you gets closer, so distance is a thing you SEE
   // rather than a thing you learn by dying.
+  // THE DUEL. Who you are locked onto, how hurt they are, how far. The
+  // rose already says which way the blow is coming; this says who is
+  // throwing it.
+  const lk = $('lock-hud');
+  if (lk) {
+    const L = h.meleeRead?.locked;
+    lk.classList.toggle('hidden', !L);
+    if (L) {
+      $('lock-name').textContent = L.name;
+      $('lock-fill').style.width = `${Math.round(L.hp * 100)}%`;
+      $('lock-dist').textContent = `${L.dist}m`;
+    }
+  }
+
   const rose = $('guard-rose');
   if (rose) {
     const r = h.meleeRead;
