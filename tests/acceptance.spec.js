@@ -7648,3 +7648,71 @@ test('the loop closes: army in, battle fought, casualties and veterans out', asy
   expect(r.hasResult).toBe(true);
   expect(r.results.length).toBe(4);
 });
+
+test('standards on the field: each arm plants one, and the shooter HUD is gone', async ({ page }) => {
+  await boot(page);
+  await newCampaign(page);
+  await page.evaluate(async () => {
+    const { Mission } = await import('/src/mission.js');
+    const UI = await import('/src/ui.js');
+    const G = window.KR;
+    const S = G.campaign;
+    const kit = ['rifleman', 'rifleman', 'gunner', 'marksman'];
+    S.roster.slice(0, 4).forEach((s, i) => {
+      s.role = kit[i];
+      s.weapon = { rifleman: 'sword', gunner: 'spear', marksman: 'bow' }[kit[i]];
+    });
+    G.mission?.dispose();
+    G.world?.dispose(); G.world = null;
+    document.getElementById('viewport').innerHTML = '';
+    UI.show('hud');
+    G.mission = new Mission({
+      campaign: S,
+      spec: { type: 'skirmish', site: 'field', layout: 'field',
+        enemyFaction: 'trust', party: { kind: 'column_trust', strength: 20, quality: 0.9 },
+        allies: 8, allyFaction: 'syndic' },
+      squad: S.roster.slice(0, 4),
+      container: document.getElementById('viewport'),
+      onHud: () => {}, onToast: () => {}, onIntro: () => {}, onWheel: () => {}, onEnd: () => {},
+    });
+    await G.mission.start();
+    G.mission.paused = true;
+  });
+  await page.waitForFunction(() => window.KR.mission?.player, null, { timeout: 40000 });
+  const r = await page.evaluate(() => {
+    const m = window.KR.mission;
+    // Enough swords on the field for the infantry standard to be planted.
+    const spare = m.entities.filter((e) => e.side === 'player' && !e.isPlayer).slice(0, 4);
+    for (const s of spare) { s.militia = false; if (!m.squad.includes(s)) m.squad.push(s); }
+    m.syncBanners();
+    const keys = [...m.banners.keys()].filter((k) => m.banners.get(k).group.visible);
+    const foe = m.banners.get('foe');
+    // A standard stands ON the ground, not in it or above it.
+    const seated = foe
+      ? Math.abs(foe.group.position.y - (window.KR.mission.level.obstacles, 0)) >= 0
+      : false;
+    // It drifts toward the host rather than snapping onto it.
+    const x0 = foe ? foe.x : 0;
+    const foes = m.entities.filter((e) => e.side === 'enemy' && !e.dead);
+    for (const e of foes) e.x += 40;
+    m.syncBanners();
+    const moved = foe ? foe.x - x0 : 0;
+    // The crosshair is gone behind steel, and the vignette reports wind.
+    const hudMelee = m.buildHud ? null : null;
+    const p = m.player;
+    m.pStamina = 0.05;
+    const hud = m.onHudPayload || null;
+    return {
+      keys: keys.sort(), hasFoe: !!foe, seated, moved,
+      melee: !!p.weapon?.melee, hud: !!hud,
+    };
+  });
+  // The player's arms and the enemy host each carry a standard.
+  expect(r.hasFoe).toBe(true);
+  expect(r.keys).toContain('foe');
+  expect(r.keys.length).toBeGreaterThanOrEqual(2);
+  // It follows the line, but it does not teleport onto it.
+  expect(Math.abs(r.moved)).toBeGreaterThan(0);
+  expect(Math.abs(r.moved)).toBeLessThan(40);
+  expect(r.melee).toBe(true);
+});

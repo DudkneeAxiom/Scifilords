@@ -262,9 +262,13 @@ export function renderMissionHud(h) {
   // keeping — you cannot shoot where it is pointing, and it moves because the
   // camera is flying itself rather than because you aimed.
   const ret = $('reticle');
-  // The tactical view has a cursor, not a crosshair.
-  ret.classList.toggle('hidden', !!h.inserting || !!h.tactical);
-  ret.classList.toggle('ads', h.aiming);
+  // The tactical view has a cursor, not a crosshair — and STEEL has neither.
+  // A crosshair on a sword is the last honest piece of shooter furniture on
+  // the screen: there is nothing to aim, the arc is where you are facing.
+  // Archers keep it, because a bow is genuinely aimed.
+  const noAim = h.melee;
+  ret.classList.toggle('hidden', !!h.inserting || !!h.tactical || noAim);
+  ret.classList.toggle('ads', h.aiming && !noAim);
   ret.classList.toggle('hit', !!h.hit);
   $('hurt').style.opacity = String(h.hurt * 0.85);
 

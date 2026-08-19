@@ -516,6 +516,89 @@ export class Mission {
    * draw calls, and at army scale that was a meaningful slice of the frame's
    * whole call budget for what is, visually, one repeated disc.
    */
+  /**
+   * Standards.
+   *
+   * The rings underfoot say whose a man is, one man at a time. A banner
+   * says where a FORMATION is, from across the field and from the tactical
+   * eye — which is the thing a commander actually needs to see, and the
+   * thing the directive asks for in place of relying on floating icons.
+   *
+   * One standard per arm of the player's line and one for the enemy host,
+   * planted at the group's centre of mass and drifting to follow it, on an
+   * antenna rod with a cloth in the faction's colour. They are markers, not
+   * bodies: nobody carries them, nobody dies holding them, and they cost
+   * four small meshes rather than a bearer AI.
+   */
+  syncBanners() {
+    if (!this.banners) this.banners = new Map();
+    const want = new Map();
+    const add = (key, list, colour, min) => {
+      const live = list.filter((e) => !e.dead && !e.down && !e.routing);
+      if (live.length < min) return;
+      let x = 0, z = 0;
+      for (const e of live) { x += e.x; z += e.z; }
+      want.set(key, { x: x / live.length, z: z / live.length, colour });
+    };
+    const mine = { inf: [], spear: [], ranged: [] };
+    const all = [];
+    for (const s of this.squad) {
+      if (s.militia) continue;
+      mine[this.battleGroup(s)].push(s);
+      all.push(s);
+    }
+    if (this.player && !this.player.dead) all.push(this.player);
+    // A declared power flies the colour it CHOSE at declaration — the
+    // banner-customisation round finally reaching the battlefield.
+    const own = this.S?.ownFaction?.colour ?? FACTIONS.player.accent;
+    // THE COMPANY'S OWN BANNER, always — a Bracket company of four is still
+    // a company with a name, and this is the flag the campaign lets you
+    // choose a colour for. The arms only raise their own standards once
+    // they are big enough to be formations rather than a handful of men,
+    // or a four-man outfit ends up carrying four flags.
+    add('company', all, own, 2);
+    add('inf', mine.inf, own, 5);
+    add('spear', mine.spear, own, 5);
+    add('ranged', mine.ranged, own, 5);
+    const foes = this.entities.filter((e) => e.side === 'enemy' && !e.isTitan);
+    add('foe', foes, FACTIONS[this.level.enemyFaction]?.color ?? 0x9a3b3b);
+
+    for (const [key, at] of want) {
+      let b = this.banners.get(key);
+      if (!b) {
+        const g = new THREE.Group();
+        const pole = new THREE.Mesh(
+          new THREE.BoxGeometry(0.07, 4.2, 0.07),
+          new THREE.MeshLambertMaterial({ color: 0x35322b }));
+        pole.position.y = 2.1;
+        const cloth = new THREE.Mesh(
+          new THREE.BoxGeometry(0.06, 1.15, 0.9),
+          new THREE.MeshLambertMaterial({ color: at.colour }));
+        cloth.position.set(0, 3.3, 0.5);
+        const finial = new THREE.Mesh(
+          new THREE.BoxGeometry(0.16, 0.16, 0.16),
+          new THREE.MeshLambertMaterial({ color: at.colour }));
+        finial.position.y = 4.25;
+        g.add(pole, cloth, finial);
+        g.castShadow = false;
+        this.scene.add(g);
+        b = { group: g, cloth, x: at.x, z: at.z };
+        this.banners.set(key, b);
+      }
+      // Drift rather than snap: a standard moves with the line, and a marker
+      // that teleports every time somebody dies reads as a bug.
+      b.x += (at.x - b.x) * 0.04;
+      b.z += (at.z - b.z) * 0.04;
+      b.group.position.set(b.x, Level.heightAt(b.x, b.z), b.z);
+      // The cloth hangs off the wind, not off the simulation.
+      b.cloth.rotation.y = Math.sin(this.time * 1.3 + b.x) * 0.28;
+      b.group.visible = true;
+    }
+    for (const [key, b] of this.banners) {
+      if (!want.has(key)) b.group.visible = false;
+    }
+  }
+
   syncRings() {
     if (!this.ringMesh) {
       const geo = new THREE.RingGeometry(0.42, 0.58, 16);
@@ -6166,6 +6249,7 @@ export class Mission {
 
   syncVisuals(dt) {
     this.syncRings();
+    this.syncBanners();
     for (const e of this.entities) {
       const y = Level.heightAt(e.x, e.z);
       e.y = y;
@@ -6412,7 +6496,13 @@ export class Mission {
       formation: (FORMATIONS[this.formation] || FORMATIONS.wedge).name,
       selectionCount: this.selection.size,
       selectionLabel: this.selectionLabel(),
-      suppression: p.suppression || 0,
+      // The screen closing in was rounds cracking past your head. Steel does
+      // not suppress — being pressed is what the wind bar is for — so the
+      // vignette reports the commander's WIND instead, and only once it is
+      // genuinely low enough to be in trouble.
+      suppression: p.weapon?.melee
+        ? Math.max(0, (0.32 - this.pStamina) * 1.6)
+        : (p.suppression || 0),
       interact: this.nearInteract ? {
         label: this.nearInteract.kind === 'revive'
           ? `Stabilise ${this.nearInteract.entity.name}`
@@ -6519,6 +6609,14 @@ export class Mission {
     cancelAnimationFrame(this.raf);
     for (const a of this.arrows || []) if (a.mesh) this.scene.remove(a.mesh);
     this.arrows = [];
+    // The standards are per-mission meshes with their own geometry.
+    for (const b of (this.banners || new Map()).values()) {
+      this.scene.remove(b.group);
+      b.group.traverse?.((o) => {
+        if (o.isMesh) { o.geometry?.dispose?.(); o.material?.dispose?.(); }
+      });
+    }
+    this.banners = new Map();
     this.arrowGeo?.dispose?.();
     this.arrowMat?.dispose?.();
     this.arrowGeo = this.arrowMat = null;
