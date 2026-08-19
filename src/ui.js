@@ -10,7 +10,7 @@ import * as Models from './models.js';
 import {
   ROLES, RANKS, COMMANDER_RANKS, WEAPONS, KIT, GOODS, GOODS_LIST, FACTIONS, LOCATIONS,
   MISSION_TYPES, HOLDING_UPGRADES, UPGRADE_LIST, PARTY_TIERS, ARMOUR, SLOTS,
-  POLICIES, POLICY_LIST, COMPANIONS, OFFICERS, RAPPORT, BACKGROUNDS,
+  POLICIES, POLICY_LIST, COMPANIONS, OFFICERS, RAPPORT, BACKGROUNDS, DOCTRINES,
 } from './data.js';
 import {
   portrait, label, rankOf, roleOf, weaponOf, effective, STATUS, woundInfo,
@@ -2898,6 +2898,61 @@ export function townChat(S, { who, line, options }, cbs) {
 // Deployment picker
 // --------------------------------------------------------------------------
 
+/**
+ * The order of battle, both sides, before you commit to it.
+ *
+ * A headcount is not a plan. What a commander decides on is the SHAPE of
+ * the thing — how much line, how many spears, how many bows, against what
+ * — because that is the decision the whole battle then plays out. The
+ * enemy's half is an ESTIMATE drawn from their doctrine rather than a
+ * readout of their roster: you know how the Trust fights, not who is in
+ * their column.
+ */
+function orderOfBattle(S, chosen, spec, enemy) {
+  const arm = (s) => {
+    const w = WEAPONS[s.weapon];
+    if (!w) return 'inf';
+    if (w.bow) return 'ranged';
+    if (w.id === 'spear') return 'spear';
+    if (w.id === 'heavy') return 'heavy';
+    return 'inf';
+  };
+  const mine = { inf: 0, spear: 0, ranged: 0, heavy: 0 };
+  let vets = 0;
+  for (const s of State.living(S)) {
+    if (!chosen.has(s.id)) continue;
+    mine[arm(s)]++;
+    if ((s.rank ?? 0) >= 2) vets++;
+  }
+  const yours = Object.values(mine).reduce((a, b) => a + b, 0);
+  const line = (label, n) => (n
+    ? `<span style="margin-right:14px">${label} <span class="hl">${n}</span></span>` : '');
+
+  // Theirs, from doctrine. Whole numbers that sum to the estimate.
+  let theirs = '';
+  if (enemy) {
+    const f = spec.enemyFaction || spec.party?.faction;
+    const w = DOCTRINES[f]?.weights || DOCTRINES.raider.weights;
+    const total = Object.values(w).reduce((a, b) => a + b, 0);
+    const share = (k) => Math.round(enemy * ((w[k] || 0) / total));
+    theirs = `${line('Line', share('rifleman'))}${line('Spears', share('gunner'))}`
+      + `${line('Bows', share('marksman'))}${line('Heavy', share('breacher'))}`;
+  }
+
+  const badly = enemy && enemy > yours * 2.2;
+  return `<div class="oob" style="margin:6px 0 10px">
+    <div class="prose" style="margin-bottom:2px">YOUR COMPANY — <span class="hl">${yours}</span>
+      ${vets ? `<span class="dim">· ${vets} veteran${vets > 1 ? 's' : ''}</span>` : ''}</div>
+    <div class="prose dim" style="margin-bottom:6px">
+      ${line('Line', mine.inf)}${line('Spears', mine.spear)}
+      ${line('Bows', mine.ranged)}${line('Heavy', mine.heavy)}
+      ${yours === 0 ? 'Nobody selected.' : ''}</div>
+    ${enemy ? `<div class="prose ${badly ? 'outnumbered' : ''}" style="margin-bottom:2px">
+      VERSUS — <span class="hl">${enemy}</span> ${badly ? '· you will be badly outnumbered' : ''}</div>
+      <div class="prose dim">${theirs || 'Composition unknown.'}</div>` : ''}
+  </div>`;
+}
+
 export function deployPanel(S, spec, cbs) {
   const pool = State.living(S);
   const chosen = new Set([State.commander(S).id]);
@@ -2935,9 +2990,7 @@ export function deployPanel(S, spec, cbs) {
       ${spec.squadCap && spec.squadCap < State.deployLimit(S)
     ? `<div class="prose" style="color:var(--warn);margin-bottom:8px">Only ${spec.squadCap}
        can get in. Choose them carefully.</div>` : ''}
-      ${enemy ? `<div class="prose ${enemy > chosen.size * 2.2 ? 'outnumbered' : ''}" style="margin-bottom:8px">
-        Estimated hostile strength: <span class="hl">${enemy}</span>.
-        ${enemy > chosen.size * 2.2 ? 'You will be badly outnumbered.' : ''}</div>` : ''}
+      ${orderOfBattle(S, chosen, spec, enemy)}
       ${rows}
       <div class="prose dim mt">
         Medical kits available: ${S.medical}. A kit stabilises one casualty in the field.

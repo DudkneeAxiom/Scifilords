@@ -7824,3 +7824,40 @@ test('in the ring and in a line: pit fighters stay on the floor, hosts march abr
   expect(line.frontage).toBeGreaterThan(line.depth);
   expect(line.frontage).toBeGreaterThan(8);
 });
+
+test('the order of battle: what you are taking, against what', async ({ page }) => {
+  await boot(page);
+  await newCampaign(page);
+  const r = await page.evaluate(async () => {
+    const UI = await import('/src/ui.js');
+    const S = window.KR.campaign;
+    // A company with one of each arm, so the shape is legible.
+    const kit = ['rifleman', 'gunner', 'marksman', 'breacher'];
+    S.roster.slice(0, 4).forEach((s, i) => {
+      s.role = kit[i];
+      s.weapon = { rifleman: 'sword', gunner: 'spear', marksman: 'bow', breacher: 'heavy' }[kit[i]];
+      s.rank = i === 1 ? 3 : 1;
+    });
+    UI.deployPanel(S, {
+      type: 'skirmish', site: 'vetch', enemyFaction: 'trust',
+      party: { strength: 40, kind: 'column_trust' },
+    }, { onClose: () => {}, onGo: () => {} });
+    // Select everybody so the tally is the whole company.
+    for (const el of document.querySelectorAll('#modal [data-p]')) el.click();
+    const text = document.querySelector('#modal .modal-body').textContent
+      .replace(/\s+/g, ' ');
+    UI.closeModal();
+    return { text };
+  });
+  // Your own shape, by arm.
+  expect(r.text).toMatch(/YOUR COMPANY/);
+  expect(r.text).toMatch(/Line 1/);
+  expect(r.text).toMatch(/Spears 1/);
+  expect(r.text).toMatch(/Bows 1/);
+  expect(r.text).toMatch(/Heavy 1/);
+  // The veteran is counted.
+  expect(r.text).toMatch(/veteran/);
+  // And theirs, estimated from doctrine rather than read off their roster.
+  expect(r.text).toMatch(/VERSUS/);
+  expect(r.text).toMatch(/40/);
+});
