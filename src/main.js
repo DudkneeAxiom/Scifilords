@@ -1410,6 +1410,14 @@ function handleMapEvent(ev) {
       UI.toast('TOLL PAID', `${toll} credits to use their road`, 'bad');
       through();
     };
+    // TURN BACK was never wired. With no `pass` button (they dislike you) and
+    // the toll unaffordable (`pay` is disabled, so it eats the click), the
+    // panel had no working control at all and the campaign stopped dead. The
+    // map soak caught it three times in a hundred and sixty days.
+    document.querySelector('#modal [data-x="close"]').onclick = () => {
+      Audio.uiBack();
+      UI.closeModal();                       // fires onClose → leave()
+    };
     return;
   }
 

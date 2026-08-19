@@ -2716,7 +2716,12 @@ function toastModal(msg) {
 
 export function encounterPanel(S, party, cbs) {
   const f = party.faction ? FACTIONS[party.faction] : null;
-  const hostile = party.hostileToPlayer;
+  // What makes a panel un-Escapable is whether this is a FIGHT you are in,
+  // not whether politics currently say so. A raider band is hostile by its
+  // nature even in the frame before refreshHostility has run over it, and a
+  // cornered encounter is one you have already failed to leave — the map
+  // soak caught two of three Escapes getting through on exactly those.
+  const hostile = !!(party.hostileToPlayer || party.baseHostile || cbs.cornered);
   const flavour = {
     patrol_trust: 'An Ordnance Trust patrol has stopped in the road ahead. The lead vehicle keeps its gun trained on you while a clerk checks a list.',
     convoy_trust: 'A Trust convoy grinds past under escort. Crates, stencilled and counted.',

@@ -46,7 +46,16 @@ page.on('pageerror', (e) => errors.push(`PAGEERROR: ${e.message}`));
 await page.goto('http://localhost:8124/', { waitUntil: 'domcontentloaded' });
 await page.waitForSelector('#title:not(.hidden)', { timeout: 60000 });
 await page.click('button[data-act="new"]');
+// The background questionnaire comes first now: sign the charter on the
+// plain answers, THEN close the intro, THEN take the commission. This
+// harness silently stopped booting when creation gained a step, which is
+// how the map playtest went unrun.
 await page.waitForSelector('#modal .modal-title', { timeout: 15000 });
+await page.click('#modal [data-x="close"]');
+await page.waitForFunction(() => {
+  const t = document.querySelector('#modal .modal-title');
+  return t && !/BEFORE THE COMPANY/.test(t.textContent);
+}, null, { timeout: 15000 });
 await page.click('#modal [data-x="close"]');
 await page.waitForSelector('#modal [data-perk]', { timeout: 15000 });
 await page.click('#modal [data-perk]');
@@ -306,7 +315,14 @@ async function settleModals() {
       //
       // Escape must be refused — a hostile panel that dismisses is a free pass
       // around the contested withdrawal, no roll, no toll, no fight.
-      if (stats.escTried < 3) {
+      // A FIGHT button is not the same as a fight you are IN. A neutral
+      // band you merely have the option to attack is one you may also just
+      // drive away from — the contested withdrawal exists for parties that
+      // are actually hostile or that have already run you down. Ask the game
+      // which kind this is (modalBlocking is the same flag the Escape guard
+      // reads) and only hold it to the rule it claims for itself.
+      const mustHold = await page.evaluate(() => window.KR.dev.UI.modalBlocking());
+      if (mustHold && stats.escTried < 3) {
         stats.escTried++;
         await page.keyboard.press('Escape');
         await page.waitForTimeout(150);
