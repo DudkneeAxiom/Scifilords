@@ -128,9 +128,26 @@ function toWorld(isNew) {
       // panel is up, the Reach runs.
       if (G.world?.paused && !UI.modalOpen() && !G.visiting) G.world.setPaused(false);
       UI.renderWorldHud(h);
+      // The side board reads the campaign, and the campaign moves every
+      // tick — a stale desk is worse than no desk. Cheap: six small
+      // templates over a roster that is rarely more than a dozen people.
+      UI.renderSideBoard(G.campaign);
     },
   });
   G.world.start();
+
+  // The board: tabs, the fold, and the buttons that still open the deep
+  // editors. Bound once — the renderer above redraws its contents.
+  UI.bindSideBoard(() => G.campaign, {
+    onScreen: (id) => {
+      if (id === 'roster') openRoster();
+      else if (id === 'loadout') openLoadout();
+      else if (id === 'inventory') openInventory();
+      else if (id === 'holdings') openHoldings();
+      else if (id === 'diplomacy') openDiplomacy();
+      else if (id === 'board') openBoard();
+    },
+  });
 
   // The speed chips are part of the HUD rather than of the map, so they are
   // wired once here instead of being rebuilt every frame by the renderer.
@@ -1173,13 +1190,12 @@ window.addEventListener('keydown', (e) => {
   }
 
   if (G.screen === 'world') {
-    if (k === 'c') { Audio.uiSelect(); openRoster(); }
+    // The board answers most of these without covering the map. V and L
+    // are the exceptions: moving kit between people needs the big screen.
+    const TAB = { c: 'company', i: 'stores', b: 'contracts', k: 'holdings', p: 'standing' };
+    if (TAB[k]) { Audio.uiMove(); UI.showSideTab(G.campaign, TAB[k]); }
     else if (k === 'l') { Audio.uiSelect(); openLoadout(); }
-    else if (k === 'i') { Audio.uiSelect(); openInventory(); }
-    else if (k === 'k') { Audio.uiSelect(); openHoldings(); }
     else if (k === 'v') { Audio.uiSelect(); openCharacter(); }
-    else if (k === 'p') { Audio.uiSelect(); openDiplomacy(); }
-    else if (k === 'b') { Audio.uiSelect(); openBoard(); }
     else if (k === 'e') { Audio.uiSelect(); enterLocation(); }
     else if (k === 'escape') { Audio.uiSelect(); openPause(false); }
   } else if (G.screen === 'mission') {
@@ -1195,7 +1211,8 @@ document.querySelector('#worldhud .wh-bottom').addEventListener('click', (e) => 
   if (!btn || btn.disabled) return;
   Audio.uiSelect();
   const a = btn.dataset.act;
-  if (a === 'roster') openRoster();
+  if (a === 'equipment') openCharacter();
+  else if (a === 'roster') openRoster();
   else if (a === 'loadout') openLoadout();
   else if (a === 'inventory') openInventory();
   else if (a === 'holdings') openHoldings();

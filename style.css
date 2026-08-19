@@ -1064,3 +1064,119 @@ kbd {
 
 /* Hit confirmation: the reticle answers. Amber, brief, unmistakable. */
 .reticle.hit i { background: #d8a83f; box-shadow: 0 0 4px #d8a83f; }
+
+
+/* ==========================================================================
+   THE SIDE BOARD
+   The world screen stops being a map with menus behind keys and becomes a
+   desk: the map on the left, everything you manage pinned open on the right.
+   Folded away with the arrow when you want the whole basin.
+   ========================================================================== */
+#wh-side {
+  position: absolute; top: 46px; right: 0; bottom: 44px;
+  width: 356px; display: grid;
+  grid-template-columns: 46px 1fr;
+  grid-template-rows: auto 1fr;
+  grid-template-areas: "tabs head" "tabs body";
+  background: linear-gradient(180deg, rgba(22,22,18,0.96), rgba(16,16,13,0.97));
+  border-left: 1px solid var(--edge, #33352a);
+  box-shadow: -10px 0 24px rgba(0,0,0,0.45);
+  pointer-events: auto; z-index: 6;
+}
+#wh-side.folded { display: none; }
+#wh-unfold {
+  position: absolute; top: 52px; right: 8px; z-index: 7;
+  width: 30px; height: 30px; cursor: pointer;
+  background: rgba(20,20,16,0.9); color: var(--bone, #d8d3c8);
+  border: 1px solid var(--edge, #33352a); font-size: 15px;
+  pointer-events: auto;
+}
+#wh-unfold.hidden { display: none; }
+
+.side-tabs {
+  grid-area: tabs; display: flex; flex-direction: column; gap: 2px;
+  padding: 4px 3px; background: rgba(10,10,8,0.6);
+  border-right: 1px solid var(--edge, #33352a);
+}
+.side-tabs button {
+  position: relative; height: 44px; cursor: pointer;
+  background: rgba(38,38,30,0.55); color: #8f8a7c;
+  border: 1px solid transparent; border-radius: 2px;
+  font-size: 17px; line-height: 1; transition: background 0.12s, color 0.12s;
+}
+.side-tabs button i {
+  position: absolute; left: 50%; bottom: 3px; transform: translateX(-50%);
+  font-style: normal; font-size: 5.5px; letter-spacing: 0.06em; opacity: 0.75;
+}
+.side-tabs button:hover { background: rgba(58,58,44,0.7); color: var(--bone, #d8d3c8); }
+.side-tabs button.on {
+  background: rgba(96,80,38,0.55); color: var(--amber, #e8b070);
+  border-color: rgba(200,150,70,0.5);
+}
+
+.side-head {
+  grid-area: head; display: flex; align-items: center; justify-content: space-between;
+  padding: 6px 8px 5px 10px; border-bottom: 1px solid var(--edge, #33352a);
+  font-size: 10px; letter-spacing: 0.16em; color: var(--amber, #e8b070);
+}
+.side-head button {
+  width: 22px; height: 20px; cursor: pointer; font-size: 12px;
+  background: transparent; color: #8f8a7c; border: 1px solid var(--edge, #33352a);
+}
+.side-head button:hover { color: var(--bone, #d8d3c8); }
+
+.side-body {
+  grid-area: body; overflow-y: auto; overflow-x: hidden;
+  padding: 8px 10px 12px; font-size: 11px; line-height: 1.5;
+}
+.side-body::-webkit-scrollbar { width: 7px; }
+.side-body::-webkit-scrollbar-thumb { background: #3a3a2e; }
+
+/* A run of label/value facts — the thing every tab opens with. */
+.sb-facts { display: grid; grid-template-columns: 1fr auto; gap: 1px 8px; margin-bottom: 9px; }
+.sb-facts span:nth-child(odd) { color: #85806f; letter-spacing: 0.05em; }
+.sb-facts span:nth-child(even) { color: var(--bone, #d8d3c8); text-align: right; }
+.sb-facts .good { color: #9ec46a; }
+.sb-facts .bad { color: #c86a5a; }
+
+.sb-title {
+  margin: 10px 0 5px; font-size: 9px; letter-spacing: 0.18em; color: var(--amber, #e8b070);
+  border-bottom: 1px solid rgba(80,80,60,0.4); padding-bottom: 3px;
+}
+.sb-title:first-child { margin-top: 0; }
+
+/* A person, a holding, a contract — one clickable row. */
+.sb-row {
+  display: flex; align-items: center; gap: 7px; padding: 4px 5px;
+  border: 1px solid transparent; border-radius: 2px; cursor: default;
+}
+.sb-row + .sb-row { margin-top: 1px; }
+.sb-row.pick { cursor: pointer; }
+.sb-row.pick:hover { background: rgba(70,70,52,0.5); border-color: rgba(120,120,90,0.4); }
+.sb-row img { width: 22px; height: 22px; image-rendering: pixelated; border: 1px solid #2c2d23; }
+.sb-row .nm { flex: 1; color: var(--bone, #d8d3c8); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sb-row .sub { color: #85806f; font-size: 9.5px; }
+.sb-row .rt { color: #a8a293; font-size: 10px; }
+.sb-row.hurt .nm { color: #d8a05a; }
+.sb-row.out .nm { color: #8a5a52; }
+
+/* A thin bar for condition, morale, standing. */
+.sb-bar { height: 3px; background: rgba(0,0,0,0.5); border: 1px solid #2c2d23; }
+.sb-bar i { display: block; height: 100%; background: #7e9a4e; }
+.sb-bar i.warn { background: #c8a05a; }
+.sb-bar i.bad { background: #b4584a; }
+
+.sb-btn {
+  display: block; width: 100%; margin-top: 6px; padding: 5px;
+  background: rgba(46,46,36,0.8); color: var(--bone, #d8d3c8);
+  border: 1px solid var(--edge, #33352a); cursor: pointer;
+  font-size: 10px; letter-spacing: 0.1em;
+}
+.sb-btn:hover { background: rgba(80,68,34,0.8); color: var(--amber, #e8b070); }
+.sb-empty { color: #6f6b5e; font-style: italic; padding: 6px 2px; }
+
+/* The log, newest first, colour-coded the way the campaign log already is. */
+.sb-log div { padding: 2px 0; border-bottom: 1px solid rgba(60,60,46,0.3); color: #a8a293; }
+.sb-log div.good { color: #9ec46a; }
+.sb-log div.bad { color: #c86a5a; }
+.sb-log div.world { color: #8fb0c8; }

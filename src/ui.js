@@ -3427,3 +3427,205 @@ function rumourLine(S, loc) {
     ? `<div class="prose dim mt"><span class="hl">WORD IN TOWN</span> — ${esc(line)}</div>`
     : '';
 }
+
+
+// ==========================================================================
+// THE SIDE BOARD
+//
+// The world screen used to be a map with seven screens hidden behind seven
+// keys, which meant the answer to "how is my company doing" was always one
+// keypress and one modal away — and a modal covers the very map you are
+// making the decision about. This is the desk version: the things you
+// manage are pinned open beside the basin, and the deep editors are still
+// one button away for when you actually want to move kit around.
+//
+// Every tab renders from campaign state on demand. There is no cached view
+// model, because the campaign changes under this thing every tick and a
+// stale board is worse than no board.
+// ==========================================================================
+
+let sideTab = 'company';
+let sideCbs = {};
+
+export const sideBoardTab = () => sideTab;
+
+const bar = (pct, warnAt = 65, badAt = 30) => {
+  const v = Math.max(0, Math.min(100, Math.round(pct)));
+  const cls = v < badAt ? 'bad' : v < warnAt ? 'warn' : '';
+  return `<div class="sb-bar"><i class="${cls}" style="width:${v}%"></i></div>`;
+};
+
+const facts = (rows) => `<div class="sb-facts">${rows
+  .map(([k, v, cls]) => `<span>${esc(k)}</span><span class="${cls || ''}">${v}</span>`)
+  .join('')}</div>`;
+
+function sideCompany(S) {
+  const live = State.living(S);
+  const ready = live.filter((x) => deployable(x)).length;
+  const hurt = live.filter((x) => x.status === STATUS.WOUNDED).length;
+  const morale = Math.round(S.morale ?? 70);
+  const rows = live.map((sol) => {
+    const w = woundInfo(sol);
+    const eff = Math.round((sol.hp / Math.max(1, sol.maxHp)) * 100);
+    const cls = sol.status === STATUS.WOUNDED ? 'hurt' : (!deployable(sol) ? 'out' : '');
+    return `<div class="sb-row pick ${cls}" data-sol="${sol.id}">
+      <img src="${portrait(sol, 32)}" alt="">
+      <span class="nm">${esc(sol.name)}
+        <span class="sub">${RANKS[sol.rank].abbr} · ${esc(ROLES[sol.role].name)}${
+  w ? ` · ${esc(w.name)}` : ''}</span></span>
+      <span class="rt">${eff}%</span>
+    </div>`;
+  }).join('');
+  return facts([
+    ['ON THE BOOKS', live.length],
+    ['FIT TO DEPLOY', ready, ready ? 'good' : 'bad'],
+    ['WOUNDED', hurt, hurt ? 'bad' : ''],
+    ['MORALE', `${morale}%`, morale < 40 ? 'bad' : morale > 75 ? 'good' : ''],
+    ['WAGES / DAY', State.payrollOf(S)],
+    ['RENOWN', Math.round(S.renown || 0)],
+  ])
+    + bar(morale)
+    + `<div class="sb-title">PERSONNEL</div>${rows || '<div class="sb-empty">Nobody left.</div>'}
+    <button class="sb-btn" data-sb="roster">FULL ROSTER</button>
+    <button class="sb-btn" data-sb="loadout">LOADOUT &amp; KIT</button>`;
+}
+
+function sideStores(S) {
+  const cargo = Object.entries(S.cargo || {}).filter(([, n]) => n > 0);
+  const rows = cargo.map(([g, n]) => `<div class="sb-row">
+    <span class="nm">${esc(GOODS[g].name)}<span class="sub">${GOODS[g].abbr}</span></span>
+    <span class="rt">${n}</span></div>`).join('');
+  const arms = Object.entries(S.armoury || {}).filter(([, n]) => n > 0)
+    .map(([w, n]) => `<div class="sb-row"><span class="nm">${esc(WEAPONS[w]?.name || w)}</span>
+      <span class="rt">${n}</span></div>`).join('');
+  return facts([
+    ['CREDITS', S.credits],
+    ['RATIONS', `${S.rations || 0} d`, (S.rations || 0) < 5 ? 'bad' : ''],
+    ['MEDICAL KITS', S.medical || 0],
+    ['SUPPLY', S.supplies || 0],
+    ['CARGO', `${State.cargoUsed(S)} / ${State.cargoCap(S)}`],
+  ])
+    + `<div class="sb-title">IN THE TRUCK</div>${rows || '<div class="sb-empty">Empty.</div>'}
+    <div class="sb-title">ARMOURY</div>${arms || '<div class="sb-empty">Nothing spare.</div>'}
+    <button class="sb-btn" data-sb="inventory">MARKET &amp; STORES</button>`;
+}
+
+function sideContracts(S) {
+  const active = State.activeContract(S);
+  const open = (S.contracts || []).filter((c) => !c.accepted);
+  const row = (c, on) => `<div class="sb-row pick" data-con="${c.id}">
+    <span class="nm">${esc(c.title)}<span class="sub">${esc(State.locName(c.site))}${
+  on ? ' · ACCEPTED' : ''}</span></span>
+    <span class="rt">${c.pay}</span></div>`;
+  return facts([
+    ['ACTIVE', active ? '1' : 'none', active ? 'good' : ''],
+    ['ON THE BOARD', open.length],
+    ['DAY', S.day],
+  ])
+    + (active ? `<div class="sb-title">IN HAND</div>${row(active, true)}` : '')
+    + `<div class="sb-title">POSTED</div>${
+  open.map((c) => row(c, false)).join('') || '<div class="sb-empty">Nothing going.</div>'}
+    <button class="sb-btn" data-sb="board">THE POSTING BOARD</button>`;
+}
+
+function sideHoldings(S) {
+  const held = Object.keys(S.holdings || {});
+  const rows = held.map((id) => `<div class="sb-row pick" data-hold="${id}">
+    <span class="nm">${esc(State.locName(id))}
+      <span class="sub">${Object.keys(S.holdings[id].upgrades || {}).length} works</span></span>
+    </div>`).join('');
+  return facts([
+    ['GROUND HELD', held.length],
+    ['BANNER', S.ownFaction ? esc(S.ownFaction.name) : (S.allegiance
+      ? esc(FACTIONS[S.allegiance].name) : 'Independent')],
+  ])
+    + `<div class="sb-title">YOUR GROUND</div>${rows || '<div class="sb-empty">You hold nothing yet.</div>'}
+    <button class="sb-btn" data-sb="holdings">MANAGE HOLDINGS</button>`;
+}
+
+function sideStanding(S) {
+  const rows = ['trust', 'syndic'].map((f) => {
+    const v = Math.round(S.rep?.[f] || 0);
+    const pct = ((v + 40) / 80) * 100;
+    return `<div class="sb-row"><span class="nm">${esc(FACTIONS[f].name)}
+      <span class="sub">${esc(Dip.standingName(S, f))}</span></span>
+      <span class="rt">${v > 0 ? '+' : ''}${v}</span></div>${bar(pct, 55, 30)}`;
+  }).join('');
+  return facts([
+    ['RENOWN', Math.round(S.renown || 0)],
+    ['TIER', esc(State.renownName(S))],
+  ]) + `<div class="sb-title">THE POWERS</div>${rows}
+    <button class="sb-btn" data-sb="diplomacy">DIPLOMACY</button>`;
+}
+
+function sideLog(S) {
+  const items = (S.log || []).slice(0, 40).map((l) => `<div class="${esc(l.kind || '')}">${
+  esc(l.text)}</div>`).join('');
+  return `<div class="sb-log">${items || '<div class="sb-empty">Nothing yet.</div>'}</div>`;
+}
+
+const SIDE_TABS = {
+  company: { name: 'COMPANY', render: sideCompany },
+  stores: { name: 'STORES', render: sideStores },
+  contracts: { name: 'WORK', render: sideContracts },
+  holdings: { name: 'GROUND', render: sideHoldings },
+  standing: { name: 'STANDING', render: sideStanding },
+  log: { name: 'THE LOG', render: sideLog },
+};
+
+/** Draw the board. Cheap enough to call every world tick. */
+export function renderSideBoard(S, cbs = null) {
+  if (cbs) sideCbs = cbs;
+  const body = $('side-body');
+  if (!body || !S) return;
+  const tab = SIDE_TABS[sideTab] || SIDE_TABS.company;
+  $('side-title').textContent = tab.name;
+  body.innerHTML = tab.render(S);
+  for (const el of document.querySelectorAll('#side-tabs button')) {
+    el.classList.toggle('on', el.dataset.side === sideTab);
+  }
+  for (const el of body.querySelectorAll('[data-sb]')) {
+    el.onclick = () => { Audio.uiSelect(); sideCbs.onScreen?.(el.dataset.sb); };
+  }
+  for (const el of body.querySelectorAll('[data-sol]')) {
+    el.onclick = () => { Audio.uiSelect(); sideCbs.onScreen?.('roster'); };
+  }
+  for (const el of body.querySelectorAll('[data-con]')) {
+    el.onclick = () => { Audio.uiSelect(); sideCbs.onScreen?.('board'); };
+  }
+  for (const el of body.querySelectorAll('[data-hold]')) {
+    el.onclick = () => { Audio.uiSelect(); sideCbs.onScreen?.('holdings'); };
+  }
+}
+
+/** Wire the tab strip and the fold. Once, at boot. */
+export function bindSideBoard(getS, cbs) {
+  sideCbs = cbs || {};
+  for (const el of document.querySelectorAll('#side-tabs button')) {
+    el.onclick = () => {
+      sideTab = el.dataset.side;
+      Audio.uiMove();
+      renderSideBoard(getS());
+    };
+  }
+  const fold = (on) => {
+    $('wh-side').classList.toggle('folded', on);
+    $('wh-unfold').classList.toggle('hidden', !on);
+    Audio.uiMove();
+  };
+  const wide = $('side-wide');
+  if (wide) wide.onclick = () => fold(true);
+  const unfold = $('wh-unfold');
+  if (unfold) unfold.onclick = () => { fold(false); renderSideBoard(getS()); };
+  renderSideBoard(getS());
+}
+
+/** Jump the board to a tab — used by the old hotkeys, which still work. */
+export function showSideTab(S, id) {
+  if (!SIDE_TABS[id]) return false;
+  sideTab = id;
+  $('wh-side')?.classList.remove('folded');
+  $('wh-unfold')?.classList.add('hidden');
+  renderSideBoard(S);
+  return true;
+}

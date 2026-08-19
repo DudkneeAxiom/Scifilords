@@ -90,14 +90,32 @@
       <div class="stamp panel-sm" id="wh-log"></div>
     </div>
 
+    <!-- THE SIDE BOARD. Everything a commander manages, kept on screen
+         beside the map rather than behind a key. The map takes the rest of
+         the width, and all of it when the board is folded away. -->
+    <aside id="wh-side" class="stamp">
+      <div class="side-tabs" id="side-tabs">
+        <button data-side="company" title="Company">&#9819;<i>COMPANY</i></button>
+        <button data-side="stores" title="Stores">&#9635;<i>STORES</i></button>
+        <button data-side="contracts" title="Contracts">&#9998;<i>WORK</i></button>
+        <button data-side="holdings" title="Holdings">&#9962;<i>GROUND</i></button>
+        <button data-side="standing" title="Standing">&#9884;<i>STANDING</i></button>
+        <button data-side="log" title="Log">&#9776;<i>LOG</i></button>
+      </div>
+      <div class="side-head">
+        <span id="side-title">COMPANY</span>
+        <button id="side-wide" title="Fold the board away and take the whole map">&#10530;</button>
+      </div>
+      <div class="side-body" id="side-body"></div>
+    </aside>
+    <button id="wh-unfold" class="stamp hidden" title="Bring the board back">&#10529;</button>
     <div class="wh-bottom stamp">
-      <button class="btn" data-act="roster">ROSTER <kbd>C</kbd></button>
-      <button class="btn" data-act="loadout">LOADOUT <kbd>L</kbd></button>
-      <button class="btn" data-act="character">EQUIPMENT <kbd>V</kbd></button>
-      <button class="btn" data-act="inventory">STORES <kbd>I</kbd></button>
-      <button class="btn" data-act="holdings">HOLDINGS <kbd>K</kbd></button>
-      <button class="btn" data-act="diplomacy">DIPLOMACY <kbd>P</kbd></button>
-      <button class="btn" data-act="board">CONTRACTS <kbd>B</kbd></button>
+      <!-- The seven management buttons moved to the side board, which shows
+           their contents instead of hiding them behind a keypress. What is
+           left here is what you DO with the world rather than with the
+           company: walk into a place, or stop playing. The hotkeys all
+           still work and now jump the board to the right tab. -->
+      <button class="btn" data-act="equipment">EQUIPMENT <kbd>V</kbd></button>
       <button class="btn" id="wh-enter" data-act="enter">ENTER <kbd>E</kbd></button>
       <button class="btn" data-act="menu">MENU <kbd>ESC</kbd></button>
       <span class="wh-hint">CLICK TO TRAVEL &middot; WASD TO STEER &middot; SPACE TO HALT</span>
