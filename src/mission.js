@@ -1202,13 +1202,18 @@ export class Mission {
     const bx = Math.sin(head), bz = Math.cos(head);
     const arms = { inf: [], spear: [], ranged: [] };
     for (const e of mine) arms[this.battleGroup(e)].push(e);
-    const DEPTH = { inf: 0, spear: 5.5, ranged: 13 };
+    const DEPTH = { inf: 0, spear: 7, ranged: 15 };
     for (const [arm, list] of Object.entries(arms)) {
-      const perRank = Math.max(6, Math.ceil(Math.sqrt(list.length) * 2.2));
+      // WIDE, and few ranks deep. At a hundred metres a two-metre interval
+      // closes into one smudge and a host stops reading as ranks at all —
+      // which is the whole point of forming them. Three and a half metres
+      // of frontage per man, and a rank count that grows as the square
+      // root of the arm, so a big host gets WIDER before it gets deeper.
+      const perRank = Math.max(8, Math.ceil(Math.sqrt(list.length) * 3.0));
       list.forEach((e, i) => {
         const rank = Math.floor(i / perRank);
-        const across = ((i % perRank) - (Math.min(perRank, list.length) - 1) / 2) * 2.3;
-        const back = DEPTH[arm] + rank * 2.6;
+        const across = ((i % perRank) - (Math.min(perRank, list.length) - 1) / 2) * 3.5;
+        const back = DEPTH[arm] + rank * 3.4;
         // Abreast of the host's centre, and set BACK along the facing so
         // the line has depth behind its front rank rather than ahead of it.
         e.linePost = {
@@ -2966,14 +2971,17 @@ export class Mission {
     const list = groups[g];
     const i = Math.max(0, list.indexOf(e));
     const shape = this.groupShape[g] || (g === 'ranged' ? 'loose' : 'line');
-    const baseBack = g === 'inf' ? 3.2 : g === 'spear' ? 6.4 : 11.5;
-    const spacing = shape === 'wall' ? 1.15 : shape === 'loose' ? 2.6 : 1.65;
+    const baseBack = g === 'inf' ? 3.2 : g === 'spear' ? 7 : 13;
+    // A line stands wide enough to be a line from across the field; a wall
+    // is deliberately the tight one, because closing the ranks is what it
+    // IS; loose is wider still so a volley cannot take three men at once.
+    const spacing = shape === 'wall' ? 1.3 : shape === 'loose' ? 3.4 : 2.4;
     const ranks = shape === 'line' ? 1 : 2;
     const perRank = Math.max(1, Math.ceil(list.length / ranks));
     const rank = Math.floor(i / perRank);
     const c = (i % perRank) - (Math.min(perRank, list.length) - 1) / 2;
     const side = c * spacing + (shape === 'loose' && rank % 2 ? spacing * 0.5 : 0);
-    const back = baseBack + rank * (shape === 'wall' ? 1.25 : 2.4);
+    const back = baseBack + rank * (shape === 'wall' ? 1.4 : 3.0);
     return { side, back };
   }
 
