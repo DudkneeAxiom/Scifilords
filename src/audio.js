@@ -174,6 +174,161 @@ export function shot(kind = 'rifle', pos = null) {
   tn.start(t); tn.stop(t + 0.6);
 }
 
+// --------------------------------------------------------------------------
+// Steel
+//
+// A melee battle is not a quieter firefight — it is a different noise
+// entirely: air, then a bang, then the long ring of something metal that
+// did not want to be hit. Built from the same three primitives as the gun
+// voices (noise, a pitched body, a tail), because the era changed and the
+// synthesiser did not.
+// --------------------------------------------------------------------------
+
+/** The swing itself: air moving, no contact. Cheap, and it sells weight. */
+export function whoosh(heft = 1, pos = null) {
+  if (!ctx || settings.muted) return;
+  const t = ctx.currentTime;
+  const dest = out(pos);
+  const dur = 0.16 + heft * 0.10;
+  const n = noise();
+  const bp = ctx.createBiquadFilter();
+  bp.type = 'bandpass';
+  // The sweep down is the blade passing: quick for a sword, lumbering for a maul.
+  bp.frequency.setValueAtTime(1500 / heft, t);
+  bp.frequency.exponentialRampToValueAtTime(320 / heft, t + dur);
+  bp.Q.value = 1.4;
+  const g = ctx.createGain();
+  env(g, t, { a: dur * 0.45, d: dur * 0.5, peak: 0.16 + heft * 0.05, r: 0.06 });
+  n.connect(bp); bp.connect(g); g.connect(dest);
+  n.start(t); n.stop(t + dur * 2);
+}
+
+/**
+ * Steel arriving. `kind` is what it arrived ON, which is the whole point: a
+ * blade into a shield is a bang and a long ring, into armour a duller
+ * clash, into a body a wet thud with no ring at all.
+ */
+export function clash(kind = 'armour', heft = 1, pos = null) {
+  if (!ctx || settings.muted) return;
+  const t = ctx.currentTime;
+  const dest = out(pos);
+  const V = {
+    shield: { hz: 1900, q: 2.2, ring: 380, rdur: 0.55, peak: 0.85, lp: 3400 },
+    armour: { hz: 2600, q: 3.4, ring: 720, rdur: 0.30, peak: 0.70, lp: 4200 },
+    parry: { hz: 3300, q: 5.0, ring: 1250, rdur: 0.42, peak: 0.60, lp: 6000 },
+    flesh: { hz: 420, q: 0.8, ring: 0, rdur: 0, peak: 0.55, lp: 900 },
+  };
+  const v = V[kind] || V.armour;
+
+  // The strike: a short filtered crack, pitched by what it hit.
+  const n = noise();
+  const bp = ctx.createBiquadFilter();
+  bp.type = 'bandpass';
+  bp.frequency.setValueAtTime(v.hz * (0.9 + Math.random() * 0.25), t);
+  bp.Q.value = v.q;
+  const ng = ctx.createGain();
+  env(ng, t, { a: 0.0008, d: 0.05 + heft * 0.03, peak: v.peak * (0.8 + heft * 0.3), r: 0.05 });
+  n.connect(bp); bp.connect(ng); ng.connect(dest);
+  n.start(t); n.stop(t + 0.3);
+
+  // The body of the blow: low, brief, heavier for heavier weapons.
+  const o = ctx.createOscillator();
+  o.type = 'triangle';
+  o.frequency.setValueAtTime(300 / heft, t);
+  o.frequency.exponentialRampToValueAtTime(70, t + 0.12);
+  const og = ctx.createGain();
+  env(og, t, { a: 0.001, d: 0.09, peak: 0.35 * heft, r: 0.08 });
+  const lp = ctx.createBiquadFilter();
+  lp.type = 'lowpass'; lp.frequency.value = v.lp;
+  o.connect(lp); lp.connect(og); og.connect(dest);
+  o.start(t); o.stop(t + 0.3);
+
+  // The ring: plate and blades sing afterwards. Flesh does not.
+  if (v.ring) {
+    for (let i = 0; i < 2; i++) {
+      const r = ctx.createOscillator();
+      r.type = 'triangle';
+      r.frequency.value = v.ring * (i ? 1.51 : 1) * (0.95 + Math.random() * 0.12);
+      const rg = ctx.createGain();
+      env(rg, t + 0.005, { a: 0.004, d: v.rdur, peak: 0.13 / (i + 1), r: v.rdur * 0.6 });
+      r.connect(rg); rg.connect(dest);
+      r.start(t); r.stop(t + v.rdur * 2);
+    }
+  }
+}
+
+/** A bow: the string, then the shaft going away. */
+export function bowshot(pos = null) {
+  if (!ctx || settings.muted) return;
+  const t = ctx.currentTime;
+  const dest = out(pos);
+  const o = ctx.createOscillator();
+  o.type = 'triangle';
+  o.frequency.setValueAtTime(240, t);
+  o.frequency.exponentialRampToValueAtTime(90, t + 0.09);
+  const g = ctx.createGain();
+  env(g, t, { a: 0.001, d: 0.07, peak: 0.35, r: 0.05 });
+  o.connect(g); g.connect(dest);
+  o.start(t); o.stop(t + 0.2);
+  const n = noise();
+  const bp = ctx.createBiquadFilter();
+  bp.type = 'bandpass';
+  bp.frequency.setValueAtTime(2600, t);
+  bp.frequency.exponentialRampToValueAtTime(1100, t + 0.18);
+  bp.Q.value = 1.1;
+  const ng = ctx.createGain();
+  env(ng, t, { a: 0.002, d: 0.16, peak: 0.22, r: 0.08 });
+  n.connect(bp); bp.connect(ng); ng.connect(dest);
+  n.start(t); n.stop(t + 0.4);
+}
+
+/** An arrow finding something. Short, and it does not ring. */
+export function arrowHit(kind = 'flesh', pos = null) {
+  if (!ctx || settings.muted) return;
+  if (kind === 'shield') { clash('shield', 0.5, pos); return; }
+  const t = ctx.currentTime;
+  const dest = out(pos);
+  const n = noise();
+  const f = ctx.createBiquadFilter();
+  f.type = 'lowpass';
+  f.frequency.value = kind === 'flesh' ? 800 : 2200;
+  const g = ctx.createGain();
+  env(g, t, { a: 0.001, d: 0.05, peak: 0.4, r: 0.04 });
+  n.connect(f); f.connect(g); g.connect(dest);
+  n.start(t); n.stop(t + 0.2);
+}
+
+/**
+ * Voices. Not words — a battle line does not enunciate. A shout on the
+ * charge, a grunt taking a hit, and the ugly noise a line makes when it
+ * decides to be somewhere else. One formant band is the whole trick: it
+ * turns a sawtooth into a throat.
+ */
+export function cry(kind = 'charge', pos = null) {
+  if (!ctx || settings.muted) return;
+  const t = ctx.currentTime;
+  const dest = out(pos);
+  const V = {
+    charge: { f0: 190, f1: 260, dur: 0.50, peak: 0.30, form: 900 },
+    hurt: { f0: 240, f1: 130, dur: 0.26, peak: 0.26, form: 700 },
+    rout: { f0: 300, f1: 420, dur: 0.42, peak: 0.24, form: 1300 },
+  };
+  const v = V[kind] || V.charge;
+  const jitter = 0.85 + Math.random() * 0.3;
+  const o = ctx.createOscillator();
+  o.type = 'sawtooth';
+  o.frequency.setValueAtTime(v.f0 * jitter, t);
+  o.frequency.linearRampToValueAtTime(v.f1 * jitter, t + v.dur);
+  const bp = ctx.createBiquadFilter();
+  bp.type = 'bandpass';
+  bp.frequency.value = v.form * jitter;
+  bp.Q.value = 2.2;
+  const g = ctx.createGain();
+  env(g, t, { a: 0.02, d: v.dur * 0.7, peak: v.peak, r: v.dur * 0.5 });
+  o.connect(bp); bp.connect(g); g.connect(dest);
+  o.start(t); o.stop(t + v.dur * 1.8);
+}
+
 export function impact(kind = 'dirt', pos = null) {
   if (!ctx || settings.muted) return;
   const t = ctx.currentTime;

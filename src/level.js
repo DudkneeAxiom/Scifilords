@@ -162,6 +162,15 @@ function buildGround(size, colorTop, colorLow, colorAcc) {
     const gz = (heightAt(x, z + 4) - heightAt(x, z - 4)) / 8;
     const slope = Math.min(1, Math.hypot(gx, gz) * 2.2);
     c.lerp(cRock, slope * 0.5);
+    // HILLSHADE. Lambert alone describes relief by how the light rakes it,
+    // which works at eye level and disappears from directly overhead — and
+    // the tactical camera looks straight down, so a commander could not see
+    // the ridge they were supposed to be planning around. This bakes a
+    // fixed-azimuth shade into the vertex colour: slopes facing the light
+    // lift, slopes facing away sink, from every camera angle there is.
+    // Cheap, because the gradients are already in hand.
+    const lit = (-gx * 0.707 - gz * 0.707);        // light from the north-west
+    c.offsetHSL(0, 0, Math.max(-0.09, Math.min(0.09, lit * 0.30)));
     colors[i * 3] = c.r; colors[i * 3 + 1] = c.g; colors[i * 3 + 2] = c.b;
   }
   geo.setAttribute('color', new THREE.BufferAttribute(colors, 3));

@@ -38,8 +38,31 @@ const BLEED_OUT = 55;      // seconds a downed soldier has before it is permanen
 // Raised from 34 after character instancing: fifty combatants used to cost
 // ~350 character draw calls and now cost the same ~30 pools regardless of
 // count (tools/perf.mjs field scene: 874 → 79 calls). The cap is now paid
-// in simulation, which measures ~0.8ms/step at this scale.
-const FIELD_CAP = 48;
+// in simulation.
+//
+// Raised again to 120 for the melee overhaul, on measurement rather than
+// nerve — tools/scale.mjs sweeps the size and the curve has no cliff in it:
+//
+//    bodies    sim p50   draw p50   total   calls
+//      100       3.0ms      1.9ms   4.9ms      18
+//      160       7.3ms      2.9ms  10.2ms      18
+//      240      11.3ms      2.7ms  14.0ms      18
+//
+// Linear at roughly 0.047ms of simulation per body, draw calls pinned flat
+// by the instancing, and that is SOFTWARE rendering (swiftshader) — real
+// hardware makes the draw column nearly free. A cap of 120 hostiles plus
+// allies and the squad lands near that 160-body row: about 10ms of a
+// 16.7ms frame on the slowest thing we can measure on, which leaves the
+// headroom a weaker machine needs. Bigger numbers are AVAILABLE and are
+// deliberately not taken: 240 measured fine here and would leave nothing
+// spare anywhere else.
+const FIELD_CAP = 120;
+
+// How many bodies each instance pool can hold. It has to exceed the WHOLE
+// field — hostiles at the cap, plus allied waves, plus the squad — because
+// an InstancedMesh silently stops drawing past its capacity, which reads as
+// soldiers turning invisible rather than as a limit being reached.
+const INSTANCE_CAP = 320;
 
 // How far a focus-fire mark survives. Past this the squad could not engage it
 // anyway, and a marker on someone nobody can shoot is worse than no marker.
@@ -500,7 +523,7 @@ export class Mission {
       this.ringMesh = new THREE.InstancedMesh(geo, new THREE.MeshBasicMaterial({
         color: 0xffffff, transparent: true, opacity: 0.55,
         side: THREE.DoubleSide, depthWrite: false,
-      }), 160);
+      }), INSTANCE_CAP);
       this.ringMesh.renderOrder = 2;
       // Instances move every frame; a stale whole-mesh bounds culls them all.
       this.ringMesh.frustumCulled = false;
@@ -510,7 +533,7 @@ export class Mission {
     }
     let n = 0;
     for (const e of this.entities) {
-      if (n >= 160) break;
+      if (n >= INSTANCE_CAP) break;
       if (e.isPlayer || e.dead) continue;
       if (e.side !== 'player' && e.side !== 'enemy') continue;
       this.ringM4.makeTranslation(e.x, Level.heightAt(e.x, e.z) + (e.elev || 0) + 0.06, e.z);
@@ -811,7 +834,7 @@ export class Mission {
       const key = o.geometry.uuid;
       let pool = this.charPools.get(key);
       if (!pool) {
-        const im = new THREE.InstancedMesh(o.geometry, o.material, 160);
+        const im = new THREE.InstancedMesh(o.geometry, o.material, INSTANCE_CAP);
         im.castShadow = true;
         // Instances move every frame; a stale whole-mesh bound culls them
         // all at once — same rule as the faction rings.
@@ -1064,9 +1087,21 @@ export class Mission {
     const fast = [...mine].sort((a, b) => (b.aggression || 0) - (a.aggression || 0));
     const detail = posture === 'snipe'
       ? fast.slice(0, Math.max(2, Math.floor(mine.length * 0.3))) : [];
+    // Where the other side is, as one point. An army that has lost sight of
+    // you does not stand in a field wondering — it marches at where you are.
+    let cx = 0, cz = 0;
+    for (const t of theirs) { cx += t.x; cz += t.z; }
+    cx /= theirs.length; cz /= theirs.length;
+    this.foeAdvanceOn = { x: cx, z: cz };
     for (const e of mine) {
       e.holdGround = posture === 'hold' && (e.weapon?.bow || e.bowStowed);
       e.withdrawing = posture === 'withdraw' && !(e.weapon?.bow);
+      // THE ADVANCE. Without this the line closed to the edge of its own
+      // eyesight, arrived at a stale sighting, and milled about there —
+      // two armies stalled 70m apart with nothing happening, which the
+      // campaign-loop probe caught as a battle that produced no result.
+      e.advanceOn = posture === 'advance' || posture === 'snipe'
+        ? this.foeAdvanceOn : null;
       if (detail.includes(e) && exposed.length) {
         // Pick the exposed archer nearest this man, and go for them.
         let best = exposed[0], bd = Infinity;
@@ -1427,17 +1462,28 @@ export class Mission {
 
   /** Put a batch of hostiles on the field, arced across the approach. */
   deployEnemyWave(n, roles, initial = false) {
+    // The next rank comes up the field in a LINE, from the far edge, the way
+    // a reserve is actually committed. The old arc dropped them on a random
+    // bearing at a random distance, which reads as men appearing out of the
+    // air behind you — and the directive is explicit that reinforcements
+    // arrive from the appropriate side, never in the middle of a fight.
+    const bound = this.level.bounds || Level.BOUNDS;
+    const back = initial ? Math.min(46, bound - 14) : Math.min(bound - 10, 78);
+    const perRank = 10;
     for (let i = 0; i < n; i++) {
-      const a = (i / Math.max(1, n)) * Math.PI * 1.3 - Math.PI * 0.65;
-      // Pushed out and left unaware: a road ambush that opens with rounds
-      // already incoming gives the player nothing to do.
-      const d = (initial ? 32 : 48) + this.r() * 18;
+      const rank = Math.floor(i / perRank);
+      const across = ((i % perRank) - (Math.min(perRank, n) - 1) / 2) * 2.8;
       const e = this.spawnEnemy(
-        Math.sin(a) * d + range(this.r, -6, 6),
-        -Math.cos(a) * d + range(this.r, -6, 6),
+        across + range(this.r, -1, 1),
+        -back - rank * 3.4 + range(this.r, -1, 1),
         pick(this.r, roles));
+      // Facing the fight from the moment they arrive, not milling about.
+      e.yaw = 0;
       if (initial) { e.state = 'guard'; e.alert = 0.2; }
-      else { e.state = 'hunt'; e.alert = 1; e.lastSeen = { x: this.player.x, z: this.player.z }; }
+      else {
+        e.state = 'hunt'; e.alert = 1;
+        e.lastSeen = { x: this.player.x, z: this.player.z };
+      }
     }
   }
 
@@ -2025,8 +2071,14 @@ export class Mission {
         desc: 'Break contact and pull in behind you.' },
       { id: 'hold', name: 'HOLD', key: 'H',
         desc: 'Stop here and hold this ground.' },
-      { id: 'cover', name: 'TAKE COVER', key: 'G',
-        desc: 'Get behind the nearest hard thing and stay down until told.' },
+      // TAKE COVER is gone. It was the last ordered verb that only made
+      // sense with a gun in your hands — a line that goes to ground behind
+      // a wall is a line that is not holding its frontage, and the whole
+      // overhaul is about the frontage. Soldiers still USE cover to break
+      // a bowman's sightline; they are simply no longer ordered to hide
+      // behind it. (The G key now stands the arms' shapes back to line.)
+      { id: 'wall', name: 'SHIELD WALL', key: 'G',
+        desc: 'Close the ranks of whichever arm you have selected.' },
       { id: 'follow', name: 'FORM UP', key: 'F',
         desc: 'Back on me, in whatever shape you last called.' },
       { id: 'battle', name: 'BATTLE LINE', key: '',
@@ -2126,7 +2178,7 @@ export class Mission {
     else if (id === 'suppress') this.orderSuppress(aim);
     else if (id === 'flank') this.orderFlank(aim);
     else if (id === 'fallback') this.orderFallBack();
-    else if (id === 'cover') this.orderTakeCover(aim);
+    else if (id === 'wall') this.orderShieldWall();
     else this.setSquadOrder(id);
   }
 
@@ -2180,7 +2232,7 @@ export class Mission {
       }
       if (k === 'z') this.orderFlank();
       if (k === 'v') this.orderFallBack();
-      if (k === 'g') this.orderTakeCover();
+      if (k === 'g') this.orderShieldWall();
       // Individual selection — and control groups. Ctrl+digit binds the
       // current selection to the digit; in tactical mode the bare digit
       // recalls the group. In the shoulder view digits keep their original
@@ -2717,6 +2769,20 @@ export class Mission {
       ? label : `${label} — NOBODY CARRIES IT`, 'order');
   }
 
+  /**
+   * Close the ranks of whatever is selected. The direct verb, where
+   * cycleGroupShape is the browse-through-them one — in a fight you want
+   * "wall, now", not three presses of a cycle key.
+   */
+  orderShieldWall() {
+    const sel = this.commanded();
+    if (!sel.length) return;
+    const groups = new Set(sel.map((s) => this.battleGroup(s)));
+    for (const g of groups) this.groupShape[g] = 'wall';
+    Audio.order();
+    this.onToast(this.selectionLabel(), 'SHIELD WALL', 'order');
+  }
+
   /** Cycle the selected arm's shape: line → wall → loose. */
   cycleGroupShape() {
     // Which arm is selected? All of one kind, or the shape call is ambiguous.
@@ -3126,6 +3192,12 @@ export class Mission {
     e.swing = { t: 0, dur, dir, hitDone: false };
     e.cooldown = dur + 0.12;               // recovery beyond the follow-through
     e.guard = 0;                           // you cannot hide behind a swing
+    // Air first. The heft is the weapon's own swing time, so a maul sounds
+    // like a maul without anybody having to say so.
+    Audio.whoosh(clamp(dur / 0.55, 0.6, 2), this.relPos(e));
+    // A closing man shouts, sometimes. Not every swing — that is a crowd,
+    // not a battle line.
+    if (!e.isPlayer && this.r() < 0.12) Audio.cry('charge', this.relPos(e));
     this.raiseAlarm(e, e.target || { x: e.x, z: e.z });
   }
 
@@ -3194,7 +3266,8 @@ export class Mission {
         dmg *= 0.3;                        // bare steel turns most of it
       }
       if (best.isPlayer) this.pStamina = Math.max(0, this.pStamina - 0.15);
-      Audio.impact('metal', this.relPos(best));
+      Audio.clash((best.shieldHp || 0) > 0 ? 'shield' : 'parry',
+        clamp((w.reach || 2) / 2.2, 0.7, 1.8), this.relPos(best));
     }
     // Stagger: weight interrupts. A maul cancels a sword mid-swing;
     // equals trade cancels; a blade staggers nothing.
@@ -3205,6 +3278,11 @@ export class Mission {
     }
     if (dmg > 0) {
       const hy = Level.heightAt(best.x, best.z) + 1.2 + (best.elev || 0);
+      // Armour turns some of it into noise; a soft target does not.
+      const armoured = (best.eff?.maxHp ?? best.maxHp ?? 100) > 110;
+      Audio.clash(armoured ? 'armour' : 'flesh',
+        clamp((w.reach || 2) / 2.2, 0.7, 1.8), this.relPos(best));
+      if (!best.isPlayer && this.r() < 0.35) Audio.cry('hurt', this.relPos(best));
       this.applyDamage(best, dmg, e, { x: best.x, y: hy, z: best.z });
       // Connecting has weight the hand can feel.
       if (e.isPlayer) this.shake = Math.max(this.shake || 0, 0.22);
@@ -3289,8 +3367,10 @@ export class Mission {
         if ((hit.shieldHp || 0) > 0 && Math.abs(angleDelta(from, hit.yaw)) < arc) {
           hit.shieldHp = Math.max(0, hit.shieldHp - 8);
           hit.char.flinch();
+          Audio.arrowHit('shield', this.relPos(hit));
         } else {
           const fall = clamp(a.t / 2.2, 0, 1);
+          Audio.arrowHit('flesh', this.relPos(hit));
           this.applyDamage(hit, lerp(a.dmg, a.dmgFar, fall), a.shooter,
             { x: nx, y: ny, z: nz });
         }
@@ -3370,10 +3450,21 @@ export class Mission {
   // called rather than chased across the basin.
   // ------------------------------------------------------------------
 
-  /** Starting nerve for a body: rank and temperament, so veterans hold. */
+  /**
+   * Starting nerve for a body: rank and temperament, so veterans hold.
+   *
+   * The player's own people start well above everybody else, and that is
+   * not a thumb on the scale — a Bracket company is four to eight
+   * professionals who CHOSE this, standing next to somebody they follow,
+   * and being outnumbered is their normal working condition. Tuned after
+   * the first pass broke the player's squad in about eleven seconds of any
+   * ordinary contract, which turned every fight into a rout and made the
+   * cover order untestable.
+   */
   baseNerve(e) {
     const rank = e.soldier?.rank ?? 1;
-    return 55 + rank * 12 + (e.aggression || 0.5) * 20;
+    const professional = e.side === 'player' ? 30 : 0;
+    return 55 + professional + rank * 12 + (e.aggression || 0.5) * 20;
   }
 
   updateMorale(dt) {
@@ -3397,18 +3488,20 @@ export class Mission {
         if (e.down || e.dead) continue;
         if (e.nerve === undefined) e.nerve = this.baseNerve(e);
         if (e.routing) continue;
-        let drift = 1.1;                      // nerve creeps back on its own
+        let drift = 1.4;                      // nerve creeps back on its own
         // Friends going down and friends running are the two things that
-        // actually break a line.
-        drift -= (e.casualtySeen || 0) * 3.2;
+        // actually break a line. Everything else is a nudge — being
+        // outnumbered is a fact of the job, not a reason to run on its own.
+        drift -= (e.casualtySeen || 0) * 2.6;
         e.casualtySeen = 0;
-        drift -= routing * 1.6;
-        if (odds < 0.6) drift -= 2.4;
-        else if (odds > 1.6) drift += 0.8;
+        drift -= routing * 1.5;
+        if (odds < 0.4) drift -= 1.2;
+        else if (odds < 0.7) drift -= 0.5;
+        else if (odds > 1.6) drift += 0.6;
         // Somebody in charge, standing where they can be seen.
         if (side === 'player' && p && !p.down
-          && Math.hypot(p.x - e.x, p.z - e.z) < 20) drift += 2.6;
-        if (e.hp < e.maxHp * 0.35) drift -= 1.4;
+          && Math.hypot(p.x - e.x, p.z - e.z) < 20) drift += 3.2;
+        if (e.hp < e.maxHp * 0.35) drift -= 1.2;
         e.nerve = clamp(e.nerve + drift, 0, 120);
         // Veterans hold past the point where recruits do not.
         const breakAt = 12 + (3 - Math.min(3, e.soldier?.rank ?? 1)) * 6;
@@ -3436,6 +3529,7 @@ export class Mission {
     }
     const a = away ? Math.atan2(e.x - away.x, e.z - away.z) : this.r() * 6.28;
     e.routPoint = { x: e.x + Math.sin(a) * 220, z: e.z + Math.cos(a) * 220 };
+    Audio.cry('rout', this.relPos(e));
     if (e.side === 'player') this.onToast('BREAKING', `${e.name} has had enough`, 'bad');
   }
 
@@ -3529,6 +3623,7 @@ export class Mission {
       e.cooldown = 60 / w.rpm + this.r() * 0.8;
       e.char.kick();
       this.looseArrow(e, tx, ty, tz);
+      Audio.bowshot(this.relPos(e));
       this.raiseAlarm(e, e.target || { x: tx, z: tz });
       return;
     }
@@ -4054,7 +4149,13 @@ export class Mission {
     if (this.rts) {
       this.aiming = false;
       if (!this.playerAuto) p.moveSpeed = 0;
-      let foe = null, fd = (p.weapon?.range || 30) * 1.1;
+      // How far the commander will look for somebody to answer. A gun's
+      // range is its own answer; STEEL's range is its reach, and using that
+      // meant a swordsman commander searched two metres and quietly stood
+      // there being killed in tactical view. Melee looks a body's length of
+      // ground around itself and lets the movement layer close the rest.
+      let foe = null;
+      let fd = p.weapon?.melee ? 14 : (p.weapon?.range || 30) * 1.1;
       for (const e of this.entities) {
         if (e.side !== 'enemy' || e.dead || e.down) continue;
         const d = Math.hypot(e.x - p.x, e.z - p.z);
@@ -4861,6 +4962,18 @@ export class Mission {
       // Slow scan so a static guard is not a statue.
       e.yaw += Math.sin(this.time * 0.5 + e.x) * dt * 0.35;
     } else if (e.state === 'hunt') {
+      // Under an advance, the army's objective outranks a stale sighting:
+      // it walks at where the other side actually IS. This is what closes
+      // the last seventy metres, which is otherwise a range nobody can see
+      // across and both lines stand in.
+      if (e.advanceOn && !e.withdrawing) {
+        const ad = Math.hypot(e.advanceOn.x - e.x, e.advanceOn.z - e.z);
+        if (ad > 6) {
+          this.moveToward(dt, e, e.advanceOn.x, e.advanceOn.z, e.speed * 0.85);
+          this.faceMotion(e, dt);
+          return;
+        }
+      }
       const ls = e.lastSeen;
       if (ls && this.moveToward(dt, e, ls.x, ls.z, e.speed * 0.8) < 3) {
         e.lastSeen = null;

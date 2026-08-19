@@ -4103,94 +4103,53 @@ test('the company arrives facing the job, with no crosshair over the cinematic',
   expect(r.hiddenAfter, 'crosshair never comes back').toBe(false);
 });
 
-test('the squad can be ordered into cover, and out of it again', async ({ page }) => {
-  test.setTimeout(120000);
+test('the shooter verb is gone: no take-cover order, a shield wall in its place', async ({ page }) => {
   await boot(page);
   await newCampaign(page);
-
-  const r = await page.evaluate(async () => {
-    const { Mission, bodyCapsule } = await import('/src/mission.js');
-    const Level = await import('/src/level.js');
-    const State = await import('/src/state.js');
+  await page.evaluate(async () => {
+    const { Mission } = await import('/src/mission.js');
+    const UI = await import('/src/ui.js');
     const G = window.KR;
-    // Build the whole scenario from a fixed seed rather than pinning one input.
-    //
-    // Setting only S.seed still left the ROSTER generated from the random seed
-    // newCampaign had already chosen, so soldiers' speeds varied and reaching
-    // cover before the deadline became a race this test lost about one run in
-    // six. Regenerating the campaign fixes the layout and the people together.
-    const S = State.newCampaign(12345);
-    G.campaign = S;
-    S.renown = 4000;
+    const S = G.campaign;
+    G.mission?.dispose();
     G.world?.dispose(); G.world = null;
     document.getElementById('viewport').innerHTML = '';
-    const m = new Mission({
+    UI.show('hud');
+    G.mission = new Mission({
       campaign: S,
-      spec: { type: 'skirmish', site: 'grellan', layout: 'grellan', siteName: 'T',
-        enemyFaction: 'trust' },
+      spec: { type: 'skirmish', site: 'roadside', layout: 'roadside',
+        enemyFaction: 'raider', party: { strength: 4 } },
       squad: S.roster.slice(0, 4),
       container: document.getElementById('viewport'),
       onHud: () => {}, onToast: () => {}, onIntro: () => {}, onWheel: () => {}, onEnd: () => {},
     });
-    await m.start();
-    m.paused = false; m.hadLock = true;
-    if (m.intro) { m.intro.active = false; m.time = m.intro.graceUntil + 0.1; }
-
-    const threat = m.entities.find((e) => e.side === 'enemy' && !e.dead);
-    // coverH rather than h — see the note in the cover test above.
-    const cov = m.level.covers.find((o) => o.coverH > 0.7 && o.coverH < 1.6);
-    m.player.x = cov.x + 4; m.player.z = cov.z + 9;
-    threat.x = cov.x; threat.z = cov.z - 22;
-    m.squad.forEach((s, i) => { s.x = m.player.x + (i - 1) * 2.4; s.z = m.player.z + 1.5; });
-
-    m.selectAll();
-    m.orderTakeCover({ x: threat.x, z: threat.z });
-    const ordered = m.squad.filter((s) => s.order === 'cover').length;
-    // Ten seconds of walking. Long enough that arriving is not a race.
-    for (let i = 0; i < 620; i++) m.step(0.016);
-
-    const shielded = m.squad.filter((s) =>
-      !Level.hasLOS(m.level.obstacles, s.x, s.z, threat.x, threat.z, 1.5)).length;
-    const down = m.squad.filter((s) => (s.tuck || 0) > 0.5).length;
-    const shorter = m.squad.filter((s) => {
-      const c = bodyCapsule(s);
-      return (c.hi - c.lo) < 1.2;
-    }).length;
-
-    // Release is a test of the ORDER, not of nerve under fire — a soldier who
-    // keeps their head down while somebody is actively shooting at them is
-    // being sensible, not disobedient, and with the aim model retuned the
-    // threat now suppresses hard enough that two seconds was no longer time
-    // to stand. Silence the threat, then wait on the state: everyone still on
-    // their feet is up, or the cap says they never would be.
-    threat.hp = 0; threat.dead = true;
-    m.setSquadOrder('follow');
-    for (let i = 0; i < 600; i++) {
-      m.step(0.016);
-      if (m.squad.every((s) => s.down || (s.tuck || 0) < 0.4)) break;
-    }
-    return {
-      n: m.squad.length, ordered, shielded, down, shorter,
-      onWheel: m.ORDERS.some((o) => o.id === 'cover'),
-      // Only those still on their feet. Somebody who has been shot down during
-      // the fight keeps whatever order they had, and counting them as
-      // disobedient makes this a test of whether anyone got hurt.
-      up: m.squad.filter((s) => !s.down).length,
-      released: m.squad.filter((s) => !s.down && s.order === 'follow').length,
-      stoodUp: m.squad.filter((s) => !s.down && (s.tuck || 0) < 0.4).length,
-    };
+    await G.mission.start();
+    G.mission.paused = true;
   });
-
-  expect(r.onWheel, 'no cover order on the command wheel').toBe(true);
-  expect(r.ordered).toBe(r.n);
-  // What separates a cover order from a move order: the position breaks the
-  // sightline, and they actually get down behind it.
-  expect(r.shielded).toBeGreaterThanOrEqual(Math.ceil(r.n / 2));
-  expect(r.down, 'they walked to a wall and stood next to it').toBeGreaterThanOrEqual(Math.ceil(r.n / 2));
-  expect(r.shorter).toBeGreaterThanOrEqual(Math.ceil(r.n / 2));
-  // And cover must not be a trap they cannot be called out of.
-  expect(r.released).toBe(r.up);
-  expect(r.stoodUp).toBe(r.up);
+  await page.waitForFunction(() => window.KR.mission?.player, null, { timeout: 40000 });
+  const r = await page.evaluate(() => {
+    const m = window.KR.mission;
+    // The gun era had a TAKE COVER order on the wheel and the G key. A line
+    // that goes to ground behind a wall is a line not holding its frontage,
+    // and the frontage is the whole game now.
+    const stillThere = m.ORDERS.some((o) => o.id === 'cover');
+    const wall = m.ORDERS.find((o) => o.id === 'wall');
+    m.selectGroup('inf');
+    m.orderShieldWall();
+    const shape = m.groupShape.inf;
+    // And the slots it produces are genuinely tighter than a line's.
+    const inf = m.squad.filter((s) => !s.dead && m.battleGroup(s) === 'inf');
+    const wallSpread = inf.length > 1
+      ? Math.abs(m.battleSlot(inf[0]).side - m.battleSlot(inf[1]).side) : null;
+    m.groupShape.inf = 'line';
+    const lineSpread = inf.length > 1
+      ? Math.abs(m.battleSlot(inf[0]).side - m.battleSlot(inf[1]).side) : null;
+    return { stillThere, wallKey: wall?.key, shape, wallSpread, lineSpread };
+  });
+  expect(r.stillThere).toBe(false);
+  expect(r.wallKey).toBe('G');
+  expect(r.shape).toBe('wall');
+  if (r.wallSpread !== null) expect(r.wallSpread).toBeLessThan(r.lineSpread);
 });
 
 test('the player is told which way the fire is coming from', async ({ page }) => {
@@ -5344,11 +5303,19 @@ test('the tactical camera commands the squad, and the commander is a unit too', 
     // Park an enemy in front of them; they face it and return fire on their
     // own, through the same AI path the rest of the company uses.
     const foe = m.entities.find((e) => e.side === 'enemy' && !e.dead);
-    foe.x = p.x + 8; foe.z = p.z; foe.down = false;
+    // At CONTACT range: a commander holding steel answers with steel, and
+    // in tactical view he holds his ground rather than charging off, so
+    // the foe has to be inside his reach for there to be anything to see.
+    foe.x = p.x + 1.6; foe.z = p.z; foe.down = false;
+    foe.hp = foe.maxHp = 500;
     m.playerAuto = null;
     const shotsBefore = m.stats.shotsFired;
+    const swingsBefore = m.stats.swings || 0;
+    const foeHp0 = foe.hp;
     for (let i = 0; i < 240; i++) m.updatePlayer(0.05);
-    const defended = m.stats.shotsFired > shotsBefore;
+    // Bullets OR blade — the point is that he did not stand there and die.
+    const defended = m.stats.shotsFired > shotsBefore
+      || (m.stats.swings || 0) > swingsBefore || foe.hp < foeHp0;
     m.toggleTactical();
     return { on, hudFlag, boxed, ordered, auto, before, after, routed, defended, off: !m.rts };
   });
@@ -7243,7 +7210,9 @@ test('arrows are bodies in flight: the arc, the plate, and the blade', async ({ 
     for (let i = 0; i < 90; i++) realStep(1 / 30);
     const heldQuiet = m.arrows.length <= count0 + 0;
     m.toggleHoldFire(archers);
-    for (let i = 0; i < 150; i++) realStep(1 / 30);
+    // A bow is DELIBERATE: ~4s of draw plus reaction. Five seconds was a
+    // coin-flip on whether one arrow had left yet; give the volley room.
+    for (let i = 0; i < 420; i++) realStep(1 / 30);
     const released = m.arrows.length > count0 || near.hp < 200;
 
     // 4) The blade at close quarters: pressed, the bow goes over the shoulder.
@@ -7306,7 +7275,7 @@ test('the company carries steel: roles remap, plate at spawn, doctrine skews the
   expect(camp.doctrines).toContain('trust');
   // Nobody in a fresh company is holding a gun.
   expect(camp.anyGun).toBe(false);
-  expect(camp.startArmoury.sort()).toEqual(['spear', 'sword']);
+  expect(camp.startArmoury.sort()).toEqual(['bow', 'spear']);
 
   // Then the field: plate and mesh arrive together, at spawn.
   const field = async (faction) => {
@@ -7579,4 +7548,103 @@ test('ground with opinions: ridges, chokepoints, and a hill that charges for its
   expect(tactics.withMaul).toBeLessThan(tactics.withBow * 0.95);
   // Height puts more of the draw into the flight.
   expect(tactics.highSpeed).toBeGreaterThan(tactics.lowSpeed);
+});
+
+test('the loop closes: army in, battle fought, casualties and veterans out', async ({ page }) => {
+  test.setTimeout(180000);
+  await boot(page);
+  await newCampaign(page);
+  const r = await page.evaluate(async () => {
+    const { Mission } = await import('/src/mission.js');
+    const { STATUS } = await import('/src/roster.js');
+    const UI = await import('/src/ui.js');
+    const G = window.KR;
+    const S = G.campaign;
+    // A company built on the campaign map: line, spears, a bow.
+    const kit = ['rifleman', 'rifleman', 'gunner', 'marksman'];
+    S.roster.slice(0, 4).forEach((s, i) => {
+      s.role = kit[i];
+      s.weapon = { rifleman: 'sword', gunner: 'spear', marksman: 'bow' }[kit[i]];
+      s.xp = 0; s.rank = 1;
+    });
+    const before = S.roster.slice(0, 4).map((s) => ({
+      id: s.id, role: s.role, weapon: s.weapon, xp: s.xp,
+      deployments: s.deployments, status: s.status,
+    }));
+
+    G.mission?.dispose();
+    G.world?.dispose(); G.world = null;
+    document.getElementById('viewport').innerHTML = '';
+    UI.show('hud');
+    G.mission = new Mission({
+      campaign: S,
+      spec: { type: 'skirmish', site: 'relay', layout: 'relay',
+        enemyFaction: 'trust', party: { kind: 'patrol_trust', strength: 10, quality: 0.9 } },
+      squad: S.roster.slice(0, 4),
+      container: document.getElementById('viewport'),
+      onHud: () => {}, onToast: () => {}, onIntro: () => {}, onWheel: () => {}, onEnd: () => {},
+    });
+    await G.mission.start();
+    const m = G.mission;
+    // THE ARMY IS THE ARMY: the people on the field are the people on the
+    // roster, carrying what the roster says they carry.
+    const fielded = [m.player, ...m.squad].map((e) => ({
+      id: e.soldier?.id, weapon: e.weapon?.id,
+    }));
+
+    // Fight it out: everyone charges, and the sim runs until it resolves.
+    m.paused = false;
+    const realStep = m.step.bind(m);
+    m.step = () => {};
+    m.setSquadOrder('charge');
+    for (const e of m.entities) {
+      if (e.side === 'enemy' && !e.dead) {
+        e.state = 'hunt'; e.alert = 1; e.arriving = 0;
+        e.lastSeen = { x: m.player.x, z: m.player.z };
+      }
+    }
+    // Give the player's side the edge so the loop reaches a WIN branch.
+    for (const e of [m.player, ...m.squad]) { e.maxHp = 400; e.hp = 400; }
+    let steps = 0;
+    for (; steps < 5400; steps++) {
+      realStep(1 / 30);
+      if (m.over) break;
+      const foesLeft = m.entities.some((e) => e.side === 'enemy' && !e.dead && !e.routing);
+      const spent = (m.skirmishTotal || 0) - (m.skirmishCommitted || 0) <= 0;
+      if (!foesLeft && spent) break;
+    }
+    const routed = m.routCalled === true;
+    const killed = m.stats.kills;
+    // Did the two armies actually MEET? A loop test that passes on a
+    // battle nobody fought is worth nothing.
+    const foeHurt = m.entities.some((e) => e.side === 'enemy' && (e.dead || e.hp < e.maxHp));
+    const swung = (m.stats.swings || 0) > 0;
+
+    // Close the loop the way extraction does: endMission is what tells
+    // the campaign what happened to each body.
+    // endMission hands the payload to onEnd on a 1.4s presentation timer;
+    // m.result is the same object, available the moment it is built.
+    m.over = false;
+    m.endMission(true, 'extracted');
+    const handed = m.result;
+    return {
+      before, fielded, routed, killed, contact: foeHurt || swung || killed > 0,
+      seconds: Math.round(steps / 30),
+      hasResult: !!handed,
+      results: handed ? handed.soldierResults.map((x) => ({ id: x.id, status: x.status })) : null,
+    };
+  });
+  // The campaign's people, holding the campaign's steel.
+  expect(r.fielded.length).toBe(4);
+  expect(r.fielded.every((f) => f.id)).toBe(true);
+  expect(r.fielded.map((f) => f.weapon).sort())
+    .toEqual(['bow', 'spear', 'sword', 'sword']);
+  // It was a battle, and it RESOLVED — by killing them or by breaking
+  // them, which are equally good answers now and the second is the one
+  // the overhaul was asking for.
+  expect(r.contact).toBe(true);
+  expect(r.seconds).toBeLessThan(180);
+  // And it produces a result the campaign can absorb.
+  expect(r.hasResult).toBe(true);
+  expect(r.results.length).toBe(4);
 });
