@@ -2510,7 +2510,8 @@ export class Mission {
   // ======================================================================
 
   toggleTactical() {
-    if (this.over || this.intro?.active) return;
+    // The setup window is exactly when a commander most wants this view.
+    if (this.over || (this.intro?.active && !this.intro.setup)) return;
     // The pit has no squad to command, and the crowd does not take orders.
     if (this.spec.type === 'pit') return;
     this.rts = !this.rts;
@@ -6210,14 +6211,26 @@ export class Mission {
     const it = this.intro;
     if (!it?.active) return;
     it.t += dt;
+    // THE DEPLOYMENT PHASE. Once the fly-in has shown the ground, the last
+    // stretch before contact belongs to the commander: the tactical eye
+    // opens and orders reach the line, so you set your shape BEFORE the
+    // other side is on top of you instead of reacting from a standing
+    // start. A few seconds, not a strategy screen — the clock is running
+    // and their line is already walking.
+    if (!it.setup && it.t >= it.dur * 0.72) {
+      it.setup = true;
+      this.onToast('FORM UP', 'Set your line — T for the tactical eye, contact shortly', 'order');
+    }
     if (it.t < it.dur) return;
     it.active = false;
-    this.requestLock();
+    if (!this.rts) this.requestLock();
     this.onToast(`CONTACT IMMINENT — ${this.level.name}`, this.objective.text, 'deploy');
   }
 
   updateCamera(dt) {
-    if (this.rts && !this.intro?.active) { this.updateTacticalCamera(dt); return; }
+    if (this.rts && (!this.intro?.active || this.intro.setup)) {
+      this.updateTacticalCamera(dt); return;
+    }
     const p = this.player;
     const aim = this.aiming;
     // Over-the-shoulder, tighter and closer when aiming.

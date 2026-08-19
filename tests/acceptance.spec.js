@@ -7861,3 +7861,55 @@ test('the order of battle: what you are taking, against what', async ({ page }) 
   expect(r.text).toMatch(/VERSUS/);
   expect(r.text).toMatch(/40/);
 });
+
+test('a moment to form up: the tactical eye opens before contact', async ({ page }) => {
+  await boot(page);
+  await newCampaign(page);
+  await page.evaluate(async () => {
+    const { Mission } = await import('/src/mission.js');
+    const UI = await import('/src/ui.js');
+    const G = window.KR;
+    const S = G.campaign;
+    G.mission?.dispose();
+    G.world?.dispose(); G.world = null;
+    document.getElementById('viewport').innerHTML = '';
+    UI.show('hud');
+    G.mission = new Mission({
+      campaign: S,
+      spec: { type: 'skirmish', site: 'field', layout: 'field',
+        enemyFaction: 'trust', party: { kind: 'column_trust', strength: 12 } },
+      squad: S.roster.slice(0, 4),
+      container: document.getElementById('viewport'),
+      onHud: () => {}, onToast: () => {}, onIntro: () => {}, onWheel: () => {}, onEnd: () => {},
+    });
+    await G.mission.start();
+  });
+  await page.waitForFunction(() => window.KR.mission?.player, null, { timeout: 40000 });
+  const r = await page.evaluate(() => {
+    const m = window.KR.mission;
+    m.paused = false;
+    const realStep = m.step.bind(m);
+    m.step = () => {};
+    // At the top of the fly-in the board is not yours yet.
+    m.intro.t = 0; m.intro.setup = false; m.rts = false;
+    m.toggleTactical();
+    const earlyBlocked = !m.rts;
+    // Past the setup mark it is: the eye opens and orders reach the line.
+    m.intro.t = m.intro.dur * 0.8;
+    realStep(1 / 60);
+    const setup = !!m.intro.setup;
+    m.toggleTactical();
+    const eyeOpen = m.rts === true;
+    m.selectGroup('inf');
+    m.orderShieldWall();
+    const shaped = m.groupShape.inf;
+    // Contact still arrives on its own clock — setup does not pause the war.
+    const stillInserting = m.inserting;
+    return { earlyBlocked, setup, eyeOpen, shaped, stillInserting };
+  });
+  expect(r.earlyBlocked).toBe(true);
+  expect(r.setup).toBe(true);
+  expect(r.eyeOpen).toBe(true);
+  expect(r.shaped).toBe('wall');
+  expect(r.stillInserting).toBe(true);
+});
