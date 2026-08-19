@@ -7191,7 +7191,26 @@ test('arrows are bodies in flight: the arc, the plate, and the blade', async ({ 
   await page.evaluate(async () => {
     const { Mission } = await import('/src/mission.js');
     const UI = await import('/src/ui.js');
+    const State = await import('/src/state.js');
     const G = window.KR;
+
+    // PIN THE WHOLE SCENARIO.
+    //
+    // This is the documented trap in this repo and it caught us anyway: a
+    // mission's site is built from the CAMPAIGN seed, newCampaign() takes a
+    // random one, so every run of this test fought on a different piece of
+    // ground. Since the roadside gained terrain and scattered props, some of
+    // those grounds put something between the archers and a target dropped
+    // twenty metres east — the archers held their arrows because they could
+    // not see the man, and the test reported a fire-discipline failure that
+    // was really a level-geometry one. Roughly one run in three, varying
+    // enough between samples that it read as three different bugs.
+    //
+    // Four fixes aimed at sight lines, pathing and arrow counting each moved
+    // the odds around and none of them could work, because the input was
+    // still random. Pinning the seed is the fix; everything else was
+    // treating symptoms of it.
+    G.campaign = State.newCampaign(4242);
     const S = G.campaign;
     S.roster[1].weapon = 'bow';
     S.roster[2].weapon = 'bow';
