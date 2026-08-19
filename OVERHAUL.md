@@ -345,3 +345,113 @@ people, absurd when sixty of your soldiers are standing and the enemy
 line is breaking. The battle now continues without you and can still be
 won; you are carried out. The commander also no longer bleeds out on a
 timer mid-battle, which that change would otherwise have made possible.
+
+## Round: combat quality — numbers, the read, and the guard
+
+Four complaints: the squad of four keeps plaguing encounters, the player
+cannot tell at what distance they will be hit, cannot tell which way to
+block, and the animations do not fit.
+
+### The squad of four
+
+Last round raised the deploy ceiling into army numbers and it did not
+reach the player at all, because the gate had simply moved. The roster
+was FOUR — `startingCompany` returned a commander and three — and a
+town would put two people forward at a time. Renown said twelve and the
+company said four, and four is what turned up.
+
+| | before | after |
+| --- | --- | --- |
+| starting company | 4 | 10 |
+| recruits offered per town | 2 (+bonuses) | 6 (+bonuses, doubled) |
+| manpower per settlement | 14 | 40 |
+| a green swordsman costs | ~650 (kit at 80% of retail) | ~150 (kit at 20%) |
+| opening deploy rung | 8 | 12 |
+| company at day 30, measured | 4 | 15-19 |
+
+The kit premium was the quiet one: recruits arrive wearing what their
+town issues and `hireCost` billed four fifths of its retail price, so a
+green swordsman in a Trust town cost 650 against a contract worth 600.
+The signing fee had become a kit purchase. Troops are now cheap to take
+on and expensive to keep, which puts the recurring decision on the
+payroll where it belongs — `tools/growth.mjs` plays the recruiting loop
+and reports where a company settles.
+
+### The two things a melee never told you
+
+**Which way to block** was unanswerable, because there was nothing to
+answer: `guard` was a BOOLEAN. Hold the button, face the man, and every
+blow from the front was turned identically. No amount of telegraphing
+would have helped a mechanic with no direction in it.
+
+The guard is now steered by the same hand motion that aims a swing, so
+parrying is the mirror of attacking. The right line turns the blow; the
+wrong line is not a block at all and costs full price. A shield is the
+only thing that forgives a misread, which is most of what a shield is
+for. Soldiers read it too, on their bladework — a veteran picks the
+right parry, a recruit guesses — or directional blocking would have
+made the AI untouchable.
+
+**How close is close enough to be hit** is now the guard rose: four
+blades around the crosshair. Yours lights amber, theirs flares red and
+tightens as the steel falls, and green when they are the same blade.
+The reach number is the attacker's OWN weapon reach, so a spearman
+reads as dangerous from further out than a swordsman — which is the
+entire point of carrying a spear.
+
+### The guard is on the body, not just the HUD
+
+A guard that only exists in the interface is a mechanic the player has
+to be told about rather than one they can read off the man in front of
+them. All four lines are distinct poses on the rig — high across the
+brow, low across the body, turned to either shoulder — verified by
+`tools/guardpose.mjs` rather than by eye.
+
+### Not addressed
+
+The map and control complaints. Both are too vague to act on without
+guessing, and guessing at a battlefield layout is expensive.
+
+## Round: battlefields with an opinion
+
+"Too open, featureless, samey" had a precise cause. Only four of sixteen
+sites had a landform, and `roadside` — the layout every road engagement
+uses, and therefore most battles in the game — was one of the twelve
+flat ones. The three shaped sites were rare enough that nobody ever saw
+the difference.
+
+Terrain now on every open fighting site, each written as a tactical
+question rather than as decoration: the road gets an embankment with
+dead ground behind it, the array a rimmed basin, the quarry a worked pit
+with a bench either side, the reclaimer spoil heaps with no commanding
+ground anywhere. Measured relief went from noise to 11–17m.
+
+### Where terrain does NOT go
+
+The works, the fort and the bastion were given landforms in the same
+pass and all three broke — the fort's curtain stopped blocking, the
+works' stairs stopped climbing. Their props are AUTHORED: walls, decks
+and stair flights placed at known heights on flat ground. Raising the
+ground under a building does not make the building interesting, it makes
+it half buried. They also were never the complaint: a fort already has
+the most opinionated terrain in the game standing on it, which is the
+fort.
+
+### Two stale constants, found the hard way
+
+- The Bastion's curtain was pinned at ±198m to span a spread cap of
+  1.75. Raising that cap to 2.3 made the wall flankable on foot again at
+  exactly the scale where walls matter. Derived from `b.bound` now.
+- `partySpeed` charged a crowding penalty from six people because a
+  company WAS six. Every company in the game was permanently slowed for
+  existing. It starts at twenty now.
+
+### And one test that was right to fail
+
+The arrows test places a target twenty metres from an archer and asserts
+they loose once fire discipline is lifted. On a flat plate that was a
+guaranteed clear shot; with terrain and scattered wrecks it is not. The
+first two attempts to fix it guessed — level ground, then a hand-rolled
+terrain sample — and both were wrong, because what was actually in the
+way was a PROP. It now sweeps bearings using `Level.hasLOS`, the game's
+own sight test, rather than an approximation of it.

@@ -174,7 +174,11 @@ test('new campaign starts with a commander and three soldiers', async ({ page })
       day: S.day,
     };
   });
-  expect(s.roster).toBe(4);
+  // A line, not a fireteam. Pinned as a range rather than a magic number:
+  // what matters is that a new company can field the three arms on day one,
+  // which four people could not.
+  expect(s.roster).toBeGreaterThanOrEqual(8);
+  expect(s.roster).toBeLessThanOrEqual(16);
   expect(s.commanders).toBe(1);
   expect(s.contracts).toBeGreaterThanOrEqual(2);
   expect(s.day).toBe(1);
@@ -483,7 +487,9 @@ test('a corrupt save is discarded rather than blocking the game', async ({ page 
   await page.waitForSelector('#modal .modal-title', { timeout: 15000 });
   await page.click('#modal [data-x="close"]');
   await page.waitForFunction(() => !!window.KR.campaign, null, { timeout: 15000 });
-  expect(await page.evaluate(() => window.KR.campaign.roster.length)).toBe(4);
+  // A fresh company, whatever size a fresh company is.
+  expect(await page.evaluate(() => window.KR.campaign.roster.length))
+    .toBeGreaterThanOrEqual(8);
 });
 
 test('sabotage completing collapses Trust patrol coverage', async ({ page }) => {
@@ -980,12 +986,27 @@ test('seizing a location makes it a holding that produces daily', async ({ page 
     // Roll a day and confirm the holding paid out.
     const creditsAfterSeize = S.credits;
     St.advanceTime(S, 26);
+    const withHolding = S.credits - creditsAfterSeize;
+
+    // The same day WITHOUT the holding, as a control. Net credits stopped
+    // being a fair proxy the moment a company became army-sized: a payroll
+    // of a dozen or more can out-eat a single holding's yield, so the purse
+    // can fall on a day the holding paid perfectly well. What the test
+    // actually claims is that owning it leaves you better off than not, and
+    // that is now what it measures.
+    const S2 = St.newCampaign(S.seed);
+    S2.credits = creditsAfterSeize;
+    const beforeCtl = S2.credits;
+    St.advanceTime(S2, 26);
+    const without = S2.credits - beforeCtl;
+
     return {
       ok, held,
       before,
       after: Object.keys(S.holdings).length,
       creditsAfterSeize,
       creditsNextDay: S.credits,
+      withHolding, without,
       repHit: S.rep.trust,
     };
   });
@@ -994,8 +1015,8 @@ test('seizing a location makes it a holding that produces daily', async ({ page 
   expect(r.after).toBe(r.before.held + 1);
   // Taking Trust ground costs Trust standing.
   expect(r.repHit).toBeLessThan(0);
-  // And it pays.
-  expect(r.creditsNextDay).toBeGreaterThan(r.creditsAfterSeize);
+  // And it pays: a day holding it beats the same day without it.
+  expect(r.withHolding).toBeGreaterThan(r.without);
 });
 
 test('holding upgrades cost credits and goods and change the company', async ({ page }) => {
@@ -1879,20 +1900,35 @@ test('paying and feeding the company stops the bleeding', async ({ page }) => {
     const S = window.KR.campaign;
     S.credits = 0; S.rations = 0;
     for (let d = 0; d < 25; d++) State.advanceTime(S, 24);
-    const low = { morale: S.morale, roster: State.living(S).length };
+    const low = { morale: S.morale, roster: State.living(S).length,
+      deserted: S.stats.deserted || 0 };
 
     // Settle up and restock.
     S.credits = 20000;
     const market = DATA.LOCATIONS.find((l) => l.services?.includes('market'));
-    const bought = State.buyRations(S, market.id, 30);
+    // Enough for the company that actually exists. This bought a flat
+    // thirty, which fed four people for ten days and feeds a real line for
+    // six — after which they go hungry again and somebody walks, which is
+    // the very thing the test is trying to prove does NOT happen once you
+    // pay and feed them. The comment above predicted this exact failure.
+    const need = State.upkeepOf(S).food * 12;
+    const bought = State.buyRations(S, market.id, need);
     for (let d = 0; d < 10; d++) State.advanceTime(S, 24);
-    return { low, bought, morale: S.morale, roster: State.living(S).length };
+    return { low, bought, morale: S.morale, roster: State.living(S).length,
+      deserted: S.stats.deserted || 0 };
   });
   expect(r.bought).toBe(true);
   expect(r.morale).toBeGreaterThan(r.low.morale);
-  // Nobody else walks once they are paid and fed — desertion needs a live
+  // Nobody else WALKS once they are paid and fed — desertion needs a live
   // grievance, not just a lagging number.
-  expect(r.roster).toBe(r.low.roster);
+  //
+  // Counted as desertions rather than as heads. Twenty-five days of hunger
+  // leaves a company full of wounded, and once a company is army-sized
+  // enough of them are hurt badly enough that one can die of it during the
+  // ten days that follow — which is the wound system working, not somebody
+  // walking out. Measuring `living()` conflated the two and blamed the
+  // desertion rule for a death.
+  expect(r.deserted).toBe(r.low.deserted);
 });
 
 test('prisoners can be pressed, ransomed or released', async ({ page }) => {
@@ -2071,7 +2107,11 @@ test('the company you built decides how fast it moves', async ({ page }) => {
     // Deliberately moderate: pace is clamped at 42% so it can never reach a
     // standstill, and piling on enough weight to hit that floor would make the
     // later comparisons test the clamp rather than the curve.
-    for (let i = 0; i < 6; i++) {
+    // Enough to become a COLUMN. The drag starts at twenty now rather than
+    // six — a line of twelve is the ordinary state of a company since the
+    // troop numbers were raised, so six extra bodies no longer crosses
+    // anything and this has to add a real crowd.
+    for (let i = 0; i < 18; i++) {
       S.roster.push(Roster.makeSoldier(rng, { role: 'rifleman', day: 1,
         avoid: S.roster.map((x) => x.name) }));
     }
@@ -7228,8 +7268,32 @@ test('arrows are bodies in flight: the arc, the plate, and the blade', async ({ 
       a.holdFire = true; a.cooldown = 0; a.forceTarget = null;
       a.order = 'hold'; a.orderPoint = { x: a.x, z: a.z };
     }
+    // Put the target where there is actually a LINE to it.
+    //
+    // The roadside was a flat plate when this was written, so twenty metres
+    // due east of an archer was a guaranteed clear shot. It has an
+    // embankment down one side now, and that pairing can land across it —
+    // archers holding their arrows because they genuinely cannot see the man
+    // is terrain working, and has nothing to do with the fire discipline
+    // being tested here. Sweep for a bearing at much the same height and
+    // shoot along that one instead.
+    const shooter = archers[0];
+    const h0 = L.heightAt(shooter.x, shooter.z);
+    let spot = { x: shooter.x + 20, z: shooter.z };
+    for (let k = 0; k < 16; k++) {
+      const ang = (k / 16) * Math.PI * 2;
+      const cx = shooter.x + Math.cos(ang) * 18;
+      const cz = shooter.z + Math.sin(ang) * 18;
+      // Level at the target AND along the way, so nothing stands in between.
+      // The game's OWN sight test, not an approximation of it. Sampling
+      // terrain heights missed the props — a wreck between the two is just
+      // as opaque as a rise, and the roadside is scattered with them.
+      const clear = Math.abs(L.heightAt(cx, cz) - h0) < 1.2
+        && L.hasLOS(m.level.obstacles, shooter.x, shooter.z, cx, cz, 1.6);
+      if (clear) { spot = { x: cx, z: cz }; break; }
+    }
     const near = foes[1];
-    near.x = archers[0].x + 20; near.z = archers[0].z;
+    near.x = spot.x; near.z = spot.z;
     near.hp = near.maxHp = 200;
     const count0 = m.arrows.length;
     for (let i = 0; i < 90; i++) realStep(1 / 30);
@@ -7865,10 +7929,14 @@ test('the order of battle: what you are taking, against what', async ({ page }) 
   });
   // Your own shape, by arm.
   expect(r.text).toMatch(/YOUR COMPANY/);
-  expect(r.text).toMatch(/Line 1/);
-  expect(r.text).toMatch(/Spears 1/);
-  expect(r.text).toMatch(/Bows 1/);
-  expect(r.text).toMatch(/Heavy 1/);
+  // Each arm listed with a real count. These pinned "1" apiece, which was a
+  // description of a four-man company rather than of the panel — the claim
+  // being made is that the order of battle breaks your force down BY ARM,
+  // and that holds at any size.
+  expect(r.text).toMatch(/Line [0-9]+/);
+  expect(r.text).toMatch(/Spears [0-9]+/);
+  expect(r.text).toMatch(/Bows [0-9]+/);
+  expect(r.text).toMatch(/Heavy [0-9]+/);
   // The veteran is counted.
   expect(r.text).toMatch(/veteran/);
   // And theirs, estimated from doctrine rather than read off their roster.
@@ -8410,4 +8478,269 @@ test('the commander going down does not lose a battle their army is winning', as
   expect(r.afterDown.over, 'the commander went down and the battle ended').toBe(false);
   // A full minute later they are down, not dead.
   expect(r.stillAlive, 'the commander bled out on a timer mid-battle').toBe(true);
+});
+
+test('a company big enough to be a line, and a wage bill that decides its size', async ({ page }) => {
+  test.setTimeout(120000);
+  await boot(page);
+  await newCampaign(page);
+
+  // The deploy ceiling was raised to army numbers and encounters stayed at
+  // four, because the ROSTER was four and recruiting added two a town. The
+  // gate had moved without anybody being able to tell: renown said twelve,
+  // the company said four, and four is what turned up. What limits an early
+  // company should be the wage bill — a decision you make every day — and
+  // not a rank it has not earned or a town that will only spare a pair.
+  const r = await page.evaluate(async () => {
+    const State = await import('/src/state.js');
+    const { DATA } = window.KR.dev;
+    const S = window.KR.campaign;
+
+    const startRoster = State.living(S).length;
+    const arms = new Set(S.roster.map((s) => s.role));
+
+    // What a town will put forward, and what it costs to say yes.
+    const towns = DATA.LOCATIONS.filter((l) => l.kind === 'settlement');
+    const pool = State.recruitPool(S, towns[0].id);
+    const cost = pool.length ? State.hireCost(S, pool[0]) : null;
+
+    // Play the recruiting loop for a month with a plausible income, and see
+    // what the company settles at.
+    let ti = 0;
+    for (let day = 1; day <= 30; day++) {
+      const loc = towns[ti++ % towns.length];
+      S.atLocation = loc.id;
+      S.pos.x = loc.x; S.pos.z = loc.z;
+      for (const cand of State.recruitPool(S, loc.id)) {
+        const res = State.hire(S, cand);
+        if (!res || res.ok === false) break;
+      }
+      if (day % 3 === 0) S.credits += Math.round(600 * State.payScale(S));
+      State.advanceTime(S, 24);
+    }
+    return {
+      startRoster, arms: [...arms], poolSize: pool.length, cost,
+      afterMonth: State.living(S).length,
+      deploy: State.deployLimit(S),
+      wages: State.upkeepOf(S).wages,
+    };
+  });
+
+  // Day one is a line, not a fireteam — and all three arms exist, so SPEARS
+  // and RANGED are orders that mean something before any recruiting.
+  expect(r.startRoster).toBeGreaterThanOrEqual(8);
+  expect(r.arms).toEqual(expect.arrayContaining(['rifleman', 'gunner', 'marksman']));
+
+  // A town is worth visiting for troops.
+  expect(r.poolSize).toBeGreaterThanOrEqual(5);
+  // And a green recruit is cheap: the cost of an army is what it eats, not
+  // what it costs to sign.
+  expect(r.cost).toBeLessThan(300);
+
+  // A month in, the company is army-shaped and the deploy limit is not the
+  // thing holding it back.
+  expect(r.afterMonth).toBeGreaterThanOrEqual(12);
+  expect(r.deploy).toBeGreaterThanOrEqual(12);
+  expect(r.wages).toBeGreaterThan(0);
+});
+
+test('the melee tells you what is coming and which way to meet it', async ({ page }) => {
+  test.setTimeout(120000);
+  await boot(page);
+  await newCampaign(page);
+
+  // Two things the melee never told the player, and both decide whether a
+  // fight is one you are playing or one you are watching: how close is close
+  // enough to be hit, and which way the next blow is coming down.
+  //
+  // The second was unanswerable, because the guard was a BOOLEAN — hold the
+  // button, face the man, and every blow from the front was turned the same
+  // way. There was no direction to get right, so no amount of telegraphing
+  // would have helped. This guards both halves: the guard is directional and
+  // the read reports the blow.
+  const r = await page.evaluate(async () => {
+    const { Mission } = await import('/src/mission.js');
+    const UI = await import('/src/ui.js');
+    const G = window.KR;
+    const S = G.campaign;
+    G.mission?.dispose();
+    G.world?.dispose(); G.world = null;
+    document.getElementById('viewport').innerHTML = '';
+    UI.show('hud');
+    G.mission = new Mission({
+      campaign: S,
+      spec: { type: 'skirmish', site: 'roadside', layout: 'roadside', siteName: 'Read',
+        party: { id: 'rd', kind: 'looters', name: 'Read', strength: 6, tier: 1, quality: 0.6 } },
+      squad: S.roster.slice(0, 4),
+      container: document.getElementById('viewport'),
+      onHud: (h) => UI.renderMissionHud(h),
+      onToast: () => {}, onIntro: () => {}, onWheel: () => {}, onEnd: () => {},
+    });
+    await G.mission.start();
+    const m = G.mission;
+    m.paused = false; m.hadLock = true;
+    if (m.intro) { m.intro.active = false; m.time = m.intro.graceUntil + 0.1; }
+    // Nothing else may move while this is measured.
+    m.step = () => {};
+
+    const p = m.player;
+    const foe = m.entities.find((e) => e.side === 'enemy' && !e.dead);
+    foe.x = p.x + 1.5; foe.z = p.z; foe.hp = 900; foe.maxHp = 900;
+    foe.yaw = Math.atan2(p.x - foe.x, p.z - foe.z);
+    p.yaw = Math.atan2(foe.x - p.x, foe.z - p.z);
+    p.hp = 600; p.maxHp = 600;
+    p.shieldHp = 0;                     // bare steel: the line must matter
+
+    foe.cooldown = 0; foe.swing = null;
+    m.strike(foe, 'overhead');
+    const read = m.meleeRead();
+    UI.renderMissionHud(m.buildHud());
+    const rose = document.getElementById('guard-rose');
+
+    const trial = (guardDir) => {
+      p.hp = 600;
+      p.guard = guardDir ? 1 : 0;
+      p.guardDir = guardDir;
+      p.swing = null; p.guardBreak = 0;
+      foe.cooldown = 0; foe.swing = null;
+      m.strike(foe, 'overhead');
+      for (let i = 0; i < 400 && foe.swing && !foe.swing.hitDone; i++) m.updateSwing(1 / 120, foe);
+      return Math.round(600 - p.hp);
+    };
+
+    return {
+      incomingDir: read?.incoming?.dir ?? null,
+      threatDist: read?.threat?.dist ?? null,
+      inside: read?.threat?.inside ?? null,
+      myReach: read?.reach ?? null,
+      roseShown: !!rose && !rose.classList.contains('hidden'),
+      lit: rose ? [...rose.querySelectorAll('i')]
+        .filter((b) => b.classList.contains('inc')).map((b) => b.dataset.d) : [],
+      right: trial('overhead'),
+      wrong: trial('left'),
+      none: trial(null),
+    };
+  });
+
+  // THE READ. Which way, how far, and how far I can reach back.
+  expect(r.incomingDir, 'the blow on its way was not reported').toBe('overhead');
+  expect(r.threatDist).toBeGreaterThan(0);
+  expect(r.inside, 'a man 1.5m away did not read as able to reach me').toBe(true);
+  expect(r.myReach).toBeGreaterThan(1);
+
+  // And it is on the screen, on the blade the blow is coming down.
+  expect(r.roseShown, 'the guard rose never appeared').toBe(true);
+  expect(r.lit).toEqual(['overhead']);
+
+  // THE BLOCK. The right line turns it; the wrong line is not a block at all.
+  expect(r.right, 'the correct guard did not turn the blow').toBeLessThan(r.wrong);
+  expect(r.none).toBeGreaterThan(r.right);
+  // A misread costs full price — that is what makes reading it worth doing.
+  expect(r.wrong).toBe(r.none);
+});
+
+test('a swing goes where the hand meant, and the field is sized for both sides', async ({ page }) => {
+  test.setTimeout(120000);
+  await boot(page);
+  await newCampaign(page);
+
+  // Two things that made a melee feel like it was fighting the player.
+  //
+  // The swing direction was read off raw smoothed mouse velocity at the
+  // instant of the click, unconditionally. With the mouse near still, x and
+  // y are noise a couple of pixels wide and `x < 0` splits that noise down
+  // the middle — so a stationary hand threw a coin toss, and the attack that
+  // came out was regularly not the one intended.
+  //
+  // And the site was sized off the ENEMY alone. Bring sixty against a party
+  // of ten and the ground was built for ten, so seventy bodies fought in a
+  // box meant for a fireteam.
+  const r = await page.evaluate(async () => {
+    const { Mission, FIELD_CAP } = await import('/src/mission.js');
+    const UI = await import('/src/ui.js');
+    const G = window.KR;
+    const S = G.campaign;
+
+    const build = async (squadSize, strength) => {
+      G.mission?.dispose();
+      G.world?.dispose(); G.world = null;
+      document.getElementById('viewport').innerHTML = '';
+      UI.show('hud');
+      // Enough bodies on the books to deploy the size asked for.
+      const Roster = await import('/src/roster.js');
+      let seed = 99;
+      const rng = () => { seed = (seed * 1103515245 + 12345) & 0x7fffffff; return seed / 0x7fffffff; };
+      while (S.roster.length < squadSize) {
+        const sol = Roster.makeSoldier(rng, { role: 'rifleman', rank: 1 });
+        sol.id = `sw${S.roster.length}`; sol.equip = {}; sol.perks = [];
+        S.roster.push(sol);
+      }
+      G.mission = new Mission({
+        campaign: S,
+        spec: { type: 'skirmish', site: 'roadside', layout: 'roadside', siteName: 'Intent',
+          party: { id: 'in', kind: 'looters', name: 'Intent', strength, tier: 1, quality: 0.6 } },
+        squad: S.roster.slice(0, squadSize),
+        container: document.getElementById('viewport'),
+        onHud: () => {}, onToast: () => {}, onIntro: () => {}, onWheel: () => {}, onEnd: () => {},
+      });
+      await G.mission.start();
+      const m = G.mission;
+      m.paused = false; m.hadLock = true;
+      if (m.intro) { m.intro.active = false; m.time = m.intro.graceUntil + 0.1; }
+      m.step = () => {};
+      return m;
+    };
+
+    // --- the hand -------------------------------------------------------
+    const m = await build(4, 6);
+    const feed = (x, y, times = 1) => {
+      for (let i = 0; i < times; i++) { m.mouseVel.x = x; m.mouseVel.y = y; m.updateSwingIntent(); }
+    };
+
+    // A deliberate pull left, then noise. The intent must survive the noise.
+    feed(-9, 0, 3);
+    const afterLeft = m.swingDirFromMouse();
+    const noiseRuns = [];
+    for (let i = 0; i < 60; i++) {
+      // Sub-threshold jitter either side of zero, the stationary-hand case.
+      feed(((i * 37) % 7) - 3, ((i * 53) % 7) - 3);
+      noiseRuns.push(m.swingDirFromMouse());
+    }
+    const heldThroughNoise = noiseRuns.every((d) => d === afterLeft);
+
+    // A real gesture the other way still gets through.
+    feed(9, 0, 3);
+    const afterRight = m.swingDirFromMouse();
+    // And up.
+    feed(0, -9, 3);
+    const afterUp = m.swingDirFromMouse();
+
+    // The line is readable before the button is pressed.
+    m.player.guard = 0;
+    const shownBeforeCommit = m.buildHud().meleeRead?.aimDir ?? null;
+
+    // --- the ground -----------------------------------------------------
+    const small = m.level.bounds;
+    const big = (await build(40, 10)).level.bounds;
+
+    return {
+      afterLeft, heldThroughNoise, afterRight, afterUp,
+      shownBeforeCommit, small, big, cap: FIELD_CAP,
+    };
+  });
+
+  // A gesture sets the line, and noise cannot take it away.
+  expect(r.afterLeft).toBe('left');
+  expect(r.heldThroughNoise,
+    'a stationary hand flipped the swing direction — the coin toss is back').toBe(true);
+  // Real movement still changes it, in both axes.
+  expect(r.afterRight).toBe('right');
+  expect(r.afterUp).toBe('overhead');
+  // And the player can see it before they throw it.
+  expect(r.shownBeforeCommit).toBe('overhead');
+
+  // A company of forty gets more ground than a company of four against the
+  // same party — the site is sized by everyone standing on it.
+  expect(r.big, 'the field ignored the size of the company deployed into it')
+    .toBeGreaterThan(r.small);
 });

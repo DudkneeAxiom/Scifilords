@@ -250,6 +250,11 @@ function seatObstacle(o, topY) {
 class Builder {
   constructor(seed) {
     this.r = rng(seed);
+    // How far the playable ground reaches this time; build() sets the real
+    // value before any layout runs. Anything that must SPAN the field — a
+    // curtain wall, a rim — derives its extent from this rather than from a
+    // constant that expires the next time the spread cap moves.
+    this.bound = BOUNDS;
     this.props = [];
     this.obstacles = [];
     this.covers = [];
@@ -1383,13 +1388,15 @@ function siteFort(b) {
   // simply walk through, which quietly undid the entire point of the layout.
   // The wall sampling in the siege test ran along the rampart line and never
   // looked at the flanks.
-  // The curtain runs PAST the largest bounds any fight can have — spread
-  // caps at 1.75, so ±112 × 1.75 ≈ ±196, and the segments reach ±198. It
-  // used to stop at ±72 (walk around the castle), was fixed to ±117, and
-  // then army sieges started sizing the site by the host (spread from
-  // enemyArmy) — which made ±117 flankable again at exactly the scale where
-  // walls matter most. A wall that can be flanked on foot is scenery.
-  for (let i = -22; i <= 22; i++) {
+  // The curtain runs PAST the playable ground, whatever it is this time.
+  // It used to stop at ±72 (walk around the castle), was fixed to ±117, and
+  // then army sieges started sizing the site by the host — which made ±117
+  // flankable again at exactly the scale where walls matter most. It was
+  // then pinned at ±198 to suit a spread cap of 1.75, and expired silently
+  // the moment that cap moved. A wall that can be flanked on foot is
+  // scenery, so the span is DERIVED and cannot go stale again.
+  const CURTAIN = Math.ceil((b.bound + 14) / 9.0);
+  for (let i = -CURTAIN; i <= CURTAIN; i++) {
     if (i === 0) continue;                            // the gate stands here
     b.prop('rampart', i * 9.0, WALL_Z, 0, BOX.rampart, 1);
   }
@@ -1658,10 +1665,11 @@ function siteBastion(b) {
   b.scatter(['crate'], 6, 42, 40, 18, () => BOX.crate);
 
   // ---- the curtain ---------------------------------------------------------
-  // Full span past the largest possible bounds (spread caps at 1.75 →
-  // ±196; segments reach ±198). One gate — and one grated culvert under
-  // the east curtain, because an assault should be a choice of doors.
-  for (let i = -22; i <= 22; i++) {
+  // Full span past the playable ground, derived rather than pinned. One
+  // gate — and one grated culvert under the east curtain, because an
+  // assault should be a choice of doors.
+  const CURTAIN = Math.ceil((b.bound + 14) / 9.0);
+  for (let i = -CURTAIN; i <= CURTAIN; i++) {
     if (i === 0) continue;
     if (i === 6) continue;                            // the culvert runs here
     b.prop('rampart', i * 9.0, WALL_Z, 0, BOX.rampart, 1);
@@ -1752,6 +1760,18 @@ function siteBastion(b) {
  * holding with spears, a hollow is worth hiding a flanking company in, and
  * a slope is worth not charging up in armour.
  */
+// GROUND WITH AN OPINION, EVERYWHERE SOMEBODY FIGHTS.
+//
+// Four of sixteen sites had a landform. The other twelve were flat plates
+// with props scattered on them — and one of the twelve was ROADSIDE, which
+// is the layout every road engagement uses and therefore most battles in the
+// game. That is the whole of "too open, and every fight looks the same": the
+// commonest battlefield in the Reach was a featureless disc, and the three
+// shaped ones were rare enough that nobody saw the difference.
+//
+// Every entry below is a tactical question rather than decoration. If a
+// ridge does not give somebody a reason to go there — or to deny it — it
+// should not be in the table.
 const LANDFORMS = {
   // THE APPROACHES: one long spine across the north, so the defender's
   // archers have somewhere to stand and the attacker can see them there.
@@ -1784,6 +1804,80 @@ const LANDFORMS = {
     ],
     bowls: [{ x: 0, z: -8, r: 40, d: 2.6 }],
   },
+
+  // THE ROAD. The commonest fight in the game, and it was a flat disc.
+  // An embankment down one side of the roadway with dead ground beyond it:
+  // the road is the fast way and the exposed way, the hollow is the slow way
+  // nobody can watch you take.
+  roadside: {
+    ridges: [
+      { x: -34, z: -26, ang: 0.18, len: 92, w: 19, h: 4.8 },
+      { x: 40, z: 34, ang: -0.25, len: 76, w: 17, h: 3.9 },
+    ],
+    bowls: [{ x: 26, z: -34, r: 34, d: 2.4 }],
+  },
+  // THE ARRAY. Dish country: a shallow basin the antennae sit in, rimmed to
+  // the north. Fighting downhill into the basin is easy; leaving it is not.
+  array: {
+    ridges: [{ x: 0, z: -58, ang: Math.PI / 2, len: 116, w: 24, h: 5.0 }],
+    bowls: [{ x: 6, z: 18, r: 46, d: 3.4 }],
+  },
+  // THE RAMPART. It is named for the earthwork. A bank curved round the
+  // outpost, so a defender has a wall and an attacker has a climb.
+  outpost: {
+    ridges: [
+      { x: -30, z: 34, ang: 0.9, len: 70, w: 16, h: 5.6 },
+      { x: 32, z: 30, ang: -0.9, len: 70, w: 16, h: 5.6 },
+    ],
+    bowls: [{ x: 0, z: -26, r: 30, d: 1.8 }],
+  },
+  // THE RECLAIMER. Spoil heaps, dumped where the machines stopped. Broken
+  // sightlines and no commanding ground anywhere on it.
+  reclaimer: {
+    ridges: [
+      { x: -40, z: -18, ang: 1.1, len: 48, w: 14, h: 4.2 },
+      { x: 22, z: -44, ang: 0.2, len: 40, w: 12, h: 3.6 },
+      { x: 36, z: 28, ang: -1.2, len: 52, w: 15, h: 4.6 },
+      { x: -18, z: 46, ang: 0.6, len: 44, w: 13, h: 3.2 },
+    ],
+  },
+  // THE QUARRY. The most opinionated ground in the Reach: a worked pit with
+  // a bench either side. Whoever holds the rim is shooting into a hole.
+  quarry: {
+    ridges: [
+      { x: -52, z: 0, ang: 0, len: 120, w: 22, h: 7.5 },
+      { x: 52, z: 0, ang: 0, len: 120, w: 22, h: 7.5 },
+    ],
+    bowls: [{ x: 0, z: 6, r: 48, d: 6.5 }],
+  },
+  // THE WRECKYARD. Everything here was dragged into a heap and left.
+  // Rolling and mean; nowhere to form a line more than a few files wide.
+  wreckyard: {
+    ridges: [
+      { x: -26, z: -34, ang: 0.4, len: 54, w: 15, h: 3.8 },
+      { x: 30, z: -10, ang: -0.7, len: 58, w: 16, h: 4.4 },
+      { x: -8, z: 40, ang: 1.3, len: 50, w: 14, h: 3.4 },
+    ],
+    bowls: [{ x: 44, z: 44, r: 28, d: 2.0 }],
+  },
+  // THE DEPOT. Flat where the trucks turn, banked where the fuel is: one
+  // piece of high ground and a long open apron to cross to reach it.
+  depot: {
+    ridges: [{ x: 44, z: -20, ang: 0.15, len: 84, w: 20, h: 5.2 }],
+    bowls: [{ x: -20, z: 12, r: 38, d: 1.6 }],
+  },
+  // NOT the works, the fort or the bastion, deliberately.
+  //
+  // Those three were given landforms in the same pass as the rest and all
+  // three broke: the fort's curtain stopped blocking, the works' stairs
+  // stopped climbing, and the reason is the same in both. Their props are
+  // AUTHORED — walls, decks, stair flights placed at known heights — and
+  // they were authored on flat ground. Raising the ground under a building
+  // does not make the building interesting, it makes it half buried.
+  //
+  // They also were never the complaint. "Too open and featureless" is about
+  // the sites that are nothing but ground; a fort already has the most
+  // opinionated terrain in the game standing on it, which is the fort.
 };
 
 const SITES = {
@@ -1840,6 +1934,7 @@ export function build(siteId, seed, override = {}) {
   // like a crowd in a corridor. The spread override scales the playable
   // radius with the weight of the encounter, and the scatter with its area.
   const BOUND = Math.round(BOUNDS * (override.spread || 1));
+  b.bound = BOUND;
   const fn = SITES[siteId] || siteGrellan;
   const meta = fn(b);
   // A location can rename and re-light a shared layout, so Culvert Nine does

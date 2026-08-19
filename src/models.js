@@ -454,6 +454,7 @@ export function makeCharacter(variant, weaponModel = null, tint = null) {
     pitch = 0, reload = 0, sprint = false, turn = 0,
     slopePitch = 0, slopeRoll = 0,
     melee = false, swing: swingPh = 0, swingDir = 'right', guard = 0,
+    guardDir = 'overhead',
     // How this particular weapon sits in the hand. See WEAPONS[*].hold —
     // one shared pose put a spear through its owner's chest.
     hold = null, guardPose = null,
@@ -558,6 +559,19 @@ export function makeCharacter(variant, weaponModel = null, tint = null) {
       const dirRaise = swingDir === 'overhead' ? -2.5
         : swingDir === 'thrust' ? -1.35 : -2.0;
       const g = s.guardBlend;
+      // WHERE THE GUARD IS HELD. High across the brow, low across the body,
+      // or turned to either shoulder — the same four lines the blow can come
+      // down, so a player watching an opponent's guard can read what is
+      // covered, and a player glancing at their own hands can read what they
+      // have chosen. These are offsets ON the guard pose, scaled by the
+      // guard blend, so a weapon at rest is untouched.
+      const GUARD_LINE = {
+        overhead: { x: -0.55, z: 0.10, wpitch: -0.55 },
+        thrust: { x: 0.30, z: -0.05, wpitch: 0.65 },
+        left: { x: -0.10, z: -0.62, wpitch: -0.10 },
+        right: { x: -0.10, z: 0.68, wpitch: -0.10 },
+      };
+      const GL = GUARD_LINE[guardDir] || GUARD_LINE.overhead;
       // Somebody carrying steel still WALKS: the gait's counter-swing rides
       // under the carry pose, fading out as the guard comes up and dying
       // entirely inside a swing, where the arm belongs to the blow.
@@ -568,16 +582,19 @@ export function makeCharacter(variant, weaponModel = null, tint = null) {
         ? lerp(lerp(baseX, dirRaise, wind), 0.75, chop)
         : baseX;
       if (rig.armR) {
-        rig.armR.rotation.x = rest.armR.x + armX + gait * 0.35 + s.flinch * 0.15;
-        rig.armR.rotation.z = rest.armR.z + (ph > 0 ? dirZ * wind * (1 - chop) : lerp(0.12, 0.30, g));
+        rig.armR.rotation.x = rest.armR.x + armX + gait * 0.35 + s.flinch * 0.15
+          + (ph > 0 ? 0 : GL.x * g);
+        rig.armR.rotation.z = rest.armR.z
+          + (ph > 0 ? dirZ * wind * (1 - chop) : lerp(0.12, 0.30, g) + GL.z * g);
       }
       setX(rig.elbowR, rest.elbowR.x + (ph > 0 ? lerp(-0.5, -0.15, chop) : lerp(-0.55, -0.85, g)));
       // Left arm: hangs on the carry and counter-swings against the right,
       // braces across on the guard (that is where the shield lives when
       // there is one).
       if (rig.armL) {
-        rig.armL.rotation.x = rest.armL.x + lerp(-0.30, -1.05, g) - gait * 0.55 - ph * 0.1;
-        rig.armL.rotation.z = rest.armL.z + lerp(-0.08, -0.45, g);
+        rig.armL.rotation.x = rest.armL.x + lerp(-0.30, -1.05, g) - gait * 0.55 - ph * 0.1
+          + (ph > 0 ? 0 : GL.x * g * 0.7);
+        rig.armL.rotation.z = rest.armL.z + lerp(-0.08, -0.45, g) - GL.z * g * 0.5;
       }
       setX(rig.elbowL, rest.elbowL.x + lerp(-0.5, -1.15, g));
       if (weapon) {
@@ -589,7 +606,7 @@ export function makeCharacter(variant, weaponModel = null, tint = null) {
           + (rig.elbowR ? rig.elbowR.rotation.x - rest.elbowR.x : 0);
         const H = hold || { pitch: 1.0, roll: 0.1, pos: [0, 0, 0] };
         const Gp = guardPose || H;
-        const pitch0 = lerp(H.pitch, Gp.pitch, g);
+        const pitch0 = lerp(H.pitch, Gp.pitch, g) + (ph > 0 ? 0 : GL.wpitch * g);
         const roll0 = lerp(H.roll ?? 0, Gp.roll ?? 0, g);
         // The swing: the steel rises through the windup and drives through
         // the chop, around whatever pose it started in.

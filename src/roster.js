@@ -508,11 +508,23 @@ export function startingCompany(r) {
   cmd.hp = cmd.maxHp;
 
   const roster = [cmd];
-  // A scratch outfit: whoever signed on. Three different backgrounds, so the
-  // player meets the origin system before they ever hire anybody.
-  const startRoles = ['rifleman', 'rifleman', 'breacher'];
-  const hows = ['Signed the charter', 'Deserted the Trust', 'Paid off a debt'];
-  const origins = ['free', 'trust', 'scour'];
+  // A scratch outfit: whoever signed on. Several different backgrounds, so
+  // the player meets the origin system before they ever hire anybody.
+  //
+  // This was three people, and it was three people back when a deployment
+  // was a fireteam. The combat overhaul made this a game about lines and
+  // formations, the deploy ladder was rescaled to army numbers — and the
+  // company you actually HAD was still four, so every encounter for the
+  // first several hours was four bodies pretending to be a battle line.
+  // Nine now: enough that the three arms exist on day one and SPEARS and
+  // RANGED mean something the moment they are pressed.
+  const startRoles = ['rifleman', 'rifleman', 'rifleman', 'breacher', 'breacher',
+    'gunner', 'gunner', 'marksman', 'marksman'];
+  const hows = ['Signed the charter', 'Deserted the Trust', 'Paid off a debt',
+    'Signed the charter', 'Walked out of the Scour', 'Deserted the Syndic',
+    'Signed the charter', 'Paid off a debt', 'Deserted the Trust'];
+  const origins = ['free', 'trust', 'scour', 'free', 'scour', 'syndic',
+    'free', 'trust', 'free'];
   for (let i = 0; i < startRoles.length; i++) {
     roster.push(makeSoldier(r, {
       role: startRoles[i], rank: i === 0 ? 1 : 0, how: hows[i], day: 1,

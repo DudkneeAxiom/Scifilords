@@ -1227,3 +1227,42 @@ player does NOT bleed out on the field (they would die on a timer in a
 battle their side is winning), and `checkRout` has to end the mission
 itself when the field is won with the commander down, because a downed
 commander cannot walk to the extraction.
+
+## src/level.js is CRLF and the rest of src/ is LF
+
+This cost real time and will cost it again. `src/level.js` was checked out
+with CRLF line endings while `src/mission.js` and the others are LF, so
+any multi-line string match into level.js silently fails — a patch script
+reports "0 of 4" and every anchor looks correct when you read it back.
+
+If you are editing level.js programmatically, normalise first:
+
+```js
+let s = fs.readFileSync(p, 'utf8').split('\r\n').join('\n');
+// ... edits ...
+fs.writeFileSync(p, s);            // LF; git restores CRLF on checkout
+```
+
+Two related traps in the same family: a `\d` written through a heredoc
+into a `.cjs` patch file and out through `String.replace` arrives as a
+bare `d`, so a regex like `/Line \d+/` silently becomes `/Line d+/` and
+matches nothing. Use an explicit `[0-9]` class instead of an escape when
+generating test regexes. And `String.replace` treats `$` in the
+replacement specially — another reason to prefer character classes.
+
+## Numbers that expire when a cap moves
+
+The Bastion's curtain wall was `for (let i = -22; i <= 22; i++)`, sized
+±198m to cover a spread cap of 1.75. Raising that cap to 2.3 made the
+wall flankable on foot again at exactly the scale where walls matter, and
+the only thing that caught it was the siege test. The span is now derived
+from `b.bound`, which `build()` sets before any layout runs.
+
+The lesson generalises: anything that must SPAN the field derives its
+extent from `b.bound`. Do not re-pin it to a number, however carefully
+the comment explains the arithmetic — the comment was correct when it was
+written and that is exactly the problem.
+
+`partySpeed` had the same shape of staleness: the crowding penalty began
+at six people because a company WAS six. It now begins at twenty, where a
+company stops being a party and becomes a column.

@@ -208,6 +208,41 @@ export function bootProgress(pct, line) {
 let radarCtx = null;
 
 export function renderMissionHud(h) {
+  // THE GUARD ROSE.
+  //
+  // The two things a melee has to tell you and this one was not: how close
+  // is close enough to be hit, and which way the next blow is coming down.
+  // Four blades around the crosshair. The one your guard is in lights; the
+  // one a blow is arriving on flares and tightens as the steel falls; when
+  // they are the same blade it reads as met. Reach is a ring that closes as
+  // somebody who can reach you gets closer, so distance is a thing you SEE
+  // rather than a thing you learn by dying.
+  const rose = $('guard-rose');
+  if (rose) {
+    const r = h.meleeRead;
+    rose.classList.toggle('hidden', !r || !h.melee);
+    if (r && h.melee) {
+      const inc = r.incoming;
+      for (const blade of rose.querySelectorAll('i')) {
+        const d = blade.dataset.d;
+        blade.classList.toggle('up', r.guardDir === d);
+        // Not guarding: the blade shows the line your next swing will take,
+        // so the attack is a choice you can see before you throw it.
+        blade.classList.toggle('aim', !r.guardDir && r.aimDir === d);
+        blade.classList.toggle('inc', !!inc && inc.dir === d);
+        blade.classList.toggle('met', !!r.matched && inc && inc.dir === d);
+        // The nearer the apex, the harder the tell — a blow you can still
+        // answer looks different from one that has already landed.
+        blade.style.setProperty('--t', inc && inc.dir === d ? inc.t.toFixed(2) : '0');
+      }
+      const reach = $('guard-reach');
+      const t = r.threat;
+      rose.classList.toggle('threat', !!t && t.inside);
+      rose.classList.toggle('near', !!t && !t.inside);
+      if (reach) reach.textContent = t ? `${t.dist.toFixed(1)}m` : '';
+    }
+  }
+
   // The Titan readout. A single health bar on a machine that shrugs off rifle
   // fire tells the player nothing except that they are losing — what they need
   // is which sections are still armoured and which are open. Rebuilt only when

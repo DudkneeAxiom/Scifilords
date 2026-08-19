@@ -769,15 +769,21 @@ export const PARTY_TIER_LIST = Object.keys(PARTY_TIERS);
 // So the ladder climbs into real numbers. Early game is unchanged in
 // practice — a company of four cannot fill eight slots — and the ceiling is
 // the thing that moved.
+// Second pass on these. The first rescale fixed the CEILING and left the
+// opening rungs where a fireteam had put them, so a company that could pay
+// for sixteen was still told to field eight — the renown gate replacing the
+// roster gate as the reason encounters stayed small. What limits an early
+// company should be the wage bill, which is a decision, not a rank it has
+// not earned yet, which is a wall.
 export const RENOWN_TIERS = [
-  { at: 0, name: 'Unknown', deploy: 8 },
-  { at: 120, name: 'Spoken Of', deploy: 12 },
-  { at: 300, name: 'Known', deploy: 16 },
-  { at: 550, name: 'Notable', deploy: 22 },
-  { at: 900, name: 'Respected', deploy: 30 },
-  { at: 1400, name: 'Renowned', deploy: 38 },
-  { at: 2100, name: 'Feared', deploy: 48 },
-  { at: 3200, name: 'Legendary', deploy: 60 },
+  { at: 0, name: 'Unknown', deploy: 12 },
+  { at: 120, name: 'Spoken Of', deploy: 18 },
+  { at: 300, name: 'Known', deploy: 24 },
+  { at: 550, name: 'Notable', deploy: 32 },
+  { at: 900, name: 'Respected', deploy: 40 },
+  { at: 1400, name: 'Renowned', deploy: 48 },
+  { at: 2100, name: 'Feared', deploy: 58 },
+  { at: 3200, name: 'Legendary', deploy: 68 },
 ];
 
 export function renownTier(renown) {

@@ -918,10 +918,17 @@ export function partySpeed(S) {
   // A small company moves at the pace of its truck; a big one at the pace of
   // the slowest person in it.
   let mul = 1;
-  if (people > 6) {
-    const f = -Math.min(0.34, (people - 6) * 0.028);
+  // Six was the threshold when a company WAS six. A line of twelve is now
+  // the ordinary state of things and a host of forty is the ambition, so
+  // starting the drag at six meant every company in the game was permanently
+  // slowed for existing — and pinned to the cap the moment it became an
+  // army. It starts where a company stops being a party and becomes a
+  // column, and the per-head cost is gentler because there are far more
+  // heads to count.
+  if (people > 20) {
+    const f = -Math.min(0.34, (people - 20) * 0.011);
     mul += f;
-    factors.push({ label: `${people} in the company`, effect: f });
+    factors.push({ label: `${people} in the column`, effect: f });
   }
   // A loaded truck is a slow truck. This is what makes bulk trading a real
   // trade-off rather than free money.
@@ -2304,7 +2311,11 @@ export function applyMissionResult(S, res) {
 // fought over is a region with nobody left to sell you.
 // --------------------------------------------------------------------------
 
-const MANPOWER_CAP = { settlement: 14, outpost: 8, ruin: 5, wild: 4 };
+// How many people a place has to give. These were sized when a company was
+// four and a "big" deployment was eight; against an army-scale roster they
+// meant a settlement could field two thirds of one file. A town is now worth
+// visiting for troops rather than for a rounding error.
+const MANPOWER_CAP = { settlement: 40, outpost: 22, ruin: 12, wild: 8 };
 // How often a band can hit the same place, and how long that place is too busy
 // burying people to put anybody forward. Between them these decide whether a
 // hideout left alone is an inconvenience or a slow disaster: raids that only
@@ -2441,10 +2452,14 @@ export function recruitPool(S, locId) {
   const holderOfHere = ownerOf(S, locId);
   // Capped by who is actually left. A place that has just been mustered out by
   // its own side has nobody to put forward, however well it thinks of you.
+  // Six on the board before any bonus. Two was the old number and it made
+  // building a company an errand run rather than a decision — twenty visits
+  // to reach a line worth forming. What limits an army is the wage bill, not
+  // whether anybody was willing to sign.
   const n = Math.min(
     Math.floor(manpowerAt(S, locId)),
-    Math.max(0, 2 + (holderOfHere && S.rep[holderOfHere] > 2 ? 1 : 0)
-      + mods.extraRecruit + barracks + relBonus),
+    Math.max(0, 6 + (holderOfHere && S.rep[holderOfHere] > 2 ? 2 : 0)
+      + mods.extraRecruit + barracks * 2 + relBonus * 2),
   );
   const pool = [];
   // Who a place raises, and what they were trained to do.
@@ -3466,16 +3481,29 @@ export function serviceStanding(S) {
 }
 
 export function hireCost(S, s) {
-  const base = { rifleman: 240, breacher: 320, marksman: 360, gunner: 380, medic: 420, signals: 400 };
+  // A raw recruit is cheap and a trained one is not. The old numbers priced
+  // a single green swordsman at half a contract, which is why nobody could
+  // afford a line — and it put the cost of an army in the WRONG place. The
+  // interesting, recurring decision is the payroll that comes out every day
+  // whether or not there was work; the signing fee should never be the thing
+  // that stops you fielding a formation. Rank still multiplies hard, so
+  // veterans remain worth protecting.
+  const base = { rifleman: 85, breacher: 120, marksman: 135, gunner: 140, medic: 180, signals: 165 };
   const mods = companyMods(S.roster);
   // Better-trained people cost more, and Scour hands are cheap for a reason.
   const originMul = ORIGINS[s.origin]?.costMul ?? 1;
   // They come wearing kit, and kit is worth money. Without this a Trust
   // regular is a 25% price rise for a 60%-odd health advantage.
+  // They walk in wearing what their people issued them, and it counts for
+  // something — but it is THEIR coat, not stock you are buying. At four
+  // fifths of retail the kit was the whole price: a green swordsman in a
+  // Trust town cost six hundred and fifty against a contract worth six
+  // hundred, which is why a company could never grow into a battle line.
+  // A fifth reads as what it is, a premium for somebody who arrives ready.
   let kitValue = 0;
   for (const id of Object.values(s.equip || {})) {
     const a = ARMOUR[id];
-    if (a) kitValue += Math.round(a.price * 0.8);
+    if (a) kitValue += Math.round(a.price * 0.2);
   }
   return Math.round((base[s.role] || 250) * (1 + s.rank * 0.45) * mods.hireMul * originMul)
     + kitValue;

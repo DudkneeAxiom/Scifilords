@@ -135,6 +135,14 @@
   <!-- Mission HUD -->
   <div id="hud" class="hud hidden">
     <div class="reticle" id="reticle"><i></i><i></i><i></i><i></i></div>
+    <!-- THE GUARD ROSE. Four blades around the crosshair: which way your
+         guard is up, and which way the next blow is coming down. This is
+         the whole answer to "I cannot tell what to block". -->
+    <div class="guard-rose hidden" id="guard-rose">
+      <i data-d="overhead"></i><i data-d="right"></i>
+      <i data-d="thrust"></i><i data-d="left"></i>
+      <span class="reach" id="guard-reach"></span>
+    </div>
     <div class="hurt" id="hurt"></div>
     <div class="hurt-dirs" id="hurt-dirs"></div>
     <div class="cover-state hidden" id="cover-state"><span id="cover-word">IN COVER</span></div>

@@ -57,6 +57,11 @@ const BLEED_OUT = 55;      // seconds a downed soldier has before it is permanen
 // headroom a weaker machine needs. Bigger numbers are AVAILABLE and are
 // deliberately not taken: 240 measured fine here and would leave nothing
 // spare anywhere else.
+// The four lines a blow can come down, and the four a guard can meet it in.
+// One list so the swing reader, the guard reader and the HUD can never
+// disagree about what the directions ARE.
+export const SWING_DIRS = ['overhead', 'thrust', 'left', 'right'];
+
 export const FIELD_CAP = 120;
 
 /**
@@ -231,6 +236,9 @@ export class Mission {
     this.keys = new Set();
     this.mouse = { down: false, right: false };
     this.mouseVel = { x: 0, y: 0 };
+    // The line the hand is currently in. Persists between frames so a swing
+    // is a decision rather than a sample of mouse noise.
+    this.aimDir = 'right';
     this.pStamina = 1;                     // the commander's wind, 0..1
     // Per-arm formation shapes for THE BATTLE LINE. Ranged default loose:
     // bunched bows are one volley's worth of casualties.
@@ -349,12 +357,26 @@ export class Mission {
     // Armies count toward the ground they get: a summoned siege or a joined
     // host battle sizes its site by the biggest force on it, not just the
     // enemy party card.
-    const weight = Math.max(
+    // AND THE COMPANY COUNTS. This took the largest force on the field and
+    // pointedly left out the player's own, which was fair when a deployment
+    // was four people and rounding error. It is not fair now: bring sixty
+    // against a party of ten and the site was sized for ten, so seventy
+    // bodies fought in a box built for a fireteam — the "cramped" reading
+    // the comment right above this one was written to prevent.
+    //
+    // Both sides, added rather than maxed, because what makes ground feel
+    // small is the number of people standing on it and they are all standing
+    // on it at once.
+    const foes = Math.max(
       this.spec.party?.strength || 0,
       this.spec.enemyArmy || 0,
-      this.spec.allies || 0,
     ) || MISSION_TYPES[this.spec.type]?.foes || 8;
-    const spread = clamp(0.8 + weight / 90, 0.8, 1.75);
+    const mine = (this.squadSoldiers?.length || 1) + (this.spec.allies || 0);
+    const weight = Math.min(FIELD_CAP, foes + mine);
+    // The ceiling rose with the cap. A sixty-man line needs two hundred
+    // metres of frontage before it has manoeuvred at all, and the old 1.75
+    // did not give it room to do anything but walk straight ahead.
+    const spread = clamp(0.8 + weight / 80, 0.8, 2.3);
     this.level = Level.build(this.spec.layout || this.spec.site,
       this.S.seed + this.S.stats.missions, {
         name: this.spec.siteName ? this.spec.siteName.toUpperCase() : null,
@@ -3521,21 +3543,36 @@ export class Mission {
     // The guard: facing the blow, inside the protected frontage.
     const offFacing = Math.abs(angleDelta(
       Math.atan2(e.x - best.x, e.z - best.z), best.yaw));
-    const guarded = (best.guard || 0) > 0 && !best.swing
+    // Facing the blow is necessary and no longer sufficient: the guard has
+    // to be in the line the blow is actually coming down. A shield is
+    // forgiving about it — a broad plate covers more than the arm behind it
+    // — and bare steel is not.
+    const facing = (best.guard || 0) > 0 && !best.swing
       && !(best.guardBreak > 0)
       && offFacing < ((best.blockArc ?? 2.1) / 2);
+    const dir = e.swing?.dir || 'right';
+    const rightWay = !best.guardDir || best.guardDir === dir;
+    const shielded = (best.shieldHp || 0) > 0;
+    const guarded = facing && (rightWay || shielded);
     // Shieldwall: a trained guard turns more of the blow and spares the plate.
     const gs = best.eff?.guardStr || 0;
     if (guarded) {
       if ((best.shieldHp || 0) > 0) {
         // The plate takes it. Half weight through the arm, mauls triple.
         best.shieldHp -= Math.max(4, dmg * (w.shieldMul ?? 1) * 0.5 * (1 - gs));
+        // Caught on the wrong part of the plate: it turns the blow but not
+        // all of it, and it costs the shield more.
+        if (!rightWay) { best.shieldHp -= 6; dmg *= 0.45; }
         if (best.shieldHp <= 0) {
           best.shieldHp = 0;
           if (best.isPlayer || e.isPlayer) this.onToast('SHIELD GONE', 'The plate is done', 'bad');
         }
         dmg = 0;
       } else {
+        // Always the right way here: bare steel in the wrong line is not a
+        // parry at all, so it never reaches this branch. A shield is the
+        // only thing that forgives a misread, which is most of what a
+        // shield is FOR.
         dmg *= 0.3 * (1 - gs);             // bare steel turns most of it
       }
       if (best.isPlayer) {
@@ -3950,10 +3987,36 @@ export class Mission {
   }
 
   /** Read the swing direction off recent hand motion. */
-  swingDirFromMouse() {
+  /**
+   * WHICH WAY THE HAND IS GOING — decided deliberately, and remembered.
+   *
+   * This used to read raw smoothed mouse velocity at the instant of the
+   * click and return a direction unconditionally. With the mouse near
+   * still, x and y are noise a couple of pixels wide, and `x < 0` splits
+   * noise straight down the middle: the swing that came out was a coin
+   * toss. That is the whole of "I throw a different attack than I meant".
+   *
+   * Now there is a floor under what counts as a decision, and a direction
+   * persists until the hand clearly says otherwise. Switching costs more
+   * than holding, so a small wobble mid-swing cannot flip the intent — and
+   * because the intent is now a value that EXISTS between frames, the HUD
+   * can show it before the button is pressed, which is the other half of
+   * the problem: the player could not see what they were about to throw.
+   */
+  updateSwingIntent() {
     const { x, y } = this.mouseVel;
-    if (Math.abs(y) > Math.abs(x) * 1.4) return y < 0 ? 'overhead' : 'thrust';
-    return x < 0 ? 'left' : 'right';
+    const mag = Math.hypot(x, y);
+    if (mag < 2.2) return;                 // below this it is not a gesture
+    const want = Math.abs(y) > Math.abs(x) * 1.4
+      ? (y < 0 ? 'overhead' : 'thrust')
+      : (x < 0 ? 'left' : 'right');
+    // Hysteresis: committing to a new line takes a real movement, holding
+    // the current one takes none.
+    if (!this.aimDir || want === this.aimDir || mag > 5.5) this.aimDir = want;
+  }
+
+  swingDirFromMouse() {
+    return this.aimDir || 'right';
   }
 
   /**
@@ -4658,12 +4721,21 @@ export class Mission {
     p.cooldown = Math.max(0, p.cooldown - dt);
 
     if (p.weapon?.melee) {
+      this.updateSwingIntent();
       // The melee era: LMB throws a swing whose direction is read off the
       // hand, RMB is the guard, and the guard means nothing mid-swing or
       // for a beat after taking a boot.
       this.updateSwing(dt, p);
       if (p.guardBreak > 0) p.guardBreak -= dt;
       p.guard = (this.mouse.right && !p.swing && !(p.guardBreak > 0)) ? 1 : 0;
+      // A GUARD POINTS SOMEWHERE. It used to be a boolean — hold the button,
+      // face the man, and every blow from the front was turned identically.
+      // That is why there was never a direction to choose: there was nothing
+      // to get right or wrong, so no amount of telegraphing would have
+      // helped. The guard is now steered by the same hand motion that aims a
+      // swing, so parrying is the mirror of attacking and one habit covers
+      // both.
+      if (p.guard) p.guardDir = this.swingDirFromMouse();
       if (this.mouse.down && !this.paused) {
         if (!this.firedThisClick && p.cooldown <= 0) {
           // The body commits to the camera's facing the moment steel moves.
@@ -5767,8 +5839,22 @@ export class Mission {
     if (w.melee) {
       if (d > (w.reach || 2) + 0.7) return;
       if (Math.abs(angleDelta(e.yaw, Math.atan2(t.x - e.x, t.z - e.z))) > 0.5) return;
-      // A soldier under a swing raises what guard they have.
-      e.guard = t.swing && !e.swing ? 1 : 0;
+      // A soldier under a swing raises what guard they have — and has to
+      // read it, the same as the player does. Bladework is the read: a
+      // veteran picks the right parry most of the time, a recruit guesses.
+      // Without this the AI would block everything the instant blocking
+      // became directional, and every fight would stall.
+      if (t.swing && !e.swing) {
+        if (e.guard !== 1) {
+          const skill = clamp(e.eff?.accuracy ?? e.acc ?? 0.6, 0.1, 0.95);
+          e.guardDir = this.r() < skill
+            ? t.swing.dir
+            : SWING_DIRS[Math.floor(this.r() * SWING_DIRS.length)];
+        }
+        e.guard = 1;
+      } else {
+        e.guard = 0;
+      }
       if (e.cooldown <= 0 && !e.swing) this.strike(e);
       return;
     }
@@ -6514,6 +6600,28 @@ export class Mission {
       want.fov += bell * 5;
       want.up += bell * 0.12;
     }
+    // THE PRESS.
+    //
+    // The camera pulls in for walls and for hillsides and for nothing else,
+    // because when it was written the only things near the player were
+    // scenery. In a melee the things near the player are PEOPLE, a dozen of
+    // them, and the eye ended up level with the back of somebody's head with
+    // the man actually swinging at you somewhere behind it.
+    //
+    // Bodies are not worth colliding against one at a time — they move, they
+    // are soft, and a camera that flinched off each one would shake itself
+    // apart. What works is what a person does in a crowd: stand taller and
+    // lean back, and look over it rather than through it. Scaled by how
+    // crowded it actually is, so a duel is untouched and a scrum lifts.
+    let press = 0;
+    for (const o of this.entities) {
+      if (o === p || o.dead || o.isTitan || o.inserting) continue;
+      const dx = o.x - p.x, dz = o.z - p.z;
+      if (dx * dx + dz * dz < 20.25) press++;      // within 4.5m
+    }
+    const crowd = clamp(press / 7, 0, 1);
+    want.up += crowd * 1.35;
+    want.back += crowd * 0.9;
     // The shoulder offset is signed, so swapping mirrors the whole rig — the
     // camera, the aim origin beside the head, and the body's occlusion.
     want.side *= this.shoulder;
@@ -6718,6 +6826,11 @@ export class Mission {
         swing: e.swing ? Math.min(1, e.swing.t / e.swing.dur) : 0,
         swingDir: e.swing?.dir || 'right',
         guard: e.guard || 0,
+        // A guard that cannot be SEEN is a mechanic the player has to be
+        // told about instead of one they can read off the man in front of
+        // them. Now that blocking is directional, the body has to show the
+        // line it is holding — on your own character and on theirs.
+        guardDir: e.guardDir || 'overhead',
         // How THIS weapon sits in the hand — a spear is not a sword held
         // longer, and one shared pose put the shaft through the ribs.
         hold: e.weapon?.hold || null,
@@ -6759,6 +6872,59 @@ export class Mission {
     return 'READY';
   }
 
+  /**
+   * WHAT IS ABOUT TO HAPPEN TO YOU.
+   *
+   * Two questions the melee never answered, and both of them are the
+   * difference between a fight you are playing and one you are watching:
+   * how close is close enough to be hit, and which way is the next blow
+   * coming down.
+   *
+   * Reach is the honest number — the attacker's own weapon reach, not a
+   * guess — so a spearman reads as dangerous from further out than a
+   * swordsman, which is the entire point of carrying a spear.
+   */
+  meleeRead() {
+    const p = this.player;
+    if (!p || p.down || p.dead || !p.weapon?.melee) return null;
+    let threat = null;      // nearest man who can reach me right now
+    let incoming = null;    // and the blow already on its way
+    let closest = Infinity;
+    for (const e of this.entities) {
+      if (e.dead || e.down || e.side === p.side || e.isTitan || e.routing) continue;
+      if (!e.weapon?.melee) continue;
+      const d = Math.hypot(e.x - p.x, e.z - p.z);
+      const reach = (e.weapon.reach || 2) + 0.5 + (e.eff?.reachBonus || 0);
+      // Only what is actually pointed at me. A man swinging at somebody
+      // else is not a blow I have to answer, and telling the player
+      // otherwise is worse than telling them nothing.
+      const aimed = Math.abs(angleDelta(e.yaw, Math.atan2(p.x - e.x, p.z - e.z))) < 1.1;
+      if (d > reach + 2.5 || !aimed) continue;
+      if (d < closest) {
+        closest = d;
+        threat = { dist: d, reach, inside: d <= reach };
+      }
+      if (e.swing && !e.swing.hitDone) {
+        // How far through the wind-up, so the shell can tighten the tell as
+        // the steel comes down rather than flashing once and vanishing.
+        const t = clamp(e.swing.t / (e.swing.dur * 0.55), 0, 1);
+        if (!incoming || t > incoming.t) {
+          incoming = { dir: e.swing.dir, t, dist: d };
+        }
+      }
+    }
+    return {
+      threat, incoming,
+      guardDir: (p.guard || 0) > 0 ? (p.guardDir || null) : null,
+      // What the next swing will BE, so the player can see it before they
+      // commit rather than discovering it afterwards.
+      aimDir: (p.guard || 0) > 0 ? null : (this.aimDir || null),
+      // Did the guard meet it? Only meaningful while both exist.
+      matched: incoming && (p.guard || 0) > 0 && p.guardDir === incoming.dir,
+      reach: (p.weapon.reach || 2) + 0.5 + (p.eff?.reachBonus || 0),
+    };
+  }
+
   buildHud() {
     const p = this.player;
     const squadInfo = [this.player, ...this.squad].filter((e) => e.soldier || e.militia).map((e) => ({
@@ -6787,6 +6953,8 @@ export class Mission {
       stamina: this.pStamina,
       shieldHp: p.shieldHp || 0,
       guarding: (p.guard || 0) > 0,
+      // The melee read: reach, threat, and the blow on its way.
+      meleeRead: this.meleeRead(),
       aiming: this.aiming,
       // The insertion cinematic is a camera move, not gameplay. The crosshair
       // sat over it the whole way in, which reads as though the player has

@@ -1308,3 +1308,69 @@ kbd {
 }
 #worldhud.framed.map-wide #map-labels { inset: 0; left: 0; top: 0; width: 100%; height: 100%; }
 #worldhud.framed.map-wide .wh-strip { display: none; }
+
+
+/* ==========================================================================
+   THE GUARD ROSE
+   Four blades around the crosshair. Which way your guard is up, which way
+   the blow is coming, and how close the man throwing it is. Deliberately
+   quiet until something is actually happening — a HUD that shouts all the
+   time is one the player stops reading.
+   ========================================================================== */
+.guard-rose {
+  position: absolute; left: 50%; top: 50%;
+  width: 148px; height: 148px; margin: -74px 0 0 -74px;
+  pointer-events: none; z-index: 6;
+}
+.guard-rose.hidden { display: none; }
+.guard-rose i {
+  position: absolute; display: block;
+  background: rgba(216, 211, 200, 0.16);
+  border: 1px solid rgba(216, 211, 200, 0.22);
+  transition: background 90ms linear, border-color 90ms linear;
+}
+/* overhead / thrust are horizontal bars above and below; left / right are
+   vertical bars either side. The shape says which way, without a legend. */
+.guard-rose i[data-d="overhead"] { left: 50%; top: 0; width: 42px; height: 5px; margin-left: -21px; }
+.guard-rose i[data-d="thrust"]   { left: 50%; bottom: 0; width: 42px; height: 5px; margin-left: -21px; }
+.guard-rose i[data-d="left"]     { top: 50%; left: 0; width: 5px; height: 42px; margin-top: -21px; }
+.guard-rose i[data-d="right"]    { top: 50%; right: 0; width: 5px; height: 42px; margin-top: -21px; }
+
+/* Your guard. */
+.guard-rose i.up {
+  background: rgba(232, 176, 112, 0.85);
+  border-color: rgba(232, 176, 112, 0.95);
+}
+/* Theirs, tightening as it falls. */
+.guard-rose i.inc {
+  background: rgba(200, 106, 90, calc(0.35 + var(--t, 0) * 0.6));
+  border-color: rgba(230, 130, 110, 0.95);
+  box-shadow: 0 0 calc(4px + var(--t, 0) * 10px) rgba(200, 90, 70, 0.75);
+}
+/* Met. The one moment the rose is allowed to look good. */
+.guard-rose i.met {
+  background: rgba(158, 196, 106, 0.95);
+  border-color: rgba(190, 220, 150, 1);
+  box-shadow: 0 0 10px rgba(158, 196, 106, 0.7);
+}
+
+/* Reach: how far the nearest man who can hit you actually is. */
+.guard-rose .reach {
+  position: absolute; left: 50%; top: calc(50% + 26px);
+  transform: translateX(-50%);
+  font-size: 10px; letter-spacing: 0.12em;
+  color: rgba(216, 211, 200, 0.5);
+}
+.guard-rose.near .reach { color: rgba(232, 176, 112, 0.8); }
+.guard-rose.threat .reach { color: rgba(226, 120, 100, 0.95); }
+/* Inside somebody's reach, the rose closes on the crosshair — the tell is
+   the movement, which the eye catches without being looked at. */
+.guard-rose.threat { width: 116px; height: 116px; margin: -58px 0 0 -58px; }
+.guard-rose { transition: width 120ms ease, height 120ms ease, margin 120ms ease; }
+
+/* The line your next swing will take. Quieter than a raised guard — this is
+   what you would do, not what you are doing. */
+.guard-rose i.aim {
+  background: rgba(216, 211, 200, 0.5);
+  border-color: rgba(216, 211, 200, 0.7);
+}
