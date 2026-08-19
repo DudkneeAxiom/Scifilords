@@ -132,9 +132,19 @@ function toWorld(isNew) {
       // tick — a stale desk is worse than no desk. Cheap: six small
       // templates over a roster that is rarely more than a dozen people.
       UI.renderSideBoard(G.campaign);
+      UI.renderFeed(G.campaign);
     },
   });
+  // The map is a WINDOW now, not the wallpaper: a framed view in the
+  // top-left with the board beside it and the feed beneath. The renderer
+  // sizes itself from its container, so the class has to land before the
+  // first resize call.
+  viewport.classList.add('world-framed');
+  document.getElementById('wh-side')?.classList.add('framed');
+  document.getElementById('worldhud')?.classList.add('framed');
+  document.getElementById('wh-feed')?.classList.remove('hidden');
   G.world.start();
+  G.world.onResize?.();
 
   // The board: tabs, the fold, and the buttons that still open the deep
   // editors. Bound once — the renderer above redraws its contents.
@@ -1252,6 +1262,11 @@ function openPause(inMission) {
 // --------------------------------------------------------------------------
 
 function teardown() {
+  // Whatever comes next is full-bleed until the world screen says otherwise.
+  viewport.classList.remove('world-framed');
+  document.getElementById('wh-side')?.classList.remove('framed');
+  document.getElementById('worldhud')?.classList.remove('framed');
+  document.getElementById('wh-feed')?.classList.add('hidden');
   G.world?.dispose();
   G.mission?.dispose();
   G.world = null;

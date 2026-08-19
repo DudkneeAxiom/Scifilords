@@ -78,16 +78,26 @@
       </div>
     </div>
 
-    <div class="wh-left">
-      <div id="wh-contract" class="stamp panel-sm hidden"></div>
-      <div id="wh-grudge" class="stamp panel-sm hidden"></div>
-      <div id="wh-loc" class="stamp panel-sm hidden"></div>
-      <div id="wh-legend" class="stamp panel-sm"></div>
-    </div>
+    <!-- The strip under the map: where you are, who is near, what
+         happened. Absolutely positioned as three columns when framed, and
+         the old floating panels when not. -->
+    <div class="wh-strip">
+      <div class="wh-left">
+        <div id="wh-contract" class="stamp panel-sm hidden"></div>
+        <div id="wh-grudge" class="stamp panel-sm hidden"></div>
+        <div id="wh-loc" class="stamp panel-sm hidden"></div>
+        <div id="wh-legend" class="stamp panel-sm"></div>
+      </div>
 
-    <div class="wh-right">
-      <div id="wh-contacts" class="stamp panel-sm hidden"></div>
-      <div class="stamp panel-sm" id="wh-log"></div>
+      <div class="wh-right">
+        <div id="wh-contacts" class="stamp panel-sm hidden"></div>
+        <div class="stamp panel-sm" id="wh-log"></div>
+      </div>
+
+      <!-- The message feed, under the map where a chat box would be. The
+           campaign talks to the player constantly and it used to say so in a
+           panel nobody had open. -->
+      <div id="wh-feed" class="stamp"><div id="wh-feed-body"></div></div>
     </div>
 
     <!-- THE SIDE BOARD. Everything a commander manages, kept on screen

@@ -940,7 +940,7 @@ export class WorldMap {
     if (!p) return;
     this.chaseId = partyId;
     this.recentre();
-    this.setDestination(p.x, p.z, true);
+    this.setDestination(p.x, p.z, true, true);
     Audio.uiSelect();
   }
 
@@ -950,7 +950,13 @@ export class WorldMap {
     this.camPan.z = 0;
   }
 
-  setDestination(x, z, keepChase = false) {
+  /**
+   * `quiet` exists because a chase re-aims sixty times a second, and the
+   * click that acknowledges a destination is a sound for a DECISION. Played
+   * every frame it became a buzzsaw the moment the marker locked onto a
+   * moving party. The player picks a quarry once; they hear it once.
+   */
+  setDestination(x, z, keepChase = false, quiet = false) {
     // Clicking the ground is a decision to go THERE, so it calls off a chase —
     // otherwise the destination is overwritten again on the very next frame and
     // the click appears to do nothing at all.
@@ -959,7 +965,7 @@ export class WorldMap {
     this.travelling = true;
     this.destMarker.position.set(this.S.dest.x, regionHeight(this.S.dest.x, this.S.dest.z) + 1.2, this.S.dest.z);
     this.destMarker.visible = true;
-    Audio.uiSelect();
+    if (!quiet) Audio.uiSelect();
   }
 
   stopTravel() {
@@ -1009,7 +1015,7 @@ export class WorldMap {
     if (this.chaseId) {
       const quarry = S.parties.find((p) => p.id === this.chaseId);
       if (!quarry) this.stopTravel();
-      else this.setDestination(quarry.x, quarry.z, true);
+      else this.setDestination(quarry.x, quarry.z, true, true);
     }
 
     if (mx || mz) {

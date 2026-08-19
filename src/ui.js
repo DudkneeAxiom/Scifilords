@@ -9,7 +9,7 @@ import * as State from './state.js';
 import * as Models from './models.js';
 import {
   ROLES, RANKS, COMMANDER_RANKS, WEAPONS, KIT, GOODS, GOODS_LIST, FACTIONS, LOCATIONS,
-  MISSION_TYPES, HOLDING_UPGRADES, UPGRADE_LIST, PARTY_TIERS, ARMOUR, SLOTS,
+  MISSION_TYPES, HOLDING_UPGRADES, UPGRADE_LIST, PARTY_TIERS, ARMOUR, SLOTS, TRAITS,
   POLICIES, POLICY_LIST, COMPANIONS, OFFICERS, RAPPORT, BACKGROUNDS, DOCTRINES,
 } from './data.js';
 import {
@@ -3444,7 +3444,12 @@ function rumourLine(S, loc) {
 // stale board is worse than no board.
 // ==========================================================================
 
-let sideTab = 'company';
+// The commander's effective stats want the company's own perk aggregate.
+// Recomputed here rather than threaded through, because the board is drawn
+// from campaign state alone and only repaints when something moved.
+const companyModsOf = (S) => companyMods(S.roster);
+
+let sideTab = 'character';
 let sideCbs = {};
 
 export const sideBoardTab = () => sideTab;
@@ -3564,7 +3569,56 @@ function sideLog(S) {
   return `<div class="sb-log">${items || '<div class="sb-empty">Nothing yet.</div>'}</div>`;
 }
 
+function sideCharacter(S) {
+  const c = State.commander(S);
+  if (!c) return '<div class="sb-empty">No commander.</div>';
+  const e = effective(c, companyModsOf(S));
+  const lad = ladder(c);
+  const rk = lad[c.rank] || lad[0];
+  const next = lad[c.rank + 1];
+  const xpPct = next ? ((c.xp - rk.xp) / Math.max(1, next.xp - rk.xp)) * 100 : 100;
+  const w = woundInfo(c);
+  const gear = ['head', 'body', 'legs']
+    .map((slot) => {
+      const a = c.equip?.[slot] ? ARMOUR[c.equip[slot]] : null;
+      return `<div class="sb-row"><span class="nm">${slot.toUpperCase()}
+        <span class="sub">${a ? esc(a.name) : 'nothing'}</span></span></div>`;
+    }).join('');
+  const tags = [
+    ...(c.traits || []).map((t) => (TRAITS.find((x) => x.id === t)?.name || t)),
+    ...(c.perks || []).map((p) => perkDef(p)?.name).filter(Boolean),
+  ];
+  return `<div class="sb-char">
+      <img src="${portrait(c, 96)}" alt="">
+      <div class="who">
+        <div class="nm">${esc(c.name)}</div>
+        <div class="rk">${esc(rk.name)} · ${esc(ROLES[c.role].name)}</div>
+        <div class="cr">${esc(creedOf(c).line || '')}</div>
+      </div>
+    </div>
+    ${tags.length ? `<div class="sb-tags">${tags
+    .map((t) => `<span>${esc(t)}</span>`).join('')}</div>` : ''}
+    ${w ? `<div class="sb-facts"><span>WOUND</span><span class="bad">${esc(w.name)}, ${w.days}d</span></div>` : ''}
+    <div class="sb-title">CONDITION</div>
+    ${facts([['HEALTH', `${Math.round(c.hp)} / ${c.maxHp}`],
+    ['ARMOUR', armourRating(c)],
+    ['CARRYING', esc(WEAPONS[c.weapon]?.name || 'nothing')]])}
+    ${bar((c.hp / Math.max(1, c.maxHp)) * 100)}
+    <div class="sb-title">THE MEASURE OF THEM</div>
+    ${facts([['BLADEWORK', `${Math.round(e.accuracy * 100)}%`],
+    ['PACE', e.speed.toFixed(1)],
+    ['NERVE', `${Math.round((e.aggression || 0) * 100)}%`],
+    ['EYE', Math.round(e.sight)]])}
+    <div class="sb-title">RANK</div>
+    ${facts([['STANDING', esc(rk.name)],
+    ['NEXT', next ? esc(next.name) : 'the top']])}
+    ${next ? bar(xpPct, 100, 0) : ''}
+    <div class="sb-title">WORN</div>${gear}
+    <button class="sb-btn" data-sb="character">EQUIPMENT</button>`;
+}
+
 const SIDE_TABS = {
+  character: { name: 'COMMANDER', render: sideCharacter },
   company: { name: 'COMPANY', render: sideCompany },
   stores: { name: 'STORES', render: sideStores },
   contracts: { name: 'WORK', render: sideContracts },
@@ -3590,6 +3644,11 @@ let sideSig = '';
  */
 function sideSignature(S) {
   const t = sideTab;
+  if (t === 'character') {
+    const c = State.commander(S);
+    return c ? `k${c.hp}:${c.rank}:${c.xp}:${c.wound?.days ?? -1}:${
+      c.perks?.length}:${JSON.stringify(c.equip)}:${c.weapon}` : 'k-';
+  }
   if (t === 'company') {
     return 't' + State.living(S).map((x) => `${x.id}:${x.hp}:${x.status}:${x.rank}`).join()
       + `|${Math.round(S.morale ?? 70)}|${Math.round(S.renown || 0)}`;
@@ -3645,9 +3704,17 @@ export function bindSideBoard(getS, cbs) {
       renderSideBoard(getS(), null, true);
     };
   }
+  // Folding the board is how you full-screen the map: the window gives up its
+  // frame and takes the whole page. The renderer sizes itself from its
+  // container and only recomputes on a resize event, so the class change has
+  // to be followed by one — otherwise the canvas keeps the old width and the
+  // map sits letterboxed inside its own full-screen viewport.
   const fold = (on) => {
     $('wh-side').classList.toggle('folded', on);
     $('wh-unfold').classList.toggle('hidden', !on);
+    document.getElementById('viewport')?.classList.toggle('map-wide', on);
+    document.getElementById('worldhud')?.classList.toggle('map-wide', on);
+    window.dispatchEvent(new Event('resize'));
     Audio.uiMove();
   };
   const wide = $('side-wide');
@@ -3663,6 +3730,36 @@ export function showSideTab(S, id) {
   sideTab = id;
   $('wh-side')?.classList.remove('folded');
   $('wh-unfold')?.classList.add('hidden');
+  // A hotkey that jumps to a tab also brings the board back, so the map has
+  // to give the width up again.
+  document.getElementById('viewport')?.classList.remove('map-wide');
+  document.getElementById('worldhud')?.classList.remove('map-wide');
+  window.dispatchEvent(new Event('resize'));
   renderSideBoard(S, null, true);
   return true;
+}
+
+/**
+ * The feed under the map: the campaign's own voice, where a chat box goes.
+ *
+ * The log has always existed and has always been somewhere the player had
+ * to go and look. Put it where they are already looking and the world
+ * narrates itself — a column marching, a convoy arriving, somebody
+ * threatening to leave — without ever taking the map away to say it.
+ *
+ * Same dirty check as the board: this is called every tick and rebuilding
+ * sixty lines of DOM per frame is how you make a page stutter.
+ */
+let feedSig = '';
+export function renderFeed(S) {
+  const el = $('wh-feed-body');
+  if (!el || !S) return;
+  const log = S.log || [];
+  const sig = `${log.length}|${log[0]?.text || ''}`;
+  if (sig === feedSig) return;
+  feedSig = sig;
+  el.innerHTML = log.slice(0, 60).map((l) => {
+    const day = l.day != null ? `<span class="d">d${l.day}</span>` : '';
+    return `<div class="${esc(l.kind || '')}">${day}${esc(l.text)}</div>`;
+  }).join('') || '<div class="sb-empty">The Reach is quiet.</div>';
 }

@@ -1180,3 +1180,131 @@ kbd {
 .sb-log div.good { color: #9ec46a; }
 .sb-log div.bad { color: #c86a5a; }
 .sb-log div.world { color: #8fb0c8; }
+
+
+/* ==========================================================================
+   THE WORLD SCREEN, LAID OUT
+   The map stopped being a wallpaper with panels floating on it and became a
+   window: a framed view in the top-left, the company board down the whole
+   right side, and the campaign's own voice in a feed beneath the map. The
+   arrangement classic browser RPGs settled on, for the reason they settled
+   on it — everything you need is on screen at once and nothing covers
+   anything else.
+   ========================================================================== */
+#viewport.world-framed {
+  position: absolute;
+  left: 8px; top: 52px;
+  width: calc(100% - 396px);
+  height: calc(61% - 8px);
+  border: 1px solid var(--edge, #33352a);
+  box-shadow: 0 0 0 1px rgba(0,0,0,0.6), 0 6px 22px rgba(0,0,0,0.5);
+  overflow: hidden;
+}
+#viewport.world-framed canvas { display: block; }
+
+/* Board: the full height of the right-hand column. */
+#wh-side.framed {
+  top: 52px; bottom: 46px; right: 8px;
+  width: 372px;
+  border: 1px solid var(--edge, #33352a);
+}
+
+#wh-feed {
+  position: absolute;
+  left: 8px; right: 396px;
+  top: calc(61% + 52px);
+  bottom: 46px;
+  background: linear-gradient(180deg, rgba(18,18,15,0.95), rgba(13,13,11,0.97));
+  border: 1px solid var(--edge, #33352a);
+  overflow-y: auto;
+  padding: 7px 11px;
+  font-size: 11px; line-height: 1.55;
+  pointer-events: auto; z-index: 5;
+}
+#wh-feed.hidden { display: none; }
+#wh-feed::-webkit-scrollbar { width: 7px; }
+#wh-feed::-webkit-scrollbar-thumb { background: #3a3a2e; }
+#wh-feed div { padding: 1px 0; color: #a8a293; }
+#wh-feed div.good { color: #9ec46a; }
+#wh-feed div.bad { color: #c86a5a; }
+#wh-feed div.world { color: #8fb0c8; }
+#wh-feed div .d { color: #6f6b5e; margin-right: 7px; }
+
+/* The character card at the head of the board. */
+.sb-char { display: flex; gap: 9px; align-items: flex-start; margin-bottom: 8px; }
+.sb-char img {
+  width: 56px; height: 56px; image-rendering: pixelated;
+  border: 1px solid #2c2d23; background: #14140f;
+}
+.sb-char .who { flex: 1; min-width: 0; }
+.sb-char .nm { color: var(--bone, #d8d3c8); font-size: 12px; }
+.sb-char .rk { color: var(--amber, #e8b070); font-size: 9px; letter-spacing: 0.12em; }
+.sb-char .cr { color: #85806f; font-size: 9.5px; font-style: italic; margin-top: 2px; }
+.sb-tags { display: flex; flex-wrap: wrap; gap: 3px; margin: 5px 0 2px; }
+.sb-tags span {
+  padding: 1px 5px; font-size: 8.5px; letter-spacing: 0.08em;
+  background: rgba(70,66,44,0.7); color: #c8c0aa; border: 1px solid #3d3a2c;
+}
+
+
+/* ==========================================================================
+   NOTHING FLOATS ON THE MAP
+   The location card, the territory key and the contacts report used to sit
+   ON the map, covering the corner you most wanted to see. In the framed
+   layout they move down into the strip beneath it, beside the feed — a row
+   of three: where you are, who is near, what happened. The map is left
+   alone to be a map.
+   ========================================================================== */
+#worldhud.framed .wh-left {
+  position: static; width: 300px; flex: none;
+  overflow-y: auto;
+}
+#worldhud.framed .wh-right {
+  position: static; width: 268px; flex: none;
+  overflow-y: auto;
+}
+#worldhud.framed .wh-right #wh-log { display: none; }   /* the feed says this now */
+#worldhud.framed .wh-strip {
+  position: absolute;
+  left: 8px; right: 396px;
+  top: calc(61% + 52px);
+  bottom: 46px;
+  display: flex; gap: 8px;
+  pointer-events: auto; z-index: 5;
+}
+#worldhud.framed #wh-feed {
+  position: static; flex: 1; min-width: 0;
+}
+#worldhud.framed .wh-strip > .stamp,
+#worldhud.framed .wh-strip .wh-left > .stamp {
+  border: 1px solid var(--edge, #33352a);
+}
+
+/* Labels are projected into CANVAS space, so their host has to BE the canvas
+   frame — full-screen it put every place name eight pixels left and fifty-two
+   up, which walked region titles off the top of the map and onto the status
+   bar. Clip to the frame too: a name for somewhere off the edge of the
+   window is a name floating over the feed. */
+#worldhud.framed #map-labels {
+  inset: auto;
+  left: 8px; top: 52px;
+  width: calc(100% - 396px);
+  height: calc(61% - 8px);
+  overflow: hidden;
+}
+
+/* An empty column is worse than no column: with nobody in sight the contacts
+   report has nothing to say and used to hold 268px of void between the
+   location card and the feed. */
+#worldhud.framed .wh-right:not(:has(#wh-contacts:not(.hidden))) { display: none; }
+
+/* FULL-SCREEN THE MAP. Folding the board away is the "show me the whole
+   Reach" gesture: the frame, the strip and the board all stand down and the
+   window takes the page. The panels are a keypress away and the unfold arrow
+   sits in the corner, so nothing is lost by going wide. */
+#viewport.world-framed.map-wide {
+  left: 0; top: 0; width: 100%; height: 100%;
+  border: none; box-shadow: none;
+}
+#worldhud.framed.map-wide #map-labels { inset: 0; left: 0; top: 0; width: 100%; height: 100%; }
+#worldhud.framed.map-wide .wh-strip { display: none; }
