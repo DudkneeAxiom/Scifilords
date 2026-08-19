@@ -7151,3 +7151,120 @@ test('the battle line: arms select as one, form in rows, and reshape on call', a
   // movement deadband (soldiers stop walking inside 2.2m of a destination).
   expect(r.worst).toBeLessThan(2.5);
 });
+
+test('arrows are bodies in flight: the arc, the plate, and the blade', async ({ page }) => {
+  test.setTimeout(150000);
+  await boot(page);
+  await newCampaign(page);
+  await page.evaluate(async () => {
+    const { Mission } = await import('/src/mission.js');
+    const UI = await import('/src/ui.js');
+    const G = window.KR;
+    const S = G.campaign;
+    S.roster[1].weapon = 'bow';
+    S.roster[2].weapon = 'bow';
+    S.roster[3].weapon = 'bow';
+    G.mission?.dispose();
+    G.world?.dispose(); G.world = null;
+    document.getElementById('viewport').innerHTML = '';
+    UI.show('hud');
+    G.mission = new Mission({
+      campaign: S,
+      spec: { type: 'skirmish', site: 'roadside', layout: 'roadside',
+        enemyFaction: 'raider', party: { strength: 4, quality: 0.9 } },
+      squad: S.roster.slice(0, 4),
+      container: document.getElementById('viewport'),
+      onHud: () => {}, onToast: () => {}, onIntro: () => {}, onWheel: () => {}, onEnd: () => {},
+    });
+    await G.mission.start();
+    G.mission.paused = true;
+  });
+  await page.waitForFunction(() => window.KR.mission?.player, null, { timeout: 40000 });
+  const r = await page.evaluate(async () => {
+    const { WEAPONS, KIT } = await import('/src/data.js');
+    const L = await import('/src/level.js');
+    const m = window.KR.mission;
+    const p = m.player;
+    const foes = m.entities.filter((e) => e.side === 'enemy' && !e.dead);
+    const archers = m.squad.filter((s) => s.weapon?.bow);
+    // Exile everyone while the mechanisms are examined.
+    for (const f of foes) {
+      f.x = 400; f.z = 400; f.state = 'guard'; f.alert = 0; f.sight = 5;
+      f.target = null; f.lastSeen = null; f.weapon = WEAPONS.sword;
+      f.hp = f.maxHp = 120;
+    }
+    m.skirmishTotal = 0;
+    p.x = 60; p.z = 60;
+    m.paused = false;
+    const realStep = m.step.bind(m);
+    m.step = () => {};
+
+    // 1) The arc: an arrow leaves with lift and gravity takes it back.
+    // Through fire(), the real muzzle — that is where the cadence lives.
+    const a0 = archers[0];
+    a0.x = 0; a0.z = 0; a0.cooldown = 0; a0.arriving = 0;
+    m.fire(a0, 0, 1.2, 25);
+    const arrow = m.arrows[m.arrows.length - 1];
+    const vy0 = arrow.vy;
+    realStep(1 / 30); realStep(1 / 30);
+    const vy1 = arrow.vy;
+    const lifted = vy0 > 0 && vy1 < vy0;
+    const cadence = a0.cooldown === 0 ? -1 : a0.cooldown;
+
+    // 2) The plate: a frontal arrow lands on the shield, not the man.
+    const tgt = foes[0];
+    tgt.x = 10; tgt.z = 10; tgt.shieldHp = KIT.shield.shieldHp;
+    tgt.yaw = Math.atan2(-1, 0);            // facing -x, where the arrow comes from
+    const plate0 = tgt.shieldHp, hp0 = tgt.hp;
+    // Ground-relative, or the arrow spawns under the terrain and sticks.
+    const ay = L.heightAt(tgt.x - 2, tgt.z) + 1.2;
+    m.arrows.push({ x: tgt.x - 2, y: ay, z: tgt.z, vx: 10, vy: 0.4, vz: 0,
+      shooter: a0, side: 'player', dmg: 30, dmgFar: 16, t: 0.2, stuck: 0, mesh: null });
+    for (let i = 0; i < 12; i++) realStep(1 / 30);
+    const plateAte = tgt.shieldHp < plate0 && tgt.hp === hp0;
+    // Turned away, the same arrow finds the body.
+    tgt.yaw = Math.atan2(1, 0);             // facing +x, back to the archer
+    m.arrows.push({ x: tgt.x - 2, y: ay, z: tgt.z, vx: 10, vy: 0.4, vz: 0,
+      shooter: a0, side: 'player', dmg: 30, dmgFar: 16, t: 0.2, stuck: 0, mesh: null });
+    for (let i = 0; i < 12; i++) realStep(1 / 30);
+    const backHit = tgt.hp < hp0;
+
+    // 3) Discipline: held bows loose nothing; released, they fire. Pin the
+    // archers where they stand first — on 'follow' they march to slots
+    // behind the exiled commander and walk the target out of their sight.
+    for (const a of archers) {
+      a.holdFire = true; a.cooldown = 0; a.forceTarget = null;
+      a.order = 'hold'; a.orderPoint = { x: a.x, z: a.z };
+    }
+    const near = foes[1];
+    near.x = archers[0].x + 20; near.z = archers[0].z;
+    near.hp = near.maxHp = 200;
+    const count0 = m.arrows.length;
+    for (let i = 0; i < 90; i++) realStep(1 / 30);
+    const heldQuiet = m.arrows.length <= count0 + 0;
+    m.toggleHoldFire(archers);
+    for (let i = 0; i < 150; i++) realStep(1 / 30);
+    const released = m.arrows.length > count0 || near.hp < 200;
+
+    // 4) The blade at close quarters: pressed, the bow goes over the shoulder.
+    const a1 = archers[1];
+    const brawler = foes[2];
+    brawler.x = a1.x + 2; brawler.z = a1.z;
+    realStep(1 / 30);
+    const drewBlade = a1.weapon.id === 'blade' && a1.bowStowed === true;
+    brawler.x = a1.x + 30;
+    realStep(1 / 30);
+    const bowBack = a1.weapon.bow === true && !a1.bowStowed;
+
+    return { lifted, cadence, plateAte, backHit, heldQuiet, released, drewBlade, bowBack };
+  });
+  expect(r.lifted).toBe(true);
+  // A volley is deliberate: four seconds of cooldown, give or take the jitter.
+  expect(r.cadence).toBeGreaterThan(3.5);
+  expect(r.plateAte).toBe(true);
+  expect(r.backHit).toBe(true);
+  expect(r.heldQuiet).toBe(true);
+  expect(r.released).toBe(true);
+  expect(r.drewBlade).toBe(true);
+  expect(r.bowBack).toBe(true);
+});

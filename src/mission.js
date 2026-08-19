@@ -187,6 +187,7 @@ export class Mission {
     // Per-arm formation shapes for THE BATTLE LINE. Ranged default loose:
     // bunched bows are one volley's worth of casualties.
     this.groupShape = { inf: 'line', spear: 'line', ranged: 'loose' };
+    this.arrows = [];                      // bodies in flight
     this.marker = null;
     this.result = null;
     this.stats = { kills: 0, shotsFired: 0, medkitsUsed: 0 };
@@ -2080,7 +2081,14 @@ export class Mission {
       if (k === 't') this.toggleTactical();
       if (k === 'f') this.setSquadOrder('follow');
       if (k === 'h') this.setSquadOrder('hold');
-      if (k === 'x') this.orderSuppress();
+      if (k === 'x') {
+        // On a pure ranged selection X is fire discipline; anywhere else it
+        // keeps its gun-era meaning while guns remain in the world.
+        const sel = this.commanded();
+        if (sel.length && sel.every((s) => this.battleGroup(s) === 'ranged'
+          && (s.weapon?.bow || s.bowStowed))) this.toggleHoldFire(sel);
+        else this.orderSuppress();
+      }
       if (k === 'z') this.orderFlank();
       if (k === 'v') this.orderFallBack();
       if (k === 'g') this.orderTakeCover();
@@ -3117,6 +3125,145 @@ export class Mission {
     e.char.kick();                          // follow-through weight
   }
 
+  // ------------------------------------------------------------------
+  // Arrows: real bodies in flight. Nothing hitscan leaves a bow — the
+  // arc is solved at the loose to land on the mark under gravity, and
+  // everything between loose and landing belongs to updateArrows.
+  // ------------------------------------------------------------------
+
+  looseArrow(e, tx, ty, tz) {
+    const w = e.weapon;
+    const y0 = Level.heightAt(e.x, e.z) + (e.elev || 0) + 1.5;
+    const dx = tx - e.x, dz = tz - e.z;
+    const d = Math.hypot(dx, dz);
+    const s = w.flight || 28;
+    const t = Math.max(0.15, d / s);
+    const g = 14;
+    // Skill is scatter at the loose, not a die roll at the landing.
+    const jitter = e.isPlayer ? 0.2 : (1 - (e.acc ?? 0.6)) * 2.4;
+    this.arrows.push({
+      x: e.x, y: y0, z: e.z,
+      vx: dx / t + range(this.r, -jitter, jitter),
+      vy: (ty - y0) / t + g * t * 0.5,
+      vz: dz / t + range(this.r, -jitter, jitter),
+      shooter: e, side: e.side,
+      dmg: w.damage, dmgFar: w.dmgFar ?? w.damage,
+      t: 0, stuck: 0,
+      mesh: this.arrowMesh(),
+    });
+  }
+
+  arrowMesh() {
+    if (!this.arrowGeo) {
+      this.arrowGeo = new THREE.BoxGeometry(0.035, 0.035, 0.85);
+      this.arrowMat = new THREE.MeshBasicMaterial({ color: 0x2a2620 });
+    }
+    const m = new THREE.Mesh(this.arrowGeo, this.arrowMat);
+    this.scene.add(m);
+    return m;
+  }
+
+  updateArrows(dt) {
+    const g = 14;
+    let swept = false;
+    for (const a of this.arrows) {
+      if (a.stuck > 0) {
+        a.stuck -= dt;
+        if (a.stuck <= 0) { a.dead = true; swept = true; }
+        continue;
+      }
+      a.t += dt;
+      if (a.t > 6) { a.dead = true; swept = true; continue; }
+      a.vy -= g * dt;
+      const nx = a.x + a.vx * dt, ny = a.y + a.vy * dt, nz = a.z + a.vz * dt;
+      // Bodies first.
+      let hit = null;
+      for (const e of this.entities) {
+        if (e.dead || e === a.shooter || e.side === a.side || e.isTitan) continue;
+        if (e.inserting) continue;
+        if (Math.hypot(e.x - nx, e.z - nz) > 0.55) continue;
+        const cap = bodyCapsule(e);
+        if (ny < cap.lo || ny > cap.hi) continue;
+        hit = e;
+        break;
+      }
+      if (hit) {
+        // Plate reads arrows from the front whether or not the guard is
+        // up — which is exactly what lets shield infantry walk a volley.
+        const from = Math.atan2(a.x - hit.x, a.z - hit.z);
+        const arc = ((hit.blockArc ?? 2.1) / 2) + ((hit.guard || 0) > 0 ? 0.35 : 0);
+        if ((hit.shieldHp || 0) > 0 && Math.abs(angleDelta(from, hit.yaw)) < arc) {
+          hit.shieldHp = Math.max(0, hit.shieldHp - 8);
+          hit.char.flinch();
+        } else {
+          const fall = clamp(a.t / 2.2, 0, 1);
+          this.applyDamage(hit, lerp(a.dmg, a.dmgFar, fall), a.shooter,
+            { x: nx, y: ny, z: nz });
+        }
+        a.dead = true;
+        swept = true;
+        if (a.mesh) a.mesh.visible = false;
+        continue;
+      }
+      // The ground and the furniture both stop an arrow. It sticks a while,
+      // which is most of what makes a volleyed field look fought-over.
+      const gy = Level.heightAt(nx, nz);
+      let blocked = ny <= gy + 0.03;
+      if (!blocked) {
+        for (const o of this.level.obstacles) {
+          if (Math.abs(nx - o.x) > o.hw || Math.abs(nz - o.z) > o.hd) continue;
+          if (ny < (o.y ?? gy) + (o.h ?? 2)) { blocked = true; break; }
+        }
+      }
+      if (blocked) {
+        a.stuck = 4;
+        a.x = nx; a.y = Math.max(ny, gy + 0.02); a.z = nz;
+        if (a.mesh) a.mesh.position.set(a.x, a.y, a.z);
+        continue;
+      }
+      a.x = nx; a.y = ny; a.z = nz;
+      if (a.mesh) {
+        a.mesh.position.set(a.x, a.y, a.z);
+        a.mesh.rotation.y = Math.atan2(a.vx, a.vz);
+        a.mesh.rotation.x = -Math.atan2(a.vy, Math.hypot(a.vx, a.vz));
+      }
+    }
+    if (swept) {
+      for (const a of this.arrows) if (a.dead && a.mesh) this.scene.remove(a.mesh);
+      this.arrows = this.arrows.filter((a) => !a.dead);
+    }
+  }
+
+  /**
+   * An archer inside spitting distance is a target, not an archer: the bow
+   * goes over the shoulder and the bracket blade comes out, and it goes
+   * back the moment the ground opens up again.
+   */
+  updateSidearm(e) {
+    let nearest = Infinity;
+    for (const o of this.entities) {
+      if (o.dead || o.side === e.side || o.isTitan) continue;
+      const d = Math.hypot(o.x - e.x, o.z - e.z);
+      if (d < nearest) nearest = d;
+    }
+    if (!e.bowStowed && nearest < 5) {
+      e.stowedBow = e.weapon;
+      e.bowStowed = true;
+      e.weapon = WEAPONS.blade;
+    } else if (e.bowStowed && nearest > 13) {
+      e.weapon = e.stowedBow;
+      e.bowStowed = false;
+    }
+  }
+
+  /** Fire discipline for the ranged arm: hold until told otherwise. */
+  toggleHoldFire(sel) {
+    const on = !sel[0].holdFire;
+    for (const s of sel) s.holdFire = on;
+    Audio.order();
+    this.onToast('RANGED', on ? 'HOLD FIRE' : 'FIRE AT WILL', 'order');
+  }
+
   /** The commander's wind: swings and sprint spend it, standing still buys it back. */
   updateStamina(dt, sprinting) {
     if (sprinting) this.pStamina = Math.max(0, this.pStamina - dt * 0.1);
@@ -3165,6 +3312,15 @@ export class Mission {
     // Gated here rather than at each AI branch so nothing that arrives can
     // shoot on its first frame, whichever behaviour is driving it.
     if (e.arriving > 0) return;
+    // A bow is not a gun with a slow trigger: the arrow is a real body in
+    // flight, and everything after the loose belongs to updateArrows.
+    if (w.bow) {
+      e.cooldown = 60 / w.rpm + this.r() * 0.8;
+      e.char.kick();
+      this.looseArrow(e, tx, ty, tz);
+      this.raiseAlarm(e, e.target || { x: tx, z: tz });
+      return;
+    }
     if (e.ammo <= 0) {
       if (e.isPlayer) Audio.dryFire();
       this.tryReload(e);
@@ -4342,6 +4498,8 @@ export class Mission {
     // Steel in flight resolves whoever is driving the body.
     this.updateSwing(dt, e);
     if (e.guardBreak > 0) e.guardBreak -= dt;
+    // Archers pressed to contact draw the blade; room draws the bow back.
+    if ((e.weapon?.bow || e.bowStowed) && !e.isPlayer) this.updateSidearm(e);
     // A reinforcement is on the field but not yet in the fight.
     if (e.arriving > 0) e.arriving = Math.max(0, e.arriving - dt);
 
@@ -4822,6 +4980,9 @@ export class Mission {
     const w = e.weapon;
     if (!w || e.reloading > 0) return;
     if (this.inserting) return;
+    // Discipline outranks appetite: a ranged soldier told to hold, holds —
+    // unless the commander marked that exact body for them.
+    if (e.holdFire && !e.forceTarget && !e.isPlayer) return;
     // Steel does not shoot. The movement layer has already closed the
     // distance (the standoff band reads w.range, and a reach-valued range
     // walks the AI into contact); all that is decided here is whether the
@@ -5940,6 +6101,7 @@ export class Mission {
       // Turn rate drives the lean, so a character banks into a hard turn.
       e.turnRate = dt > 0 ? angleDelta(e.lastYaw, e.yaw) / dt : 0;
     }
+    this.updateArrows(dt);
     this.updateMark();
     this.updateMissionLogic(dt);
     this.hurtFlash = Math.max(0, (this.hurtFlash || 0) - dt * 1.6);
@@ -5965,6 +6127,11 @@ export class Mission {
   dispose() {
     this.disposed = true;
     cancelAnimationFrame(this.raf);
+    for (const a of this.arrows || []) if (a.mesh) this.scene.remove(a.mesh);
+    this.arrows = [];
+    this.arrowGeo?.dispose?.();
+    this.arrowMat?.dispose?.();
+    this.arrowGeo = this.arrowMat = null;
     window.removeEventListener('resize', this.onResize);
     for (const [t, ev, fn] of this._boundHandlers) t.removeEventListener(ev, fn);
     this._boundHandlers = [];
