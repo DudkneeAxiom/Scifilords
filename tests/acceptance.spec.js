@@ -8001,3 +8001,151 @@ test('the record matches the battle: wounds name what did them', async ({ page }
   // Old saves and scripted losses still resolve.
   expect(r.legacyWound).toBe(true);
 });
+
+test('running down a moving party clicks once, not sixty times a second', async ({ page }) => {
+  test.setTimeout(120000);
+  await boot(page);
+  await newCampaign(page);
+
+  // A chase re-aims at its quarry every frame — that is what makes it a chase
+  // rather than a click at where somebody used to be. But the destination
+  // marker's acknowledging click rode along on every one of those re-aims,
+  // and the moment the ring locked onto a moving party the map started
+  // screaming. Count real oscillators, not a flag: the bug was audible, so
+  // the test listens.
+  const r = await page.evaluate(async () => {
+    const S = window.KR.campaign;
+    const W = window.KR.world;
+    const Audio = await import('/src/audio.js');
+    Audio.init();
+    W.setSpeed(0);
+    W.stopTravel();
+
+    const AC = window.AudioContext || window.webkitAudioContext;
+    const real = AC.prototype.createOscillator;
+    let tones = 0;
+    AC.prototype.createOscillator = function spy() { tones++; return real.call(this); };
+
+    const quarry = {
+      id: 'chase_audio', kind: 'caravan', name: 'Loud Quarry', strength: 4,
+      tier: 1, quality: 0.6, faction: 'trust', speed: 40,
+      x: S.pos.x + 900, z: S.pos.z + 900,
+    };
+    S.parties.push(quarry);
+
+    W.chase('chase_audio');
+    const onPick = tones;              // the one sound the player asked for
+    tones = 0;
+    for (let i = 0; i < 120; i++) {    // two seconds of pursuit
+      quarry.x += 3; quarry.z += 2;    // and it keeps running
+      W.update(0.016);
+    }
+    const chasing = tones;
+    const tracked = Math.hypot(S.dest.x - quarry.x, S.dest.z - quarry.z);
+
+    AC.prototype.createOscillator = real;
+    return { onPick, chasing, tracked, travelling: W.travelling };
+  });
+
+  // Picking the quarry is a decision and makes a noise.
+  expect(r.onPick, 'choosing a quarry made no sound at all').toBeGreaterThan(0);
+  // Pursuing it is not, and makes none.
+  expect(r.chasing, 'the chase re-aim is playing a UI click every frame').toBe(0);
+  // And the marker really is still following — silence must not mean it stopped.
+  expect(r.travelling).toBe(true);
+  expect(r.tracked, 'the destination stopped tracking the quarry').toBeLessThan(60);
+});
+
+test('the perk tree is steel: no gun perks, and every melee perk bites', async ({ page }) => {
+  test.setTimeout(120000);
+  await boot(page);
+
+  // The progression tree outlived the combat overhaul untouched — reloads,
+  // magazine capacity, burst length, suppressing fire — so a company could
+  // still promote its way into a gunfight the game no longer has. This holds
+  // the line on two things: that the retired perks are gone, and that each
+  // one that replaced them changes a number the melee runtime reads. A perk
+  // that modifies a dead system is worse than no perk: the player spends a
+  // promotion on it.
+  const r = await page.evaluate(async () => {
+    const P = await import('/src/perks.js');
+    const R = await import('/src/roster.js');
+    const { Mission } = await import('/src/mission.js');
+
+    const RETIRED = ['quickdraw', 'trigger_control', 'pack_mule', 'suppressor',
+      'steady_nerves', 'cover_hound'];
+    const stillHere = RETIRED.filter((id) => P.SOLDIER_PERKS[id]);
+
+    // No description may still be about firearms.
+    const GUN = /\b(shoot|shoots|shooting|reload|magazine|burst|trigger|gunfire|suppressing fire)\b/i;
+    const gunWords = [...Object.values(P.SOLDIER_PERKS), ...Object.values(P.COMMANDER_PERKS)]
+      .filter((p) => GUN.test(p.desc)).map((p) => p.id);
+
+    // A soldier with a perk, and the same soldier without it.
+    const rng = () => 0.5;
+    const make = (perks) => {
+      const s = R.makeSoldier(rng, { role: 'rifleman' });
+      s.perks = perks;
+      s.equip = {};
+      return s;
+    };
+    const bare = R.effective(make([]));
+    const eff = (id) => R.effective(make([id]));
+
+    // Every offered perk must reach at least one live role affinity.
+    const roles = ['rifleman', 'gunner', 'marksman', 'breacher', 'medic', 'signals'];
+    const offered = new Set();
+    for (const role of roles) {
+      for (let i = 0; i < 200; i++) {
+        const s = R.makeSoldier(() => (i % 97) / 97, { role });
+        s.role = role; s.perks = [];
+        for (const id of P.offerPerks(() => ((i * 7) % 101) / 101, s)) offered.add(id);
+      }
+    }
+    const unreachable = Object.keys(P.SOLDIER_PERKS).filter((id) => !offered.has(id));
+
+    return {
+      stillHere, gunWords, unreachable,
+      swing: [bare.swingSpeed, eff('swordhand').swingSpeed],
+      wind: [bare.wind, eff('second_wind').wind],
+      guard: [bare.guardStr, eff('shield_wall').guardStr],
+      reach: [bare.reachBonus, eff('long_arm').reachBonus],
+      stagger: [bare.staggerRes, eff('planted').staggerRes],
+      rally: [bare.rally, eff('standard_bearer').rally],
+      scatter: [bare.rangeAcc, eff('deadeye').rangeAcc],
+      quiver: [bare.magMul, eff('full_quiver').magMul],
+      // Old saves carrying a retired perk must still resolve, not throw.
+      legacy: R.effective(make(['quickdraw', 'trigger_control'])).accuracy,
+      ironWill: P.companyMods([{ isCommander: true, perks: ['iron_will'] }]).squadNerve,
+      // The banner is worth something only while somebody is holding it up.
+      banner: (() => {
+        const bearer = { side: 'player', eff: { rally: 12 } };
+        const line = { side: 'player', eff: { rally: 0 } };
+        const held = Mission.prototype.rallyBonus.call({ entities: [bearer, line] });
+        bearer.down = true;
+        const lost = Mission.prototype.rallyBonus.call({ entities: [bearer, line] });
+        return [held, lost];
+      })(),
+    };
+  });
+
+  expect(r.stillHere, 'shooter perks are still in the tree').toEqual([]);
+  expect(r.gunWords, 'perk descriptions still talk about firearms').toEqual([]);
+  expect(r.unreachable, 'a perk exists that no role is ever offered').toEqual([]);
+
+  // Each new perk moves the number the runtime reads.
+  expect(r.swing[1]).toBeGreaterThan(r.swing[0]);
+  expect(r.wind[1]).toBeGreaterThan(r.wind[0]);
+  expect(r.guard[1]).toBeGreaterThan(r.guard[0]);
+  expect(r.reach[1]).toBeGreaterThan(r.reach[0]);
+  expect(r.stagger[1]).toBeGreaterThan(r.stagger[0]);
+  expect(r.rally[1]).toBeGreaterThan(r.rally[0]);
+  expect(r.scatter[1]).toBeGreaterThan(r.scatter[0]);
+  expect(r.quiver[1]).toBeGreaterThan(r.quiver[0]);
+  expect(r.ironWill).toBeGreaterThan(0);
+  // And a save from before the overhaul still loads.
+  expect(Number.isFinite(r.legacy)).toBe(true);
+  // A standard held up rallies; a standard on the ground does not.
+  expect(r.banner[0]).toBeGreaterThan(0);
+  expect(r.banner[1]).toBe(0);
+});

@@ -216,3 +216,59 @@ The shape of the game now:
   was never re-tuned for melee lethality.
 - Sieges use the field systems but their own approach logic predates
   formations; they work, they are not yet FORMED.
+
+## Round: the progression tree, and the world screen
+
+Two things this round, both of them "half the old system was still
+running underneath".
+
+### The perk tree is steel now
+
+`src/perks.js` was the last untouched shooter system. It shipped through
+the whole overhaul offering Quickdraw (reload speed), Pack Mule
+(magazine capacity), Trigger Control (burst length), Suppressor and
+Steady Nerves — five promotions a player could spend on a gunfight the
+game no longer has. Retired, and replaced with perks the melee runtime
+reads:
+
+| perk | mod | where it bites |
+| --- | --- | --- |
+| Swordhand | `swingSpeed` | `strike()` shortens the swing, damage untouched |
+| Long Arm | `reachBonus` | `resolveStrike()` reach — who lands first |
+| Shieldwall | `guardStr` | the guard branch: what a parry turns, what the plate eats |
+| Planted | `staggerRes` | the stagger comparison — weight no longer cancels them |
+| Second Wind | `wind` | `updateStamina()` and the per-swing cost |
+| Deadeye | `rangeAcc` | `looseArrow()` scatter at the loose |
+| Full Quiver | `magMul` | arrows carried |
+| Standard Bearer | `rally` | `baseNerve()` via `rallyBonus()` |
+| Iron Will (cmd) | `squadNerve` | `baseNerve()` company-wide |
+
+Role affinities were remapped to what the role IDs now MEAN — rifleman
+is a swordsman, gunner a spearman, marksman an archer, breacher the
+heavy — rather than what they are still called in the save format.
+
+`reloadMul` / `burstBonus` / `burstRest` survive in `effective()` at
+their neutral values because emplacements still fire; no perk feeds them.
+A save carrying a retired perk still loads: `perkMod` skips ids it does
+not recognise.
+
+### The world screen is a layout, not a wallpaper
+
+The map became a window in the top-left at 61% height with the company
+board down the right and a campaign feed beneath. The location card,
+territory key and contacts report moved OFF the map into a strip under
+it — they used to cover the corner you most wanted to see. Folding the
+board full-screens the map.
+
+Two real bugs fell out of building it: `#map-labels` was full-screen
+while labels project into CANVAS space, so every place name sat eight
+pixels left and fifty-two up and region titles walked onto the status
+bar; and the chase re-aim in `worldmap.setDestination` played its
+acknowledging click on every one of sixty frames a second, which turned
+running down a moving party into a buzzsaw.
+
+### Still open
+
+- The enemy commander's hold/snipe postures still want a directed playtest.
+- Sieges use the field systems but their approach logic predates
+  formations.

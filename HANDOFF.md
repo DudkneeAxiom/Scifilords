@@ -1122,3 +1122,49 @@ broken for several sessions because a duplicate object key made
 parties near the start* rather than their strength. The count was true and
 meaningless. A screenshot caught it, because a party whose kind resolved to
 nothing had no description line under its name.
+
+## The world screen is a framed layout (after the casualty pass)
+
+The map is no longer the wallpaper. On the world screen `#viewport` gets
+`.world-framed` — a window at top-left, 61% of the height, with the
+company board (`#wh-side.framed`) down the right and a strip beneath the
+map holding the location card, the territory key, the contacts report
+and the campaign feed (`#wh-feed`). `#worldhud` carries `.framed` so the
+strip can be laid out without touching the mission HUD, and everything
+is torn down in `teardown()` so missions get the full window back.
+
+Two traps live in here:
+
+- **`#map-labels` must match the canvas rect.** Labels are projected
+  into *canvas* space (`renderer.domElement.clientWidth`) but the host
+  is a plain absolutely-positioned div. Full-screen it put every place
+  name eight pixels left and fifty-two up, walking region titles onto
+  the status bar. The framed rule re-anchors it to the frame and clips.
+- **The renderer only resizes on a `resize` event.** Any code that
+  changes the viewport's box — the fold button, `showSideTab`, entering
+  the world screen — has to follow with `G.world.onResize?.()` or a
+  dispatched `resize`, or the canvas keeps its old width and the map
+  sits letterboxed inside its own container.
+
+Folding the board (`side-wide`) adds `.map-wide` and full-screens the
+map; any hotkey that jumps to a tab unfolds and undoes it.
+
+## The perk tree was the last shooter system
+
+It survived the entire combat overhaul offering reload speed, magazine
+capacity and burst length. Retired in favour of perks the melee runtime
+reads — `swingSpeed`, `reachBonus`, `guardStr`, `staggerRes`, `wind`,
+`rally` — each wired at a named site in `mission.js` (see OVERHAUL.md
+for the table). Two things to know if you touch it:
+
+- **Role IDs lie.** `rifleman` is a swordsman, `gunner` a spearman,
+  `marksman` an archer, `breacher` the heavy. The IDs are baked into
+  every save and were deliberately not renamed. `offerPerks` affinities
+  follow the meaning.
+- **`reloadMul` / `burstBonus` / `burstRest` still exist in
+  `effective()`** at neutral values, because emplacements still fire.
+  No perk feeds them. Do not delete them without checking the
+  emplacement path.
+
+A save carrying a retired perk still loads — `perkMod` skips ids it does
+not recognise — and the acceptance suite asserts that.

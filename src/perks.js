@@ -2,50 +2,69 @@
 //
 // Every perk here changes behaviour somewhere in the combat or campaign code —
 // none of them are flat stat bumps with a name attached. The player picks one
-// from three on every promotion, so two riflemen who started identical diverge
+// from three on every promotion, so two swordsmen who started identical diverge
 // into recognisably different soldiers over a campaign.
 //
 // `mods` are read by roster.effective() and by the mission layer. Anything that
 // needs bespoke logic sets a flag and is handled at the site that cares.
+//
+// THE TREE IS STEEL NOW. It used to be a shooter's ladder — reloads, magazine
+// capacity, burst length, suppressing fire — and it survived the combat
+// overhaul untouched, which meant a company could still promote its way into
+// a gunfight the game no longer has. Every one of those is retired here and
+// replaced by something the melee runtime actually reads: swing speed and
+// wind, the guard, reach, footing. A perk that modifies a system nobody runs
+// is worse than no perk, because the player spends a promotion on it.
 
 export const SOLDIER_PERKS = {
-  // --- shooting ---------------------------------------------------------
-  deadeye: {
-    id: 'deadeye', name: 'Deadeye',
-    desc: 'Accuracy holds up at distance. Aim scatter grows far more slowly.',
-    mods: { rangeAcc: 0.45 },
+  // --- the swing ---------------------------------------------------------
+  swordhand: {
+    id: 'swordhand', name: 'Swordhand',
+    desc: 'Recovers from a swing far faster. Roughly a quarter more steel in '
+      + 'the same time.',
+    mods: { swingSpeed: 0.28 },
   },
   close_quarters: {
     id: 'close_quarters', name: 'Close Quarters',
-    desc: '+35% damage inside twelve metres.',
+    desc: 'Deadly in the press. +35% damage once the lines have met.',
     mods: { closeDmg: 0.35 },
   },
-  quickdraw: {
-    id: 'quickdraw', name: 'Quickdraw',
-    desc: 'Reloads 35% faster.',
-    mods: { reloadMul: 0.65 },
+  long_arm: {
+    id: 'long_arm', name: 'Long Arm',
+    desc: 'Strikes half a metre further than the weapon should reach. They '
+      + 'get the first blow in.',
+    mods: { reachBonus: 0.5 },
   },
-  trigger_control: {
-    id: 'trigger_control', name: 'Trigger Control',
-    desc: 'Longer, steadier bursts and a shorter pause between them.',
-    mods: { burstBonus: 2, burstRest: 0.6 },
+  deadeye: {
+    id: 'deadeye', name: 'Deadeye',
+    desc: 'A bowman whose arrows hold their line. Scatter at the loose is '
+      + 'nearly halved.',
+    mods: { rangeAcc: 0.45 },
   },
-  pack_mule: {
-    id: 'pack_mule', name: 'Pack Mule',
-    desc: 'Carries a bigger load. +40% magazine capacity.',
+  full_quiver: {
+    id: 'full_quiver', name: 'Full Quiver',
+    desc: 'Carries far more than they are issued. +40% arrows.',
     mods: { magMul: 1.4 },
   },
 
   // --- survivability ----------------------------------------------------
-  cover_hound: {
-    id: 'cover_hound', name: 'Cover Hound',
-    desc: 'Finds and uses cover without being told, and from further away.',
-    mods: { cover: 0.45, coverRange: 8 },
+  shield_wall: {
+    id: 'shield_wall', name: 'Shieldwall',
+    desc: 'Their guard turns most of what it meets, and the plate lasts twice '
+      + 'as long behind it.',
+    mods: { guardStr: 0.6 },
   },
-  steady_nerves: {
-    id: 'steady_nerves', name: 'Steady Nerves',
-    desc: 'Suppressing fire barely touches them.',
-    mods: { suppressResist: 0.7 },
+  planted: {
+    id: 'planted', name: 'Planted',
+    desc: 'Hard to interrupt and harder to move. Weight no longer cancels '
+      + 'their swing.',
+    mods: { staggerRes: 0.75 },
+  },
+  second_wind: {
+    id: 'second_wind', name: 'Second Wind',
+    desc: 'Swings cost them less and they get it back faster. They are still '
+      + 'fighting when the line is blown.',
+    mods: { wind: 0.6 },
   },
   hard_to_kill: {
     id: 'hard_to_kill', name: 'Hard To Kill',
@@ -54,7 +73,8 @@ export const SOLDIER_PERKS = {
   },
   scarred: {
     id: 'scarred', name: 'Scarred',
-    desc: 'Wounds no longer degrade their aim. They have worked through worse.',
+    desc: 'Wounds no longer degrade their bladework. They have worked through '
+      + 'worse.',
     mods: { ignoreWoundAcc: 1 },
   },
   fleet: {
@@ -71,13 +91,14 @@ export const SOLDIER_PERKS = {
   },
   spotter: {
     id: 'spotter', name: 'Spotter',
-    desc: 'Sees further, and the rest of the squad engages what they see.',
+    desc: 'Sees further, and the rest of the line engages what they see.',
     mods: { sight: 18, shareTargets: 1 },
   },
-  suppressor: {
-    id: 'suppressor', name: 'Suppressor',
-    desc: 'Their suppressing fire pins far harder.',
-    mods: { suppressPower: 0.9 },
+  standard_bearer: {
+    id: 'standard_bearer', name: 'Standard Bearer',
+    desc: 'Everyone within sight of them holds a little longer. Nerve does '
+      + 'not break where the banner still stands.',
+    mods: { rally: 12 },
   },
   breach_specialist: {
     id: 'breach_specialist', name: 'Breach Specialist',
@@ -96,13 +117,15 @@ export const SOLDIER_PERKS = {
 export const COMMANDER_PERKS = {
   drillmaster: {
     id: 'drillmaster', name: 'Drillmaster',
-    desc: 'Every soldier under your command shoots better. +8% squad accuracy.',
+    desc: 'Every soldier under your command handles their weapon better. '
+      + '+8% company bladework.',
     mods: { squadAcc: 0.08 },
   },
   tactician: {
     id: 'tactician', name: 'Tactician',
-    desc: 'Orders are acted on immediately, and your squad suppresses harder.',
-    mods: { orderSpeed: 2.5, squadSuppress: 0.5 },
+    desc: 'Orders are acted on immediately, and your formations dress '
+      + 'themselves without being told twice.',
+    mods: { orderSpeed: 2.5, squadCohesion: 0.4 },
   },
   field_surgeon: {
     id: 'field_surgeon', name: 'Field Surgeon',
@@ -131,12 +154,14 @@ export const COMMANDER_PERKS = {
   },
   iron_will: {
     id: 'iron_will', name: 'Iron Will',
-    desc: 'Nobody in your company panics under fire.',
-    mods: { squadSuppressResist: 0.55 },
+    desc: 'Your line does not break. Every soldier holds their nerve far '
+      + 'longer once the casualties start.',
+    mods: { squadNerve: 22 },
   },
   forward_observer: {
-    id: 'forward_observer', name: 'Forward Observer',
-    desc: 'Your squad shares what it sees. Everyone spots further.',
+    id: 'forward_observer', name: 'Outriders',
+    desc: 'You know the ground before you stand on it. Everyone in the '
+      + 'company spots further.',
     mods: { squadSight: 14 },
   },
   press_gang: {
@@ -165,9 +190,9 @@ export const hasPerk = (s, id) => (s.perks || []).includes(id);
 export function companyMods(roster) {
   const cmd = roster.find((s) => s.isCommander);
   const out = {
-    squadAcc: 0, orderSpeed: 0, squadSuppress: 0, casualtySurvival: 0, healRate: 0,
+    squadAcc: 0, orderSpeed: 0, squadCohesion: 0, casualtySurvival: 0, healRate: 0,
     supplyMul: 1, bonusKits: 0, payMul: 1, hireMul: 1, lootMul: 1,
-    squadSuppressResist: 0, squadSight: 0, extraRecruit: 0,
+    squadNerve: 0, squadSight: 0, extraRecruit: 0,
   };
   if (!cmd) return out;
   for (const id of cmd.perks || []) {
@@ -194,13 +219,17 @@ export function offerPerks(r, s) {
     .filter((id) => !(s.perks || []).includes(id));
   if (!pool.length) return [];
 
+  // The role IDs are the old ones — they are baked into every save — but what
+  // they MEAN changed with the overhaul: rifleman is a swordsman, gunner a
+  // spearman, marksman an archer, breacher the heavy. The affinities follow
+  // the meaning, not the name.
   const affinity = {
     medic: ['combat_medic', 'lucky', 'fleet'],
-    marksman: ['deadeye', 'spotter', 'steady_nerves'],
-    breacher: ['close_quarters', 'hard_to_kill', 'fleet'],
-    gunner: ['suppressor', 'pack_mule', 'trigger_control'],
-    signals: ['breach_specialist', 'spotter', 'quickdraw'],
-    rifleman: ['trigger_control', 'cover_hound', 'quickdraw'],
+    marksman: ['deadeye', 'full_quiver', 'spotter'],            // archer
+    breacher: ['close_quarters', 'hard_to_kill', 'planted'],    // heavy
+    gunner: ['long_arm', 'planted', 'shield_wall'],             // spearman
+    signals: ['breach_specialist', 'spotter', 'standard_bearer'],
+    rifleman: ['swordhand', 'shield_wall', 'second_wind'],      // swordsman
   }[s.role] || [];
 
   const weighted = [];

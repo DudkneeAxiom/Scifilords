@@ -3343,11 +3343,13 @@ export class Mission {
   strike(e, dir = 'right') {
     const w = e.weapon;
     if (!w?.melee || e.cooldown > 0 || e.swing || e.arriving > 0) return;
-    let dur = 60 / w.rpm;
+    // A fast hand is a SHORTER swing, not a stronger one — Swordhand buys
+    // steel in the air and leaves the damage per blow alone.
+    let dur = (60 / w.rpm) / (1 + (e.eff?.swingSpeed || 0));
     if (e.isPlayer) {
       // Tired swings drag. The bar also gates sprint — one wind, all of it.
       if (this.pStamina < 0.2) dur *= 1.5;
-      this.pStamina = Math.max(0, this.pStamina - 0.18);
+      this.pStamina = Math.max(0, this.pStamina - 0.18 * (1 - (e.eff?.wind || 0) * 0.5));
       this.stats.swings = (this.stats.swings || 0) + 1;
     }
     e.swing = { t: 0, dur, dir, hitDone: false };
@@ -3381,7 +3383,10 @@ export class Mission {
    */
   resolveStrike(e) {
     const w = e.weapon;
-    const reach = (w.reach || 2) + 0.5;    // arm on top of the steel
+    // Arm on top of the steel, plus whatever Long Arm bought them. Reach is
+    // the quietest advantage in a melee and the most decisive: it decides who
+    // lands first, and landing first is most of surviving.
+    const reach = (w.reach || 2) + 0.5 + (e.eff?.reachBonus || 0);
     const halfArc = (w.arc ?? 1.6) / 2 + 0.15;
     let best = null, bd = Infinity;
     for (const t of this.entities) {
@@ -3414,25 +3419,33 @@ export class Mission {
     const guarded = (best.guard || 0) > 0 && !best.swing
       && !(best.guardBreak > 0)
       && offFacing < ((best.blockArc ?? 2.1) / 2);
+    // Shieldwall: a trained guard turns more of the blow and spares the plate.
+    const gs = best.eff?.guardStr || 0;
     if (guarded) {
       if ((best.shieldHp || 0) > 0) {
         // The plate takes it. Half weight through the arm, mauls triple.
-        best.shieldHp -= Math.max(4, dmg * (w.shieldMul ?? 1) * 0.5);
+        best.shieldHp -= Math.max(4, dmg * (w.shieldMul ?? 1) * 0.5 * (1 - gs));
         if (best.shieldHp <= 0) {
           best.shieldHp = 0;
           if (best.isPlayer || e.isPlayer) this.onToast('SHIELD GONE', 'The plate is done', 'bad');
         }
         dmg = 0;
       } else {
-        dmg *= 0.3;                        // bare steel turns most of it
+        dmg *= 0.3 * (1 - gs);             // bare steel turns most of it
       }
-      if (best.isPlayer) this.pStamina = Math.max(0, this.pStamina - 0.15);
+      if (best.isPlayer) {
+        this.pStamina = Math.max(0, this.pStamina
+          - 0.15 * (1 - (best.eff?.wind || 0) * 0.5));
+      }
       Audio.clash((best.shieldHp || 0) > 0 ? 'shield' : 'parry',
         clamp((w.reach || 2) / 2.2, 0.7, 1.8), this.relPos(best));
     }
     // Stagger: weight interrupts. A maul cancels a sword mid-swing;
     // equals trade cancels; a blade staggers nothing.
-    if (best.swing && (w.stagger ?? 1) >= (best.weapon?.stagger ?? 1)
+    // Planted raises the weight it takes to cancel them — a spearman who has
+    // set their feet is not knocked off a thrust by a passing sword.
+    if (best.swing && (w.stagger ?? 1)
+      >= (best.weapon?.stagger ?? 1) / Math.max(0.1, 1 - (best.eff?.staggerRes || 0))
       && (w.stagger ?? 1) > 0) {
       best.swing = null;
       best.cooldown = Math.max(best.cooldown, 0.35);
@@ -3472,8 +3485,10 @@ export class Mission {
     const s = (w.flight || 28) * (1 + drop * 0.25);
     const t = Math.max(0.15, d / s);
     const g = 14;
-    // Skill is scatter at the loose, not a die roll at the landing.
-    const jitter = e.isPlayer ? 0.2 : (1 - (e.acc ?? 0.6)) * 2.4;
+    // Skill is scatter at the loose, not a die roll at the landing — and
+    // Deadeye is the perk that tightens it.
+    const jitter = (e.isPlayer ? 0.2 : (1 - (e.acc ?? 0.6)) * 2.4)
+      * (1 - (e.eff?.rangeAcc || 0));
     this.arrows.push({
       x: e.x, y: y0, z: e.z,
       vx: dx / t + range(this.r, -jitter, jitter),
@@ -3625,7 +3640,30 @@ export class Mission {
   baseNerve(e) {
     const rank = e.soldier?.rank ?? 1;
     const professional = e.side === 'player' ? 30 : 0;
-    return 55 + professional + rank * 12 + (e.aggression || 0.5) * 20;
+    // Iron Will is a company-wide floor under everyone's nerve, and a
+    // standard bearer anywhere on your side lifts it again. Both are read
+    // here rather than applied per tick, because nerve is a starting reserve
+    // and what these buy is a line that lasts longer before it goes.
+    // Iron Will is a company-wide floor under everyone's starting reserve.
+    // It belongs here, where nerve is set once, because the commander's own
+    // perks do not change mid-battle.
+    const command = e.side === 'player' ? (e.eff?.nerveBonus || 0) : 0;
+    return 55 + professional + command + rank * 12 + (e.aggression || 0.5) * 20;
+  }
+
+  /**
+   * The banner's worth THIS instant, not at deployment. A bearer who is down,
+   * running or dead is holding nothing up, so this is walked live in the
+   * morale tick rather than baked into the starting reserve — losing the
+   * standard has to be something the line feels.
+   */
+  rallyBonus() {
+    let best = 0;
+    for (const e of this.entities) {
+      if (e.side !== 'player' || e.dead || e.down || e.routing) continue;
+      best = Math.max(best, e.eff?.rally || 0);
+    }
+    return best;
   }
 
   updateMorale(dt) {
@@ -3645,11 +3683,15 @@ export class Mission {
       const routing = mine.filter((e) => e.routing).length;
       const facing = theirs.filter((e) => !e.down && !e.routing).length;
       const odds = standing / Math.max(1, facing);
+      // A standard still upright is worth a steady trickle back into
+      // everybody's nerve — scaled off the perk so the number lives in one
+      // place. It stops the instant the bearer goes down.
+      const banner = side === 'player' ? this.rallyBonus() * 0.1 : 0;
       for (const e of mine) {
         if (e.down || e.dead) continue;
         if (e.nerve === undefined) e.nerve = this.baseNerve(e);
         if (e.routing) continue;
-        let drift = 1.4;                      // nerve creeps back on its own
+        let drift = 1.4 + banner;             // nerve creeps back on its own
         // Friends going down and friends running are the two things that
         // actually break a line. Everything else is a nudge — being
         // outnumbered is a fact of the job, not a reason to run on its own.
@@ -3732,8 +3774,12 @@ export class Mission {
 
   /** The commander's wind: swings and sprint spend it, standing still buys it back. */
   updateStamina(dt, sprinting) {
-    if (sprinting) this.pStamina = Math.max(0, this.pStamina - dt * 0.1);
-    else this.pStamina = Math.min(1, this.pStamina + dt * 0.25);
+    // Second Wind pays out twice: sprinting costs less and standing costs
+    // nothing back faster. It is the difference between a soldier who is
+    // spent by the second charge and one who is not.
+    const w = this.player?.eff?.wind || 0;
+    if (sprinting) this.pStamina = Math.max(0, this.pStamina - dt * 0.1 * (1 - w * 0.5));
+    else this.pStamina = Math.min(1, this.pStamina + dt * 0.25 * (1 + w * 0.8));
   }
 
   /** Read the swing direction off recent hand motion. */

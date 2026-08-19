@@ -228,16 +228,29 @@ export function effective(s, company = null) {
     coverRange: 9 + perkMod(s, 'coverRange'),
     luck: traitSum(s, 'luck') + perkMod(s, 'luck') + originMod(s, 'luck'),
     // 0 = fully affected by suppressing fire, 1 = immune.
-    suppressResist: clamp(perkMod(s, 'suppressResist') + kitMod(s, 'suppressResist')
-      + (company?.squadSuppressResist || 0), 0, 0.92),
-    suppressPower: 1 + perkMod(s, 'suppressPower') + (company?.squadSuppress || 0),
+    suppressResist: clamp(perkMod(s, 'suppressResist') + kitMod(s, 'suppressResist'), 0, 0.92),
+    suppressPower: 1 + perkMod(s, 'suppressPower'),
     rangeAcc: perkMod(s, 'rangeAcc'),
     closeDmg: perkMod(s, 'closeDmg') + lineageMod(s, 'closeDmg'),
-    reloadMul: 1 * (hasPerk(s, 'quickdraw') ? 0.65 : 1),
+    // --- steel ------------------------------------------------------------
+    // The four the melee runtime reads. swingSpeed shortens the swing, wind
+    // is the stamina economy, guardStr is what a raised guard turns, reach is
+    // who gets the first blow, staggerRes is whether weight cancels you.
+    swingSpeed: perkMod(s, 'swingSpeed') + kitMod(s, 'swingSpeed'),
+    wind: clamp(perkMod(s, 'wind'), 0, 0.9),
+    guardStr: clamp(perkMod(s, 'guardStr') + kitMod(s, 'guardStr'), 0, 0.85),
+    reachBonus: perkMod(s, 'reachBonus'),
+    staggerRes: clamp(perkMod(s, 'staggerRes'), 0, 0.9),
+    rally: perkMod(s, 'rally'),
+    nerveBonus: (company?.squadNerve || 0),
     magMul: 1 + (perkMod(s, 'magMul') ? perkMod(s, 'magMul') - 1 : 0)
       + (kitMod(s, 'magMul') ? kitMod(s, 'magMul') - 1 : 0),
-    burstBonus: perkMod(s, 'burstBonus'),
-    burstRest: perkMod(s, 'burstRest') ? 0.6 : 1,
+    // The last of the gun plumbing, left at its neutral value. Emplacements
+    // and the odd scripted weapon still fire, but no perk feeds these any
+    // more — nobody can promote into a better trigger finger.
+    reloadMul: 1,
+    burstBonus: 0,
+    burstRest: 1,
     bleedMul: 1 + (perkMod(s, 'bleedMul') ? perkMod(s, 'bleedMul') - 1 : 0)
       + (kitMod(s, 'bleedMul') ? kitMod(s, 'bleedMul') - 1 : 0),
     interactSpeed: 1 + (perkMod(s, 'interactSpeed') ? perkMod(s, 'interactSpeed') - 1 : 0),
