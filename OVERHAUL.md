@@ -177,3 +177,42 @@ brace/inside/flight/volley are the new schema). Shield is a KIT entry
 (id 'shield', shieldHp 120, blockArc 2.1) riding the existing gear
 slot. Nothing points at any of it yet — the flip comes with the
 runtime.
+
+
+## Where it landed
+
+All ten phases are in, and the acceptance suite is green across the
+whole thing: **149/149**, plus a 200-day map soak with zero stuck panels
+and zero console errors.
+
+The shape of the game now:
+
+- Steel, not bullets. Swings resolve as an arc sweep at the apex; there
+  is no hitscan left in a melee. Guards, shields with their own HP,
+  spear brace and inside-reach, stagger by weapon weight, a stamina bar
+  that pays for both swings and sprints.
+- Arrows are bodies in flight with solved ballistic arcs, deliberate
+  volleys, fire discipline, and a sidearm when pressed.
+- Three arms (INFANTRY / SPEARS / RANGED) selected with one key each,
+  formations that hold real spacing and reform, shield wall / line /
+  loose, and an enemy host that dresses its own ranks and marches
+  abreast rather than swarming.
+- Morale as nerve spent by casualties a soldier personally SAW, paid
+  back by a commander in sight; rout as leaving the field alive rather
+  than dying; victory called when a side stops being an army.
+- Battlefields with opinions — ridges worth taking, chokepoints worth
+  holding, slopes that tax the man carrying the maul — chosen by where
+  on the campaign map you met.
+- FIELD_CAP 120 on measured evidence (tools/scale.mjs), no cliff to
+  240, draw calls flat.
+- The campaign end to end: the roster is the army, the army is what
+  fights, and what happens to it comes back.
+
+### Still open, honestly
+
+- The enemy commander has four postures; two of them (hold, snipe) are
+  lightly exercised in play. Worth a directed playtest.
+- Wounded/dead/captured resolution is inherited from the gun era and
+  was never re-tuned for melee lethality.
+- Sieges use the field systems but their own approach logic predates
+  formations; they work, they are not yet FORMED.
