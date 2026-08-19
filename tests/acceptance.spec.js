@@ -16,7 +16,25 @@ async function boot(page) {
 }
 
 /** Start a new campaign and clear the intro, commission and contract board. */
-async function newCampaign(page) {
+/**
+ * Every test's campaign, on a KNOWN SEED.
+ *
+ * A mission's site — its terrain, its scattered props, where the rim
+ * stands — is built from the campaign seed, and newCampaign() picks one at
+ * random. So every unpinned test fought on different ground each run, and
+ * anything measuring geometry drifted with it: an archer's sightline, the
+ * spacing of a formation, how long a duel takes.
+ *
+ * Three separate tests have now flaked on exactly this, each diagnosed from
+ * scratch, and one of them was written AFTER the trap was documented. That
+ * is the signal to stop asking authors to remember and make it the default:
+ * pinning here fixes every test at once, including the ones nobody has
+ * written yet. A test that genuinely wants to vary the world can still set
+ * its own seed afterwards, deliberately and visibly.
+ */
+const TEST_SEED = 4242;
+
+async function newCampaign(page, seed = TEST_SEED) {
   await page.click('button[data-act="new"]');
   // The background questionnaire comes first; sign through on the plain
   // answers so every test starts the campaign the game has always started.
@@ -32,10 +50,14 @@ async function newCampaign(page) {
   await page.click('#modal [data-perk]');
   await page.waitForTimeout(600);
   // The intro hands straight to the board; close it and resume the world.
-  await page.evaluate(() => {
+  await page.evaluate((sd) => {
     document.getElementById('overlay').classList.add('hidden');
     window.KR.world.setPaused(false);
-  });
+    // Re-seed the world the campaign was rolled from. Done after the intro
+    // rather than before, because the opening flow reads the campaign it
+    // was handed and re-creating it mid-flow strands the panels.
+    window.KR.campaign.seed = sd;
+  }, seed);
   await page.waitForTimeout(300);
 }
 
@@ -697,7 +719,7 @@ test('suppressing fire pins an enemy and degrades its aim', async ({ page }) => 
   expect(r.pinnedSpread).toBeGreaterThan(r.cleanSpread * 1.3);
 });
 
-test('individual selection routes orders to one soldier only', async ({ page }) => {
+test('a selection routes orders to it alone, and the digits pick arms', async ({ page }) => {
   test.setTimeout(180000);
   await boot(page);
   await newCampaign(page);
@@ -708,23 +730,55 @@ test('individual selection routes orders to one soldier only', async ({ page }) 
   await page.waitForFunction(() => window.KR.mission?.squad?.length > 1, null, { timeout: 30000 });
   await waitForControl(page);
 
-  // Select soldier 1 only, then order a hold.
-  await page.keyboard.press('1');
-  await page.waitForTimeout(200);
+  // THE DIGITS PICK ARMS NOW.
+  //
+  // They used to toggle one squaddie each — 1 the first man, 2 the second —
+  // which was the muscle memory of a five-man fireteam in the shooter this
+  // came from. A company is twelve to sixty-eight, nobody wants to order
+  // the fourth man specifically, and the ARMS were exiled to 6-9 where
+  // reaching one mid-swing means leaving WASD.
+  const arms = await page.evaluate(async () => {
+    const m = window.KR.mission;
+    const press = (k) => window.dispatchEvent(new KeyboardEvent('keydown', { key: k, bubbles: true }));
+    const read = (k) => {
+      m.selection.clear();
+      press(k);
+      const picked = [...m.selection].map((i) => m.battleGroup(m.squad[i]));
+      return { n: picked.length, arms: [...new Set(picked)] };
+    };
+    return { inf: read('2'), spear: read('3'), ranged: read('4') };
+  });
+  // Each digit picks exactly one arm and nothing else.
+  for (const [want, got] of [['inf', arms.inf], ['spear', arms.spear], ['ranged', arms.ranged]]) {
+    if (got.n) expect(got.arms, `${want} key selected another arm`).toEqual([want]);
+  }
+  expect(arms.inf.n, 'the infantry key selected nobody').toBeGreaterThan(0);
+
+  // And a selection still owns its orders: the arm told to hold holds, and
+  // nobody outside it is touched.
+  await page.evaluate(() => {
+    const m = window.KR.mission;
+    m.selection.clear();
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: '2', bubbles: true }));
+  });
+  await page.waitForTimeout(150);
   await page.keyboard.press('h');
   await page.waitForTimeout(300);
 
   const r = await page.evaluate(() => {
     const m = window.KR.mission;
-    return {
-      selected: m.selection.size,
-      orders: m.squad.filter((s) => !s.militia).map((s) => s.order),
-    };
+    const inSel = [], outSel = [];
+    m.squad.forEach((s, i) => {
+      if (s.militia) return;
+      (m.selection.has(i) ? inSel : outSel).push(s.order);
+    });
+    return { selected: m.selection.size, inSel, outSel };
   });
-  expect(r.selected).toBe(1);
-  expect(r.orders[0]).toBe('hold');
-  // Everyone else keeps their previous order.
-  expect(r.orders.slice(1).every((o) => o !== 'hold')).toBe(true);
+  expect(r.selected).toBeGreaterThan(0);
+  expect(r.inSel.every((o) => o === 'hold'),
+    'the selected arm did not take the order').toBe(true);
+  expect(r.outSel.every((o) => o !== 'hold'),
+    'the order reached soldiers outside the selection').toBe(true);
 });
 
 test('fire discipline and flank orders put soldiers into those behaviours', async ({ page }) => {
@@ -7105,6 +7159,10 @@ test('the battle line: arms select as one, form in rows, and reshape on call', a
   await boot(page);
   await newCampaign(page);
   await page.evaluate(async () => {
+    // Pinned: the site comes off the campaign seed and this measures rows and
+    // spacings on it. Same trap that made the arrows test flake.
+    const State = await import('/src/state.js');
+    window.KR.campaign = State.newCampaign(4242);
     const { Mission } = await import('/src/mission.js');
     const UI = await import('/src/ui.js');
     const G = window.KR;
@@ -8830,7 +8888,14 @@ test('a duel: the lock holds the man, and nobody can swing for ever', async ({ p
   const r = await page.evaluate(async () => {
     const { Mission } = await import('/src/mission.js');
     const UI = await import('/src/ui.js');
+    const State = await import('/src/state.js');
     const G = window.KR;
+    // Pinned. This test was written AFTER the seed trap was diagnosed and
+    // written up, and still went in unpinned — the site comes off the
+    // campaign seed, so the ground under a duel changed every run and the
+    // wind measurements drifted with it. It passes in isolation and failed
+    // in the suite, which is the signature every time.
+    G.campaign = State.newCampaign(4242);
     const S = G.campaign;
     G.mission?.dispose();
     G.world?.dispose(); G.world = null;

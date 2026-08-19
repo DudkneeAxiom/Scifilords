@@ -250,6 +250,17 @@ export class Mission {
     // camera; an entity means a duel, and everything below reads from it.
     this.lockOn = null;
     this.lockLost = 0;
+    // THE WEIGHT OF THE THING IN YOUR HANDS.
+    //
+    // Impact used to be one scalar, `shake`, which jitters the whole view
+    // the same way whatever caused it — a grenade, a bullet, a maul. Noise
+    // is not weight. Weight has a DIRECTION: a blow you land drives the eye
+    // along the arc it travelled, a blow you catch on the guard shoves it
+    // back through your shoulder, and a swing that hits nothing carries you
+    // past it. Held in camera-local axes and released through a spring, so
+    // it settles rather than snapping.
+    this.camPush = { x: 0, y: 0, z: 0 };
+    this.camPushV = { x: 0, y: 0, z: 0 };
     this.pStamina = 1;                     // the commander's wind, 0..1
     // Per-arm formation shapes for THE BATTLE LINE. Ranged default loose:
     // bunched bows are one volley's worth of casualties.
@@ -2535,21 +2546,33 @@ export class Mission {
       if (k === 'z') this.orderFlank();
       if (k === 'v') this.orderFallBack();
       if (k === 'g') this.orderShieldWall();
-      // Individual selection — and control groups. Ctrl+digit binds the
-      // current selection to the digit; in tactical mode the bare digit
-      // recalls the group. In the shoulder view digits keep their original
-      // meaning (toggle one squaddie), because that is muscle memory now.
-      if (k >= '1' && k <= '5') {
-        if (e.ctrlKey) { e.preventDefault(); this.assignGroup(Number(k)); }
-        else if (this.rts && this.ctrlGroups[Number(k)]) this.recallGroup(Number(k));
-        else this.toggleSelect(Number(k) - 1);
+      // THE ARMS, UNDER THE LEFT HAND.
+      //
+      // The digits used to toggle ONE SQUADDIE each — 1 selected the first
+      // man, 2 the second — with a comment defending it as muscle memory.
+      // It was: the muscle memory of a five-man fireteam in a third-person
+      // shooter, where every soldier was a quarter of your force and worth
+      // naming. A company is twelve to sixty-eight now. Nobody has ever
+      // wanted to give an order to the fourth man specifically, and while
+      // the digits meant that, the ARMS — the only selections an army
+      // actually uses — were exiled to 6 through 9, where reaching one
+      // mid-swing means leaving WASD.
+      //
+      // One key each, all four under the fingers already there:
+      //   1 ALL   2 INFANTRY   3 SPEARS   4 RANGED
+      //
+      // Individual soldiers are still selectable by clicking them in the
+      // tactical view, which is where picking one man out of sixty is a
+      // thing anybody would actually want to do.
+      if (k >= '1' && k <= '9') {
+        const d = Number(k);
+        if (e.ctrlKey) { e.preventDefault(); this.assignGroup(d); }
+        else if (this.ctrlGroups[d]) this.recallGroup(d);
+        else if (d === 1) this.selectGroup('all');
+        else if (d === 2) this.selectGroup('inf');
+        else if (d === 3) this.selectGroup('spear');
+        else if (d === 4) this.selectGroup('ranged');
       }
-      // The arms of the line, one key each: ALL / INFANTRY / SPEARS /
-      // RANGED. Fast enough to use mid-swing, which is the entire point.
-      if (k === '6') this.selectGroup('all');
-      if (k === '7') this.selectGroup('inf');
-      if (k === '8') this.selectGroup('spear');
-      if (k === '9') this.selectGroup('ranged');
       // Cycle the selected arm's shape: line, wall, loose.
       if (k === 'n') this.cycleGroupShape();
       if (k === '`' || k === '0') this.selectAll();
@@ -3567,6 +3590,14 @@ export class Mission {
       // which is a beat, not a rest.
       e.windHold = 0.5;
     }
+    if (e.isPlayer) {
+      // The wind-up: the eye drifts back along the arc before the blow goes
+      // the other way. Small — this is anticipation, not a stumble — and
+      // proportional to how much weapon there is to bring round.
+      const v = this.swingVector(dir);
+      const heft = 0.35 + (w.stagger ?? 1) * 0.25;
+      this.addWeight(-v.x * 0.55, -v.y * 0.35, -v.z * 0.5, heft);
+    }
     e.swing = { t: 0, dur, dir, hitDone: false };
     e.cooldown = dur + 0.12;               // recovery beyond the follow-through
     e.guard = 0;                           // you cannot hide behind a swing
@@ -3622,7 +3653,18 @@ export class Mission {
       // and leaves the arm out of position; that overreach is the punish
       // that makes a wild attack a decision rather than a free roll.
       e.cooldown += (e.weapon?.heftRecover ?? 0.34);
-      if (e.isPlayer) this.pStamina = Math.max(0, this.pStamina - 0.06);
+      // Nothing to stop it, so the whole weight goes round — the biggest
+      // follow-through in the game, which is what a miss should cost.
+      e.char?.carried?.(e.swing?.dir || 'right',
+        0.55 + (e.weapon?.stagger ?? 1) * 0.45);
+      if (e.isPlayer) {
+        this.pStamina = Math.max(0, this.pStamina - 0.06);
+        // Nothing there. The weapon's own weight carries you past it, which
+        // is what makes a wild swing feel wild rather than free.
+        const wv = this.swingVector(e.swing?.dir || 'right');
+        const heft = 0.3 + (e.weapon?.stagger ?? 1) * 0.45;
+        this.addWeight(wv.x * 1.6, -0.35, wv.z * 0.8, heft);
+      }
       else if (e.wind !== undefined) e.wind = Math.max(0, e.wind - 0.06);
       return;
     }
@@ -3667,6 +3709,14 @@ export class Mission {
           if (best.isPlayer || e.isPlayer) this.onToast('SHIELD GONE', 'The plate is done', 'bad');
         }
         dmg = 0;
+        // Bounced: the swinger's own arm is thrown back up the arc.
+        e.char?.jarred?.(dir, 0.5 + (w.stagger ?? 1) * 0.3);
+        // Stopped on a shield. Your arm keeps the momentum and your body
+        // does not — a hard bounce back up the arc.
+        if (e.isPlayer) {
+          const wv = this.swingVector(e.swing?.dir || 'right');
+          this.addWeight(-wv.x * 1.1, 0.7, -1.5, 0.6 + (w.stagger ?? 1) * 0.4);
+        }
       } else {
         // Always the right way here: bare steel in the wrong line is not a
         // parry at all, so it never reaches this branch. A shield is the
@@ -3674,9 +3724,18 @@ export class Mission {
         // shield is FOR.
         dmg *= 0.3 * (1 - gs);             // bare steel turns most of it
       }
+      // The body takes it too, whoever they are.
+      best.char?.jarred?.(dir, 0.45 + (w.stagger ?? 1) * 0.35);
       if (best.isPlayer) {
         this.pStamina = Math.max(0, this.pStamina
           - 0.15 * (1 - (best.eff?.wind || 0) * 0.5));
+        // THE SHOCK THROUGH THE ARM. A blow you stop still arrives — it
+        // just arrives in your shoulder instead of your ribs. Driven back
+        // along the line it came down, and heavier from a maul than a
+        // blade, so what you just caught is legible without a number.
+        const wv = this.swingVector(dir);
+        const heft = 0.5 + (w.stagger ?? 1) * 0.5 + (w.damage || 20) / 90;
+        this.addWeight(-wv.x * 1.5, 0.5, -1.9, heft);
       }
       Audio.clash((best.shieldHp || 0) > 0 ? 'shield' : 'parry',
         clamp((w.reach || 2) / 2.2, 0.7, 1.8), this.relPos(best));
@@ -3699,8 +3758,19 @@ export class Mission {
         clamp((w.reach || 2) / 2.2, 0.7, 1.8), this.relPos(best));
       if (!best.isPlayer && this.r() < 0.35) Audio.cry('hurt', this.relPos(best));
       this.applyDamage(best, dmg, e, { x: best.x, y: hy, z: best.z });
-      // Connecting has weight the hand can feel.
-      if (e.isPlayer) this.shake = Math.max(this.shake || 0, 0.22);
+      // The swinger follows through, and the man who took it is knocked
+      // off the line it came down.
+      e.char?.carried?.(e.swing?.dir || 'right', 0.35 + (w.stagger ?? 1) * 0.3);
+      best.char?.jarred?.(e.swing?.dir || 'right', 0.3 + (w.damage || 20) / 70);
+      // Connecting has weight the hand can feel: the eye is carried ALONG
+      // the arc and driven in, which is the difference between a blade
+      // landing and a maul landing.
+      if (e.isPlayer) {
+        const wv = this.swingVector(e.swing?.dir || 'right');
+        const heft = 0.45 + (w.stagger ?? 1) * 0.55 + (w.damage || 20) / 70;
+        this.addWeight(wv.x * 1.35, wv.y * 0.9, wv.z * 1.5, heft);
+        this.shake = Math.max(this.shake || 0, 0.12);
+      }
     } else {
       best.char.flinch();
     }
@@ -4073,6 +4143,47 @@ export class Mission {
         this.endMission(true, 'carried');
       }
     }
+  }
+
+  /**
+   * Shove the eye. x is lateral, y vertical, z along the view — positive z
+   * is toward what you are looking at, so a landed blow pushes IN and a
+   * blocked one pushes back.
+   *
+   * Locked on, everything is worth more: the camera is holding still on one
+   * man instead of being swung about by the mouse, so the same impulse
+   * reads as force rather than as noise. That is the whole reason a duel
+   * feels different from a scrum.
+   */
+  addWeight(x, y, z, heft = 1) {
+    // GAIN. The per-site numbers below are ratios — which blow is heavier
+    // than which — and this is how much of it reaches the eye. Tuned
+    // against tools/weight.mjs: the first pass was honest about direction
+    // and moved the camera about a centimetre and a half, which is a thing
+    // you can measure and cannot feel.
+    const GAIN = 7.5;
+    const k = GAIN * heft * (this.lockOn ? 1.35 : 1);
+    this.camPushV.x += x * k;
+    this.camPushV.y += y * k;
+    this.camPushV.z += z * k;
+  }
+
+  /** Critically-damped-ish spring back to rest. */
+  updateWeight(dt) {
+    const K = 118, C = 15.5;                 // stiffness, damping
+    for (const ax of ['x', 'y', 'z']) {
+      const a = -K * this.camPush[ax] - C * this.camPushV[ax];
+      this.camPushV[ax] += a * dt;
+      this.camPush[ax] += this.camPushV[ax] * dt;
+    }
+  }
+
+  /** Which way a blow travels, in the swinger's own camera axes. */
+  swingVector(dir) {
+    if (dir === 'overhead') return { x: 0, y: -1, z: 0.35 };
+    if (dir === 'thrust') return { x: 0, y: 0, z: 1 };
+    if (dir === 'left') return { x: -1, y: -0.2, z: 0.25 };
+    return { x: 1, y: -0.2, z: 0.25 };       // right
   }
 
   /** The commander's wind: swings and sprint spend it, standing still buys it back. */
@@ -6945,6 +7056,18 @@ export class Mission {
       finalPos = base.clone().add(dirToCam.clone().multiplyScalar(camDist));
     }
 
+    // The weight, applied in the eye's own axes: lateral, vertical, and
+    // along the view. Added after collision so a shove never pushes the
+    // camera through a wall it was just pulled out of.
+    const pu = this.camPush;
+    if (pu.x || pu.y || pu.z) {
+      const rightAx = new THREE.Vector3(Math.cos(this.camYaw), 0, -Math.sin(this.camYaw));
+      const intoAx = dirToCam.clone().multiplyScalar(-1);
+      finalPos.add(rightAx.multiplyScalar(pu.x * 0.22));
+      finalPos.y += pu.y * 0.18;
+      finalPos.add(intoAx.multiplyScalar(pu.z * 0.24));
+    }
+
     // And never let the eye drop below the ground it is standing over.
     const floor = Level.heightAt(finalPos.x, finalPos.z) + 0.4;
     if (finalPos.y < floor) finalPos.y = floor;
@@ -7377,6 +7500,7 @@ export class Mission {
       e.turnRate = dt > 0 ? angleDelta(e.lastYaw, e.yaw) / dt : 0;
     }
     this.updateArrows(dt);
+    this.updateWeight(dt);
     this.updateLock(dt);
     this.updateEnemyCommander(dt);
     this.updateMorale(dt);

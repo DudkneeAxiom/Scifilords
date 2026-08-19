@@ -594,8 +594,25 @@ class Builder {
     }
   }
 
-  /** Kept so existing layouts keep working; the rim is the real edge now. */
-  perimeter(radius) { this.rim(radius * 1.7); }
+  /**
+   * THE RIM IS THE EDGE OF THE FIELD, so it goes where the edge is.
+   *
+   * Every site passed a fixed radius here and the playable bound was a
+   * constant, so the two agreed. The bound scales with the weight of the
+   * battle now — ninety metres for a skirmish, two hundred and fifty for an
+   * army — and the rims did not move with it. On a big battle the ring you
+   * can SEE stood at ninety-eight metres while the wall you actually bump
+   * into was at two hundred and fifty: you walk out through the edge of the
+   * world, across open ground that looks like more field, and stop at
+   * nothing at all. That is most of "I cannot tell where the edges are".
+   *
+   * The argument is kept because a dozen layouts pass one, and is now read
+   * as a MINIMUM — a site that wants a tight ring on a small field still
+   * gets one — but the rim never falls inside the ground you can walk.
+   */
+  perimeter(radius) {
+    this.rim(Math.max(radius * 1.7, this.bound * 0.96));
+  }
 }
 
 // Collision footprints for the kit, in metres. Measured from the Blender source.

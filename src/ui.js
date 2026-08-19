@@ -386,7 +386,7 @@ export function renderMissionHud(h) {
     const act = s.dead ? 'KIA'
       : (s.down && !s.stabilised) ? `${Math.ceil(s.bleed * 55)}s`
         : s.action;
-    const hot = ['SUPPRESS', 'FLANKING', 'ENGAGING'].includes(act);
+    const hot = ['FLANKING', 'ENGAGING', 'CHARGING', 'LOOSING'].includes(act);
     const bad = ['PINNED', 'DOWN', 'KIA', 'FALLBACK'].includes(act) || /^\d+s$/.test(act);
     return `<div class="sq ${cls}">
       ${s.slot ? `<span class="sq-slot">${s.slot}</span>` : '<span class="sq-slot">&middot;</span>'}
@@ -3226,47 +3226,52 @@ export function controlsPanel({ onClose }) {
     title: 'CONTROLS',
     body: `<div class="two-col">
       <div>
-        <div class="section-title">ON DEPLOYMENT</div>
-        ${kv('W A S D', 'Move')}
-        ${kv('MOUSE', 'Look')}
-        ${kv('LEFT MOUSE', 'Fire')}
-        ${kv('RIGHT MOUSE', 'Aim down sights')}
-        ${kv('SHIFT', 'Sprint — not from a crouch, not in the air')}
-        ${kv('CTRL / C', 'Crouch. Hold with Ctrl, toggle with C.')}
-        ${kv('SPACE', 'Take cover if there is any in reach; leave it if you are in it; otherwise vault')}
-        ${kv('Q', 'Swap camera shoulder')}
-        ${kv('R', 'Reload')}
+        <div class="section-title">IN THE LINE</div>
+        ${kv('W A S D', 'Move. Locked onto a man, this becomes footwork: close, back off, circle.')}
+        ${kv('MOUSE', 'Look — and the hand. The way you move it decides which line your swing takes.')}
+        ${kv('LEFT MOUSE', 'Swing. The blade goes where the hand was going.')}
+        ${kv('RIGHT MOUSE', 'Guard. Steered like a swing: the line you hold is the line you stop.')}
+        ${kv('MIDDLE MOUSE', 'Tap to lock onto the man in front of you. Hold for the order wheel.')}
+        ${kv('SHIFT', 'Sprint. It costs the same wind your swings do.')}
+        ${kv('Q', 'Boot. Not a killer — it opens a guard so the next blow lands.')}
+        ${kv('SPACE', 'Vault what can be climbed')}
         ${kv('E (hold)', 'Interact / stabilise a casualty')}
+        ${kv('T / WHEEL OUT', 'Rise into the tactical eye. Wheel back in to rejoin the line.')}
         ${kv('ESC', 'Pause')}
         <div class="prose dim" style="margin-top:10px;font-size:11px">
-          Cover is geometry, not a bonus. Tucked behind a wall your body drops
-          below it and the round hits the wall; aiming leans you out, which is
-          the only way to shoot back and the only time you can be hit. Cover is
-          worth nothing from the flank, so a defended position is answered by
-          going round it.
+          The rose around the crosshair is the whole of a melee: your guard
+          lights on the blade you are holding, theirs flares on the blade a
+          blow is coming down, and it turns green when the two are the same.
+          The number under it is how far away the nearest man who can reach
+          you actually is — his reach, not yours, so a spearman reads as
+          dangerous from further out.
         </div>
         <div class="prose dim" style="margin-top:8px;font-size:11px">
-          Walk over a body to strip it. Wedges around the reticle point at
-          whoever has just shot you.
+          A guard in the wrong line is not a block at all. Only a shield
+          forgives a misread, which is most of what a shield is for. Nobody
+          can swing for ever, on either side — a blown man drops his cadence,
+          and that pause is the opening.
         </div>
       </div>
       <div>
-        <div class="section-title">SQUAD COMMAND</div>
+        <div class="section-title">THE COMPANY</div>
+        ${kv('1 – 4', 'ALL / INFANTRY / SPEARS / RANGED. One key each, the arms of your line.')}
+        ${kv('CTRL + 1–9', 'Bind the current selection to a number; press it to recall.')}
         ${kv('MIDDLE MOUSE', 'Hold for the order wheel. The world slows while it is up.')}
-        ${kv('1 – 4', 'Select that soldier. Orders then go to them alone.')}
-        ${kv('` or 0', 'Clear selection — orders go to the whole squad')}
-        ${kv('X', 'Suppress that position — pins whoever is there')}
+        ${kv('F', 'Form up on the commander')}
+        ${kv('H', 'Hold this ground')}
+        ${kv('G', 'Shield wall — close the ranks of the arm you have selected')}
         ${kv('Z', 'Flank — swing wide and come at it from the side')}
         ${kv('V', 'Fall back to the commander')}
-        ${kv('G', 'Take cover — behind the nearest hard thing, facing the threat')}
-        ${kv('F', 'Form up on the commander')}
-        ${kv('H', 'Hold current position')}
+        ${kv('X', 'The bows hold their volley, or send it')}
+        ${kv('N', "Cycle the selected arm's shape: line, wall, loose")}
         <div class="prose dim" style="margin-top:10px;font-size:11px">
-          Every order is on the wheel; the letter keys are the shortcut once you
-          know them. The order lands where you were looking when the wheel
-          opened, so aim first, then choose. Suppressed soldiers stop advancing
-          and shoot badly — pin a position with one soldier, flank it with
-          another.
+          Every order is on the wheel; the letters are the shortcut once you
+          know them. An order lands where you were looking when the wheel
+          opened, so aim first and then choose. Select an arm and the order
+          goes to that arm alone — which is how a line is fought: spears
+          hold the front, bows loose over them, infantry go where the line
+          is thin.
         </div>
         <div class="section-title">IN THE REACH</div>
         ${kv('SPACE', 'Halt — stops the clock as well as the truck')}

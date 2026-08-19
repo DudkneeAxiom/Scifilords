@@ -386,6 +386,15 @@ function gait(t) {
  * Build an animatable character. `variant` selects the Blender export;
  * `weaponModel` is attached to the right hand.
  */
+// Which way a blow travels, in the body's own frame. One table so the rig
+// and the camera cannot disagree about what "overhead" means.
+const MELEE_DIR = {
+  overhead: { x: 0, y: 1 },
+  thrust: { x: 0, y: -0.4 },
+  left: { x: -1, y: 0.2 },
+  right: { x: 1, y: 0.2 },
+};
+
 export function makeCharacter(variant, weaponModel = null, tint = null) {
   const group = new THREE.Group();
   // Yaw first, then pitch, then roll.
@@ -434,6 +443,19 @@ export function makeCharacter(variant, weaponModel = null, tint = null) {
     downed: 0,                   // 0..1 collapse
     recoil: 0,
     flinch: 0,
+    // THE BODY ANSWERS THE BLOW.
+    //
+    // flinch is one number that ducks the head whatever happened, and
+    // recoil is a rifle's kick. Neither says which WAY, and a melee is all
+    // direction: a blow you catch drives your arm back along the line it
+    // came down, and one you throw carries your shoulder past the target
+    // when it finds nothing. The camera already moves like this; without
+    // the same on the rig the man on screen is standing still inside a
+    // shaking picture.
+    jar: 0,             // caught it on the guard — shock back through the arm
+    jarDir: 'overhead',
+    carry: 0,           // followed through — the weapon's own weight, spent
+    carryDir: 'right',
     breathe: Math.random() * TAU,
     lean: 0,
     fwd: 0,
@@ -469,6 +491,10 @@ export function makeCharacter(variant, weaponModel = null, tint = null) {
     s.downed = smooth(s.downed, down || dead ? 1 : 0, dt, dead ? 7 : 5);
     s.recoil = Math.max(0, s.recoil - dt * 8);
     s.flinch = Math.max(0, s.flinch - dt * 5);
+    // A jar is sharp and short; a follow-through unwinds more slowly,
+    // because recovering a swung weapon takes longer than absorbing one.
+    s.jar = Math.max(0, s.jar - dt * 6.5);
+    s.carry = Math.max(0, s.carry - dt * 3.4);
     s.breathe += dt * 1.15;
     s.fwd = smooth(s.fwd, moveZ, dt, 9);
     s.side = smooth(s.side, moveX, dt, 9);
@@ -517,7 +543,15 @@ export function makeCharacter(variant, weaponModel = null, tint = null) {
         + s.recoil * 0.05;
       rig.torso.rotation.y = rest.torso.y
         + Math.sin(s.phase * TAU) * 0.10 * stride * (1 - s.aim * 0.7);
-      rig.torso.rotation.z = rest.torso.z + s.lean * 0.5 + s.side * 0.08;
+      // Directional reactions ride on the torso: a jar compresses and turns
+      // away from the line the blow came down, a follow-through carries on
+      // round the way the weapon went.
+      const jv = MELEE_DIR[s.jarDir] || MELEE_DIR.overhead;
+      const cv = MELEE_DIR[s.carryDir] || MELEE_DIR.right;
+      rig.torso.rotation.z = rest.torso.z + s.lean * 0.5 + s.side * 0.08
+        - jv.x * s.jar * 0.30 + cv.x * s.carry * 0.26;
+      rig.torso.rotation.x += jv.y * s.jar * 0.22 + cv.y * s.carry * 0.16;
+      rig.torso.rotation.y += -jv.x * s.jar * 0.20 + cv.x * s.carry * 0.34;
     }
     if (rig.head) {
       // The head counter-rotates against the torso twist and tracks the aim,
@@ -595,7 +629,9 @@ export function makeCharacter(variant, weaponModel = null, tint = null) {
       if (rig.armR) {
         rig.armR.rotation.x = rest.armR.x
           + (ph > 0 ? armX : lerp(armX, GL.x, g))
-          + gait * 0.35 + s.flinch * 0.15;
+          + gait * 0.35 + s.flinch * 0.15
+          // Caught: the arm is driven back. Carried: it is still going.
+          + s.jar * 0.42 + s.carry * 0.30;
         rig.armR.rotation.z = rest.armR.z
           + (ph > 0 ? dirZ * wind * (1 - chop) : lerp(0.12, GL.z, g));
       }
@@ -710,6 +746,16 @@ export function makeCharacter(variant, weaponModel = null, tint = null) {
 
   function kick() { state.recoil = 1; }
   function flinch() { state.flinch = 1; }
+  /** Caught a blow on the guard, coming down this line. */
+  function jarred(dir = 'overhead', force = 1) {
+    state.jarDir = dir;
+    state.jar = Math.min(1.4, state.jar + force);
+  }
+  /** Threw one and the weight went with it — landed, blocked or through air. */
+  function carried(dir = 'right', force = 1) {
+    state.carryDir = dir;
+    state.carry = Math.min(1.3, state.carry + force);
+  }
 
   function dispose() {
     // Detach only. Every mesh here is a clone of cached geometry shared with
@@ -718,7 +764,7 @@ export function makeCharacter(variant, weaponModel = null, tint = null) {
     disposeScene(group);
   }
 
-  return { group, rig, weapon, update, kick, flinch, state, dispose };
+  return { group, rig, weapon, update, kick, flinch, jarred, carried, state, dispose };
 }
 
 // --------------------------------------------------------------------------

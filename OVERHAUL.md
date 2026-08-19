@@ -582,3 +582,54 @@ enemy's share, which pushed the reinforcement gate above what was ever
 alive; and `checkRout` will not call a field with reserves unspent, so
 that battle could not be won. Reserves feed whenever there is ROOM now,
 not only when the line has nearly collapsed.
+
+## Round: weight, and the seed trap fixed at the source
+
+### The steel has weight now, and a direction
+
+Impact was one scalar, `shake`, which jittered the whole view identically
+whatever caused it — a grenade, a bullet, a maul. Noise is not weight.
+
+An impulse spring in the eye's own axes: a swing WINDS UP (the eye drifts
+back along the arc before the blow goes the other way), LANDING carries
+it along the arc and drives it in, CATCHING one on the guard shoves it
+back through the shoulder, and a swing that finds NOTHING carries you
+past it. Locked on, everything is worth 35% more — the camera is holding
+still on one man rather than being swung about by the mouse, so the same
+impulse reads as force instead of noise.
+
+The first pass was honest about direction and moved the camera about a
+centimetre and a half: measurable, unfeelable. `tools/weight.mjs` reports
+peak displacement AND which way it went, so the gain was tuned against
+evidence.
+
+### And the bodies answer it
+
+The rig had `flinch` — one number that ducks the head whatever happened —
+and `recoil`, which is a rifle's kick. Neither says which WAY.
+
+`jarred(dir, force)` drives the arm back along the line a blow came down
+and turns the torso away from it; `carried(dir, force)` carries the
+shoulder on round the way the weapon went. A jar is sharp and short, a
+follow-through unwinds slowly, because recovering a swung weapon takes
+longer than absorbing one. Both fire from the same four moments as the
+camera weight, so the eye and the body cannot disagree — and both are on
+EVERYONE, which is what makes a line of sixty read as men hitting each
+other rather than models passing through one another.
+
+Measured: blade landing 0.65 of follow-through, maul 0.95, a block 1.15
+of jar, a miss 1.30 — the largest in the game, because nothing stopped
+it.
+
+### The seed trap, fixed at the source this time
+
+The duel test flaked. It was written AFTER the trap was diagnosed and
+written up, and still went in unpinned — pass in isolation, fail in the
+suite, the same signature as the two before it.
+
+Three tests had been pinned one at a time as they bit; fifty-two build
+missions off the campaign seed. Pinning them individually was losing, so
+`newCampaign()` now pins by default. That covers every test at once
+including the ones nobody has written yet, and a test that genuinely
+wants a varying world can still set its own seed deliberately and
+visibly. Documenting a trap is not the same as removing it.
