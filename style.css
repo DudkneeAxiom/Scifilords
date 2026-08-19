@@ -163,12 +163,26 @@ kbd {
 .hud { position: absolute; inset: 0; z-index: 500; pointer-events: none; }
 .hud .btn, .hud button, .hud .clickable { pointer-events: auto; }
 
+/* THE STRIP HAS TO FIT THE SCREEN IT IS ON.
+   Six blocks of fixed-size text in a nowrap row came to about 1484px, and
+   nothing in here shrinks — so on a 1280-wide laptop the last 228px simply
+   left the window, taking BANNER, TRUST and SYNDIC with them. The player's
+   standing with both factions was invisible at one of the commonest screen
+   sizes there is, and it looked like a rendering fault rather than a
+   layout one because the row ends mid-word.
+   Everything scales with the viewport instead of dropping fields: at 1920
+   this is the same strip it always was, and it tightens from there rather
+   than walking off the edge. */
 .wh-top {
   position: absolute; top: 12px; left: 12px; right: 12px; height: 42px;
-  display: flex; align-items: center; gap: 26px; padding: 0 16px;
+  display: flex; align-items: center;
+  gap: clamp(10px, 1.35vw, 26px);
+  padding: 0 clamp(8px, 0.9vw, 16px);
 }
+.wh-top .lbl { font-size: clamp(8.5px, 0.52vw, 10px); }
+.wh-top .val { font-size: clamp(12px, 0.78vw, 15px); }
 .wh-block { display: flex; align-items: baseline; gap: 8px; }
-.wh-block .lbl { margin-left: 6px; }
+.wh-block .lbl { margin-left: clamp(3px, 0.4vw, 6px); }
 /* Halt / travel / fast. Small, because they sit next to the clock and are read
    at a glance rather than aimed at. */
 .spd { display: inline-flex; gap: 2px; margin-left: 10px; }
@@ -1391,3 +1405,28 @@ kbd {
 .lock-hud .bar { display: block; width: 84px; height: 4px; background: #2a2a22; }
 .lock-hud .bar i { display: block; height: 100%; background: #c86a5a; }
 .lock-hud .d { font-size: 9.5px; color: #8f8a7b; }
+
+
+/* ---------------------------------------------------- the order strip
+   Seven orders in identical type, no keys shown, and the one a player
+   wants most of the time not on the strip at all — the report was "many
+   commands and very confusing what to do", and this is where that is
+   felt. The strip now carries its own shortcuts and says plainly which
+   order is the one you reach for. */
+.ord kbd {
+  font-family: inherit; font-size: 9px; letter-spacing: 0.08em;
+  padding: 1px 4px; margin-left: 5px;
+  border: 1px solid var(--edge-lt, #4a4b3c); border-radius: 2px;
+  background: rgba(0,0,0,0.45); color: var(--ochre, #c08d3f);
+}
+.ord.ord-major {
+  color: var(--bone, #cfc5b2); border-color: var(--ochre, #c08d3f);
+  background: rgba(60,44,18,0.5);
+}
+.ord.ord-major kbd { color: var(--bone, #cfc5b2); border-color: var(--ochre, #c08d3f); }
+.ord.ord-minor { opacity: 0.62; }
+.ord.ord-minor:hover { opacity: 1; }
+.ord-div {
+  width: 1px; align-self: stretch; margin: 0 4px;
+  background: var(--edge, #33352a);
+}

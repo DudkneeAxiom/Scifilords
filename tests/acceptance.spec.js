@@ -5431,6 +5431,18 @@ test('the tactical camera commands the squad, and the commander is a unit too', 
     // Route AROUND, not through: order the commander to a point on the far
     // side of a solid block. The straight line is blocked, so only the
     // squad's A* gets them there — a wall-slider stalls against the face.
+    //
+    // From a KNOWN spot, because this section picks its wall by distance
+    // from wherever the commander happens to be standing. Mission.start()
+    // awaits its assets, and the render loop keeps stepping the mission
+    // across those awaits with real frame times — so the commander had
+    // drifted a different amount on every run, and roughly one run in eight
+    // chose a wall whose far side it could not reach in the time allowed
+    // (measured: eighteen metres short, against a four metre bar). Every
+    // wall on this level is reachable from the spawn — all four, checked in
+    // tools/walkaround.mjs — so pinning the start pins the scenario without
+    // weakening what is being asserted.
+    p.x = m.level.playerSpawn.x; p.z = m.level.playerSpawn.z;
     const wall = m.level.obstacles.find((o) => (o.coverH ?? o.h) > 1.7
       && o.hw > 1.2 && Math.hypot(o.x - p.x, o.z - p.z) < 30
       && Math.hypot(o.x - p.x, o.z - p.z) > 6);
@@ -9098,4 +9110,184 @@ test('an assault that starts: attack advances without sight, and the garrison ho
   // promotion to hunt, and nobody wandered far from where they were posted.
   expect(r.hunting).toBe(0);
   expect(r.meanDrift).toBeLessThan(20);
+});
+
+test('no loot crate in a friendly town: the cache is for deployments, not shopping', async ({ page }) => {
+  await boot(page);
+  await newCampaign(page);
+  // A visit is a walk through a settlement to trade, hire and take a
+  // posting. It was being given the same optional cache as a raid — a
+  // weapons crate lying in the street of a place that is not fighting you,
+  // worth 180-320 credits and a weapon to whoever bends down.
+  //
+  // Towns can be entered and left at will, so that is not a one-off pull,
+  // it is an income: walk in, take the crate, walk out, repeat. The cache
+  // costs you time in the wrong direction on a deployment, which is the
+  // whole design of it, and there is no time being risked while shopping.
+  const r = await page.evaluate(async () => {
+    const { Mission } = await import('/src/mission.js');
+    const UI = await import('/src/ui.js');
+    const { LOCATIONS } = await import('/src/data.js');
+    const G = window.KR;
+    const S = G.campaign;
+
+    const build = async (spec) => {
+      G.mission?.dispose();
+      G.world?.dispose(); G.world = null;
+      document.getElementById('viewport').innerHTML = '';
+      UI.show('hud');
+      G.mission = new Mission({
+        campaign: S, spec, squad: S.roster.slice(0, 3),
+        container: document.getElementById('viewport'),
+        onHud: () => {}, onToast: () => {}, onIntro: () => {}, onWheel: () => {},
+        onArea: () => {}, onEnd: () => {},
+      });
+      await G.mission.start();
+      const m = G.mission;
+      return {
+        crates: m.interactables.filter((it) => it.kind === 'cache').length,
+        optional: !!m.optional,
+      };
+    };
+
+    const town = LOCATIONS.find((l) => l.kind === 'settlement') || LOCATIONS[0];
+    const visit = await build({
+      type: 'visit', site: town.id, layout: town.layout || 'settlement',
+      siteName: town.name, services: ['market', 'board', 'recruit', 'medical'],
+    });
+    // The same check on a deployment, so this proves the crate was taken out
+    // of TOWNS rather than taken out of the game.
+    const raid = await build({
+      type: 'skirmish', site: 'roadside', layout: 'roadside', siteName: 'Road',
+      party: { id: 'c', kind: 'looters', name: 'Foe', strength: 6, tier: 1, quality: 0.6 },
+    });
+    return { visit, raid };
+  });
+
+  expect(r.visit.crates).toBe(0);
+  expect(r.visit.optional).toBe(false);
+  // Still there where it belongs.
+  expect(r.raid.crates).toBe(1);
+  expect(r.raid.optional).toBe(true);
+});
+
+test('no money printer: selling back across the same counter always costs you', async ({ page }) => {
+  await boot(page);
+  await newCampaign(page);
+  // buyPriceAt and sellPriceAt were the same base price pushed apart by
+  // relation alone — buy was base minus the swing, sell was base plus it.
+  // At neutral standing they met exactly; ABOVE neutral the sell price
+  // crossed over the buy price in the same market. A well-regarded company
+  // could buy a crate and sell it straight back across the same counter for
+  // more than it paid, without travelling, waiting, or risking anything.
+  //
+  // Measured before the fix, at relation 100: ten crates of rations bought
+  // for 710, sold back for 1010. Three hundred credits a go, for ever.
+  const r = await page.evaluate(async () => {
+    const State = await import('/src/state.js');
+    const out = [];
+    for (const rel of [-100, -50, 0, 50, 100]) {
+      const S = State.newCampaign(4242);
+      S.credits = 100000;
+      if (S.relations) S.relations.dolmet = rel;
+      if (S.rep) for (const k of Object.keys(S.rep)) S.rep[k] = rel;
+      const before = S.credits;
+      const had = (S.cargo && S.cargo.rations) || 0;
+      State.buyGood(S, 'dolmet', 'rations', 10);
+      const spent = before - S.credits;
+      const got = ((S.cargo && S.cargo.rations) || 0) - had;
+      const mid = S.credits;
+      if (got > 0) State.sellGood(S, 'dolmet', 'rations', got);
+      out.push({
+        rel, got, spent, back: S.credits - mid,
+        buy: State.buyPriceAt(S, 'dolmet', 'rations'),
+        sell: State.sellPriceAt(S, 'dolmet', 'rations'),
+      });
+    }
+    return out;
+  });
+
+  for (const row of r) {
+    // The goods actually arrive — this must not pass by the shop being broken.
+    expect(row.got).toBe(10);
+    // And the counter's cut is never negative, at any standing.
+    expect(row.back).toBeLessThan(row.spent);
+    expect(row.sell).toBeLessThan(row.buy);
+  }
+  // Being well liked is still worth real money — it narrows the cut, which
+  // is the whole point of the relation swing.
+  const hostile = r.find((x) => x.rel === -100);
+  const beloved = r.find((x) => x.rel === 100);
+  expect(beloved.buy).toBeLessThan(hostile.buy);
+  expect(beloved.sell).toBeGreaterThan(hostile.sell);
+  expect(spentGap(beloved)).toBeLessThan(spentGap(hostile));
+  function spentGap(x) { return x.spent - x.back; }
+});
+
+test('locking on brings you closer to the fight, not further from it', async ({ page }) => {
+  await boot(page);
+  await newCampaign(page);
+  // The lock rig pulled back as the range opened — which is right — on top
+  // of a flat push-out that applied at EVERY range, which is not. Locking
+  // on at reach moved the eye a metre further away and half a metre higher
+  // than free look, and both men got smaller for it: measured at 2.1m and
+  // 1280x800, the commander went from 215 pixels tall to 176 the moment the
+  // lock engaged. Every guard pose and swing arc the melee pass built was
+  // being shown at three quarters size exactly when it mattered most.
+  const r = await page.evaluate(async () => {
+    const { Mission } = await import('/src/mission.js');
+    const UI = await import('/src/ui.js');
+    const G = window.KR;
+    const S = G.campaign;
+    G.mission?.dispose();
+    G.world?.dispose(); G.world = null;
+    document.getElementById('viewport').innerHTML = '';
+    UI.show('hud');
+    G.mission = new Mission({
+      campaign: S,
+      spec: { type: 'skirmish', site: 'roadside', layout: 'roadside', siteName: 'Lock',
+        party: { id: 'lk', kind: 'looters', name: 'Foe', strength: 4, tier: 1, quality: 0.6 } },
+      squad: S.roster.slice(0, 2),
+      container: document.getElementById('viewport'),
+      onHud: () => {}, onToast: () => {}, onIntro: () => {}, onWheel: () => {}, onEnd: () => {},
+    });
+    await G.mission.start();
+    const m = G.mission;
+    m.paused = false; m.hadLock = true; m.inserting = false;
+    if (m.intro) { m.intro.active = false; m.time = m.intro.graceUntil + 0.1; }
+    for (const e of m.entities) e.inserting = false;
+    const realStep = m.step.bind(m);
+    m.step = () => {};
+    // updateCamera lives in the render loop rather than step(), so a
+    // hand-driven sim has to turn it over itself.
+    const tick = (n) => { for (let i = 0; i < n; i++) { realStep(1 / 60); m.updateCamera(1 / 60); } };
+
+    const p = m.player;
+    const foe = m.entities.find((e) => e.side === 'enemy' && !e.dead);
+    for (const o of m.entities) if (o.side === 'enemy' && o !== foe) { o.x = 700; o.z = 700; }
+    p.hp = p.maxHp = 1e6; foe.hp = foe.maxHp = 1e6;
+    // Opponent on the far side of the commander from the camera, at reach.
+    const place = () => {
+      const bx = p.x - m.camera.position.x, bz = p.z - m.camera.position.z;
+      const bl = Math.hypot(bx, bz) || 1;
+      foe.x = p.x + (bx / bl) * 2.1; foe.z = p.z + (bz / bl) * 2.1;
+      foe.moveSpeed = 0;
+      p.yaw = Math.atan2(foe.x - p.x, foe.z - p.z);
+      // acquireLock() only takes a target within 1.15rad of where the eye is
+      // POINTING, which in a hand-driven sim is wherever camYaw was left.
+      m.camYaw = Math.atan2(foe.x - p.x, foe.z - p.z) + Math.PI;
+    };
+    place(); tick(120); place(); tick(60);
+    const free = Math.hypot(m.camera.position.x - p.x, m.camera.position.z - p.z);
+
+    m.toggleLock();
+    place(); tick(150); place(); tick(60);
+    const locked = Math.hypot(m.camera.position.x - p.x, m.camera.position.z - p.z);
+    return { free: +free.toFixed(2), locked: +locked.toFixed(2), on: !!m.lockOn };
+  });
+
+  // The lock actually took hold — otherwise this measures nothing.
+  expect(r.on).toBe(true);
+  // And at fighting range it does not push the camera away from the fight.
+  expect(r.locked).toBeLessThanOrEqual(r.free + 0.05);
 });

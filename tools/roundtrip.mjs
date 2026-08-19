@@ -50,11 +50,22 @@ if (process.env.KR_DISPOSE_SHARED) {
 await page.goto('http://localhost:8124/', { waitUntil: 'domcontentloaded' });
 await page.waitForSelector('#title:not(.hidden)', { timeout: 90000 });
 await page.click('button[data-act="new"]');
-await page.waitForSelector('#modal .modal-title', { timeout: 20000 });
-await page.click('#modal [data-x="close"]');
-await page.waitForSelector('#modal [data-perk]', { timeout: 20000 });
-await page.click('#modal [data-perk]');
-await page.waitForTimeout(600);
+// Sign through whatever the opening asks. This used to click a named
+// perk card, which stopped existing when the perk tree was rebuilt for
+// steel — a probe that hard-codes the shape of the opening flow breaks
+// every time the opening changes, and reads as a game fault when it does.
+for (let i = 0; i < 6; i++) {
+  const done = await page.evaluate(() => {
+    const m = document.querySelector('#modal');
+    if (!m || m.classList.contains('hidden')) return true;
+    const b = m.querySelector('[data-x="close"]') || m.querySelector('[data-perk]')
+      || m.querySelector('[data-x]') || m.querySelector('button');
+    if (b) { b.click(); return false; }
+    return true;
+  });
+  if (done) break;
+  await page.waitForTimeout(700);
+}
 await page.evaluate(() => {
   document.getElementById('overlay').classList.add('hidden');
   window.KR.world.setPaused(false);
@@ -82,14 +93,16 @@ for (let trip = 1; trip <= TRIPS; trip++) {
   // Take a contract and deploy on it.
   // A fresh posting every trip. The previous one was satisfied and cleared, so
   // reusing it leaves nothing to deploy on and the location offers no panel.
-  await page.evaluate((n) => {
+  await page.evaluate(async (n) => {
+    const { LOCATIONS } = await import('/src/data.js');
     const S = window.KR.campaign;
     S.contracts.forEach((c) => { c.accepted = false; });
-    const c = { id: `rt_${n}`, type: 'recovery', site: 'grellan', employer: 'syndic',
+    const here = LOCATIONS.find((l) => l.id === 'grellan') || LOCATIONS[0];
+    const c = { id: `rt_${n}`, type: 'recovery', site: here.id, employer: 'syndic',
       title: 'Round trip', text: 'probe', pay: 500, expiresDay: S.day + 20, accepted: true };
     S.contracts.push(c);
     window.KR.world.stopTravel();
-    S.pos.x = 200; S.pos.z = -218;
+    S.pos.x = here.x; S.pos.z = here.z;
   }, trip);
   await page.waitForTimeout(800);
   await page.evaluate(() => {
@@ -100,9 +113,11 @@ for (let trip = 1; trip <= TRIPS; trip++) {
   // Driven through the game's own entry point rather than a keypress: world
   // keys are swallowed whenever a panel is up, and a wandering party can open
   // one at any moment, so a press is not a reliable way to get into a site.
-  await page.evaluate(() => {
+  await page.evaluate(async () => {
+    const { LOCATIONS } = await import('/src/data.js');
     const S = window.KR.campaign;
-    S.pos.x = 200; S.pos.z = -218;
+    const here = LOCATIONS.find((l) => l.id === 'grellan') || LOCATIONS[0];
+    S.pos.x = here.x; S.pos.z = here.z;
     window.KR.world.stopTravel();
     window.KR.dev.enterLocation();
   });

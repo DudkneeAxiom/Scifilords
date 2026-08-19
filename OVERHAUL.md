@@ -210,8 +210,12 @@ The shape of the game now:
 
 ### Still open, honestly
 
-- The enemy commander has four postures; two of them (hold, snipe) are
-  lightly exercised in play. Worth a directed playtest.
+- The enemy commander postures are EXERCISED now (tools/postures.mjs,
+  tools/holdtest.mjs) and behave. What is genuinely dead is the
+  withdraw-and-quit rule: the stall nudge reaches the same host twelve
+  seconds earlier and puts it back in contact, so the thirty-second
+  count can never finish. Harmless today — the battle resolves by rout
+  instead — but it is unreachable code.
 - Wounded/dead/captured resolution is inherited from the gun era and
   was never re-tuned for melee lethality.
 - Sieges: the approach is FIXED (see the playtest round below) — an
@@ -719,3 +723,316 @@ bug fix.
 
 The 240-day map soak was clean through all of this: 0 console errors,
 every panel closed, every invariant held.
+
+## Round: the postures, the town, and four probes that lied
+
+A playtest round that produced one real fix, one reverted change, and a
+lot of evidence that the probes had rotted faster than the game.
+
+### A weapons crate in the middle of a friendly town
+
+The optional cache is placed for every mission type except `defense` —
+which quietly included `visit`, the walk through a settlement to trade
+and hire. So every town had a weapons crate lying in the street of a
+place that is not fighting you, worth 180-320 credits and a weapon to
+whoever bent down. Towns can be entered and left at will, so that was
+not a one-off pull, it was an income. The cache is a thing you spend
+time on during a deployment; there is no time being risked while
+shopping. Now excluded, with a test that checks a skirmish still has
+one, so the crate was taken out of towns rather than out of the game.
+
+### The commander's four postures, finally exercised
+
+The open item said hold and snipe were lightly exercised. They are now
+(`tools/postures.mjs`, `tools/holdtest.mjs`), and they work: `advance`
+closes 50m to 26m, `hold` walks to the edge of its own sight and STOPS —
+v=0.0 held for forty seconds — and looses 133 arrows, `withdraw` gives
+ground, `snipe` details men onto exposed archers.
+
+Getting there took four false alarms, all of them the probe:
+
+- "A holding host walks 129 metres backwards." The gap between two
+  armies moves when EITHER army moves, and our melee line was routing
+  under archery. Measure the host against fixed ground, not the enemy.
+- "It still walks 132 metres with our line pinned." `updateStall()`
+  nudges a host with no contact into hunting THE PLAYER, and the probe
+  had parked the player at (900,900) to take them out of the sum. The
+  host was walking to the corner because that is where the player was.
+- "Sixteen archers loose nothing." The bow was built by hand as
+  `{...weapon, bow: true, range: 40}`, which has no rpm and no magazine.
+  aiShoot cannot fire a weapon that never comes off cooldown. Use the
+  real `WEAPONS.bow` and it fires 133 arrows.
+- "Arrows are never created." The list is `arrows`, not `projectiles`.
+
+### One change made and reverted
+
+The withdraw-and-quit rule (a beaten force out of contact for thirty
+seconds leaves, and the field is called) cannot fire in practice,
+because the stall nudge reaches for the same force at twelve seconds and
+puts it back in contact. That looked like two safety nets fighting, so
+the nudge was made to leave a withdrawing host alone — and then the
+measurement said the battle already resolved correctly BOTH ways
+(objective complete, extraction armed; the remnant leaves either way).
+No demonstrated bug, and the patch had put its early return ahead of the
+forty-second break-off as well, which would have removed the backstop it
+was meant to preserve. Reverted. Written down because the interaction is
+real even though the outcome is not broken: the quit rule is
+effectively unreachable, and if it is ever wanted, the nudge is why.
+
+### Probes that had gone stale
+
+`tools/roundtrip.mjs` — the WebGL context-exhaustion check — had been
+broken for some time and nobody noticed, because a probe that fails
+looks like a probe that is failing rather than a probe that is wrong. It
+waited on a perk card that stopped existing when the tree was rebuilt
+for steel, then deployed to 'grellan' at hard-coded coordinates that
+went stale when the world map was rebuilt (it is at 520,-600 now, not
+200,-218). Both now read from the game's own data. It reports clean: 8
+round trips, no contexts leaked, draw calls flat, 0 console errors.
+
+`tools/townwalk.mjs` is new and walks a settlement end to end — twelve
+people, no hostiles, every one of the six reachable and each opening the
+panel it promises.
+
+### Noted, not changed
+
+The cache's memorable reward is a `dmr` — the Vardo Long Rifle. Guns
+were taken out of combat in the overhaul, and the one optional pull in
+the game still hands you one. Content decision rather than a defect, so
+it is flagged here rather than quietly rewritten.
+
+### A flake with a real cause: drift across an await
+
+The tactical-camera test failed about one run in eight, on the assertion
+that a commander ordered to a point behind a solid block gets within four
+metres. On a bad run they stopped eighteen short.
+
+The campaign seed is pinned and the mission RNG derives from it, so the
+level is identical every run — which ruled out the usual suspect early
+and left the question of what else was varying. It was time.
+`Mission.start()` awaits its assets, and the render loop keeps stepping
+the mission across those awaits with real frame times, so the commander
+had drifted a different distance before the test ran. That section picks
+its wall by proximity to wherever the commander is standing, so a
+different drift chose a different wall, and some of them cannot be walked
+around inside the twenty-five seconds allowed.
+
+The pathing itself is fine: every candidate wall on that level is
+reachable from the spawn, all four of them, measured in
+`tools/walkaround.mjs`. So the test now starts that section from
+`level.playerSpawn` — pinning the scenario without weakening the claim.
+36 consecutive runs green afterwards, against a 1-in-8 failure rate
+before.
+
+The general lesson, alongside the seed one: a pinned seed does not make a
+test deterministic if the clock is still an input. Anything measured
+after an `await` in a mission that is being stepped by a render loop has
+a variable amount of simulation behind it.
+
+### Also measured this round, and sound
+
+- The books, forward, for the first time (`tools/ledger.mjs`, pure
+  functions, no browser). Contract pay tracks renown — 1990 at twelve
+  strong to 8892 at sixty-eight — and holds a near-constant 10 to 14
+  days of wages at every company size. Ninety-day runs keep their
+  rosters and climb. Two apparent faults on the first pass were the
+  probe: payScale keys off RENOWN, not roster size, and the company that
+  deserted to nothing had simply never been fed.
+- Gun-era content. Six guns remain in the weapon table, but every role
+  now carries steel or a bow (`rifleman` has a sword, `gunner` a spear),
+  no shop stocks a gun by design, and the weapon card already reads
+  melee as reach-and-swing rather than rounds per minute. The only gun
+  reachable in the game is the find-only cache relic.
+
+## Round: looking at it
+
+Every probe in this tree reads numbers out of the simulation. None of them
+had ever looked at the screen, and a game can pass every assertion while
+rendering its status bar off the edge of the window. So this round took
+screenshots and read them.
+
+Four faults, none of which any test could have caught.
+
+### The status strip ran off the screen
+
+Six blocks of fixed-size text in a nowrap row come to about 1484px, and
+nothing in the row shrinks. At 1280 wide the last 228px simply left the
+window, taking BANNER, TRUST and SYNDIC with it — the player's standing
+with both factions, invisible at one of the commonest screen sizes there
+is, and it looked like a rendering fault because the row ends mid-word.
+It only fitted at 1920. Everything now scales with the viewport rather
+than dropping fields (`tools/layout.mjs` measures it at three sizes).
+
+### Place names on top of each other
+
+Hiding all names above zoom 1.5 dealt with the province view and left the
+close view alone — but the middle of the Reach is dense, and there were
+thirty overlapping pairs at 1280, some by eighty pixels. Stacked text
+does not read as two places, it reads as a smear.
+
+Names are now placed by priority and one that would land on another is
+dropped for that frame: the contract you are on, then settlements, then
+whatever is nearest. Party strength markers claim their space FIRST and
+names give way to them — a strength band is live tactical information and
+moves every frame, a place name is static reference that comes back when
+the camera nudges. Thirty pairs down to two, and the two remaining are
+marker-on-marker, where you want both.
+
+### Pressing DEPLOY sent you in alone
+
+The deployment panel pre-ticked the commander and nobody else. So the
+default action, on a panel headed "SELECT DEPLOYMENT — 1 OF 68", with ten
+fit soldiers on the books, was to march one person onto a field with a war
+band on it. Watched through the real deploy path: down, and "breaking
+contact", seconds after the intro cleared, having done nothing wrong
+except take the default. The company now deploys; deselecting is one
+click per name, where selecting was up to sixty-eight.
+
+That one was also hiding the guard rose and the lock indicator, which
+correctly do not draw for a commander who is already down.
+
+### ROUNDS FIRED, in a game with no rounds
+
+Every victory screen reported "0 ROUNDS FIRED" — a gun-era stat that can
+now only ever be zero — while saying nothing about the fighting. Blows
+struck was already being counted and never shown. The report now reads
+BLOWS STRUCK, and keeps an ARROWS LOOSED line for when somebody actually
+carried a bow.
+
+### Three things that looked broken and were not
+
+The pattern of this round, and worth recording as plainly as the fixes.
+
+- "The battle renders into a small box in the corner." That was the
+  harness building a Mission by hand and skipping main.js's `teardown()`,
+  which is what strips the world screen's framed layout off the viewport.
+  Through the real deploy path the canvas is full-bleed at 1440x900.
+- "The tactical view shows no soldiers." The screenshot caught the camera
+  mid-blend at 1.6s. Photographed at the same instant as the measurement,
+  it is a correct top-down command view with the squad and its selection
+  rings in frame.
+- "The town panel traps you — the exit button is off screen at 720p." The
+  scroll container is `.modal`, which carries `max-height: 88vh; overflow:
+  auto`; asking `.modal-body` whether it scrolled reported a trap that is
+  really a scrollbar. Scrolling to the end brings the footer into view.
+
+Also checked and sound, first time visually: the title and background
+questionnaire, all six side-rail panels, the three footer verbs by click
+and by shortcut, the settlement panel's eleven verbs, every town service,
+the loadout screen (all steel and bow, no guns on any shelf), the
+after-action report on a win and on a loss, and save/CONTINUE across a
+real browser reload — day, credits, renown, roster and names all restored
+identically.
+
+### A money printer behind the counter
+
+The trade prices were one base price pushed apart by RELATION alone: buy
+was base minus the swing, sell was base plus it. At neutral standing the
+two met exactly, and above neutral the sell price crossed OVER the buy
+price in the same market. So a well-regarded company could buy a crate
+and sell it straight back across the same counter for more than it paid —
+no travel, no time, no risk. Measured at relation 100: ten crates of
+rations bought for 710, sold back for 1010. Three hundred credits a go,
+repeatable for ever.
+
+The relation reward is deliberate and stays. What was missing is a
+trader's margin sitting between the two prices, wider than the swing can
+reach, so buy is always dearer than sell. Liked, you now pay 1.02 of base
+instead of 1.18 and receive 0.98 instead of 0.82 — relation narrows the
+counter's cut rather than inverting it, and the round trip costs
+something at every standing (-300 hostile, -40 beloved). Money is still
+made the way it should be: hauling to a town whose own priceAt() is
+higher. The ninety-day ledger is unchanged, because contracts were always
+the income and trade the sideline.
+
+Also verified working, through the campaign's own functions: rations
+(quoted 253, charged 253, seven days delivered), hiring off a town's
+recruit pool (330 paid, roster 10 to 11), and goods arriving in the hold
+in the quantity charged for.
+
+### Locking on made the fight smaller
+
+The complaint was that none of the melee work — the lock camera, the
+guard poses, the weight going through a blow — was visible in play. It
+was not a rendering fault. The lock rig pulled the eye back as the range
+opened, which is right, on top of a flat push-out that applied at EVERY
+range, which is not. Locking on at reach moved the camera a metre further
+away and half a metre higher than free look, and both men shrank for it:
+measured at 2.1m and 1280x800, the commander went from 215 pixels tall to
+176 the moment the lock engaged. Everything the melee pass built was
+being shown at three quarters size exactly when the player most needed to
+read it.
+
+The base is negative now. Inside about three and a half metres — where a
+fight actually happens — the lock leans IN and drops slightly to put the
+stance on screen; past that the old opening-out takes over and holds both
+men in frame as the range stretches towards the break. Commander back to
+213px, which is larger than free look rather than a fifth smaller.
+
+For the record, the rest of the melee work does behave, measured through
+a real deployment with an opponent pinned at reach (`tools/swingfilm.mjs`,
+`tools/lockframe.mjs`):
+
+- The lock takes hold, names its man, and the lock HUD goes from `none`
+  to `flex`: "LOCKED — SCRAP SWD", with a ring under him and his range on
+  the health bar.
+- A swing runs 0.05 to 0.53 and is over in about 200ms, and wind drops
+  from 100 to 76 on the HUD as it goes.
+- The weight spring is real and reaches the eye: `camPush` peaks at
+  0.52 with a velocity spike of 13.9 at the moment of the strike, then
+  settles to zero inside 350ms.
+
+The stills are in the scratchpad; the swing is legible frame by frame
+once the camera is in the right place.
+
+## Round: too many commands, and the one that was missing
+
+The report: "many commands and very confusing on what the player should
+do." Counting them made the case — about thirty-three bindings, with
+letters meaning different things in different places (F is form-up in a
+battle and fast-forward on the map; H is hold and centre-view; V is fall
+back and equipment; E is interact and enter; Q is boot and step-screens).
+
+But the sharpest finding was an absence.
+
+### There was no key for attack
+
+Keys existed for form up, hold, flank, fall back, shield wall, volley and
+shape-cycle. There was none for ATTACK — the order a player wants most of
+the time and the first one they go looking for. The behaviour was already
+written (`issueContextOrder`: look at a man and the company goes for him,
+look at ground and they take it) and reachable only by holding the middle
+mouse and picking it off a wheel.
+
+It is on R now. R was reload — a binding that cannot fire in a game with
+no guns, sitting on the most obvious free key on the hand.
+
+### Ctrl meant two things at once
+
+Ctrl held was crouch, and Ctrl+1..9 binds a control group. So every time
+the player bound a group they also dropped to one knee, and had to press
+C to stand up. Crouch keeps C; Ctrl is the group modifier and nothing
+else.
+
+### The strip teaches itself now
+
+Seven orders in identical type, no shortcuts shown, and the one you
+actually want not on the strip at all. It now carries its own keys and
+says which order is the one you reach for: SEND THEM IN (R) lit and
+boxed, FORM UP (F) and HOLD (H) beside it, then a divider and the four
+refinements at lower weight, then the arm-select keys. A player never has
+to open a controls screen to find the verb.
+
+### And the controls screen leads with the few that matter
+
+It opened straight into thirty-odd bindings in three columns at one
+weight, so "what do I actually do?" was buried among boot, vault, crouch
+and shape-cycle. Four lines now sit at the top — swing and guard, lock
+on, send them in, form up or hold — with a note that between R, F and H
+you can fight a whole battle. The full reference is unchanged underneath
+for anyone who wants it.
+
+Verified in a real deployment (`tools/controls2.mjs`): R takes all nine
+of the squad, Ctrl+1 binds without crouching, all eight strip entries
+show their key, and the controls screen leads with the essentials and no
+longer mentions reloading.

@@ -3009,7 +3009,29 @@ function orderOfBattle(S, chosen, spec, enemy) {
 
 export function deployPanel(S, spec, cbs) {
   const pool = State.living(S);
+  // THE COMPANY DEPLOYS. YOU TRIM IT.
+  //
+  // This opened with the commander ticked and nobody else, so pressing
+  // DEPLOY — the big highlighted button, on a panel headed "SELECT
+  // DEPLOYMENT — 1 OF 68" — marched one person onto a field with a war band
+  // on it. Measured against a four-strong party: alone, down, and "breaking
+  // contact" within seconds of the intro clearing, having done nothing
+  // wrong except take the default.
+  //
+  // A commander who has ten soldiers on the books and orders a deployment
+  // means all ten. Leaving people behind is the deliberate act — a hideout
+  // you want a small team for, a wounded man you would rather rest — and
+  // deselecting is one click per name, where selecting was up to
+  // sixty-eight.
   const chosen = new Set([State.commander(S).id]);
+  const limitNow = Math.min(State.deployLimit(S), spec.squadCap || 99);
+  for (const s2 of pool) {
+    if (chosen.size >= limitNow) break;
+    if (s2.isCommander) continue;
+    // Only people actually fit to go: the unfit are shown, greyed, and stay
+    // unticked exactly as before.
+    if (deployable(s2)) chosen.add(s2.id);
+  }
   const type = MISSION_TYPES[spec.type];
   // How many you may take is set by renown, not by a constant — unless the
   // deployment itself imposes a smaller one. A hideout has one way in and it
@@ -3117,7 +3139,8 @@ export function afterAction(S, result, notes, { onClose }) {
            used to read these unconditionally, which threw mid-template and cost
            the player the entire report for every SEND THEM IN. */''}
       ${result.stats ? `
-      <div class="s"><span class="n">${result.stats.shotsFired}</span><span class="l">ROUNDS FIRED</span></div>
+      <div class="s"><span class="n">${result.stats.swings || 0}</span><span class="l">BLOWS STRUCK</span></div>
+      ${result.stats.shotsFired ? `<div class="s"><span class="n">${result.stats.shotsFired}</span><span class="l">ARROWS LOOSED</span></div>` : ''}
       <div class="s"><span class="n">${result.stats.medkitsUsed}</span><span class="l">KITS USED</span></div>` : ''}
       ${result.recruits ? `
       <div class="s"><span class="n">${result.recruits.length}</span><span class="l">RECRUITED</span></div>` : ''}
@@ -3224,7 +3247,20 @@ export function pausePanel(S, cbs, inMission) {
 export function controlsPanel({ onClose }) {
   modal({
     title: 'CONTROLS',
-    body: `<div class="two-col">
+    body: `
+      <div class="section-title">IF YOU LEARN FOUR THINGS</div>
+      <div class="prose" style="margin-bottom:4px">
+        ${kv('LEFT / RIGHT MOUSE', 'Swing, and guard. Both go where the mouse was moving — the line you hold is the line you stop.')}
+        ${kv('MIDDLE MOUSE', 'Tap to lock onto the man in front of you. The camera holds him and your footwork circles him.')}
+        ${kv('R', 'Send them in. Look at a man and the company goes for him; look at ground and they take it.')}
+        ${kv('F / H', 'Form on me, or hold this ground. Between these and R you can fight a whole battle.')}
+      </div>
+      <div class="prose dim" style="margin-bottom:14px;font-size:11px">
+        Everything below is refinement. Every order is also on the wheel —
+        hold the middle mouse — and an order lands where you were looking
+        when you opened it, so aim first and then choose.
+      </div>
+      <div class="two-col">
       <div>
         <div class="section-title">IN THE LINE</div>
         ${kv('W A S D', 'Move. Locked onto a man, this becomes footwork: close, back off, circle.')}
@@ -3255,10 +3291,12 @@ export function controlsPanel({ onClose }) {
       </div>
       <div>
         <div class="section-title">THE COMPANY</div>
+        ${kv('R', 'SEND THEM IN — attack what you are looking at, or take that ground.')}
         ${kv('1 – 4', 'ALL / INFANTRY / SPEARS / RANGED. One key each, the arms of your line.')}
         ${kv('CTRL + 1–9', 'Bind the current selection to a number; press it to recall.')}
         ${kv('MIDDLE MOUSE', 'Hold for the order wheel. The world slows while it is up.')}
         ${kv('F', 'Form up on the commander')}
+        ${kv('C', 'Crouch. Ctrl is the group modifier only — it no longer drops your stance.')}
         ${kv('H', 'Hold this ground')}
         ${kv('G', 'Shield wall — close the ranks of the arm you have selected')}
         ${kv('Z', 'Flank — swing wide and come at it from the side')}

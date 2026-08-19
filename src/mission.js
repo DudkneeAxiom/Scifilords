@@ -268,7 +268,12 @@ export class Mission {
     this.arrows = [];                      // bodies in flight
     this.marker = null;
     this.result = null;
-    this.stats = { kills: 0, shotsFired: 0, medkitsUsed: 0 };
+    // ROUNDS FIRED was on the after-action report of a game that no longer
+    // has rounds: every victory screen said "0 ROUNDS FIRED" while saying
+    // nothing about the fighting that actually happened. Blows struck was
+    // already being counted and never shown. Arrows keep their line, but
+    // only when somebody actually carried a bow.
+    this.stats = { kills: 0, shotsFired: 0, medkitsUsed: 0, swings: 0 };
     this.hudCache = {};
     this._boundHandlers = [];
   }
@@ -1456,7 +1461,15 @@ export class Mission {
 
     // Optional objective: a cache placed deliberately AWAY from the exfil
     // route, so taking it costs time exactly when time is expensive.
-    if (t !== 'defense') {
+    // Not in a town. A visit is a walk through a friendly settlement to
+    // trade and hire, and it was getting the same optional cache as a raid:
+    // a weapons crate lying in the street of a place that is not fighting
+    // you, worth 180-320 credits and a weapon to whoever bends down. Towns
+    // can be entered and left at will, so that is not a one-off pull, it is
+    // an income — walk in, take the crate, walk out, repeat. The cache is a
+    // thing you risk time for on a deployment; there is no time being
+    // risked while shopping.
+    if (t !== 'defense' && t !== 'visit') {
       // Placed off to one side of the objective and away from the exfil route,
       // so taking it always costs time in the wrong direction.
       const o = this.level.objectivePoint;
@@ -2517,7 +2530,7 @@ export class Mission {
       if (e.repeat) return;
       const k = e.key.toLowerCase();
       this.keys.add(k);
-      if (k === 'r' && !this.player?.weapon?.melee) this.tryReload(this.player);
+      if (k === 'r') this.issueContextOrder();
       if (k === 'e') this.interactStart = true;
       // Q swaps shoulders behind a gun; with steel in hand it is the boot —
       // the can-opener that breaks a guard at contact range. In the
@@ -2538,7 +2551,8 @@ export class Mission {
       // B: jump the tactical eye to wherever the fighting last was.
       if (k === 'b' && this.rts) this.jumpToCombat();
       if (k === 'c') this.crouchHeld = !this.crouchHeld;
-      if (k === 'control') this.crouchHeld = true;
+      // (Ctrl is the control-group modifier — see the digits below. It used
+      // to ALSO crouch, so binding a group put the commander on one knee.)
       if (k === 't') this.toggleTactical();
       if (k === 'f') this.setSquadOrder('follow');
       if (k === 'h') this.setSquadOrder('hold');
@@ -2594,7 +2608,7 @@ export class Mission {
       if (k === 'e') this.interactStart = false;
       // Ctrl is hold-to-crouch; C toggles. Releasing Ctrl only stands you up if
       // you were not also toggled down.
-      if (k === 'control') this.crouchHeld = false;
+      // Ctrl no longer toggles the stance; C does, and only C.
       if (k === 'tab') this.showRoster = false;
     });
 
@@ -7010,15 +7024,27 @@ export class Mission {
       const t = this.lockOn;
       const bearing = Math.atan2(t.x - p.x, t.z - p.z) + Math.PI;
       this.camYaw = approachAngle(this.camYaw, bearing, dt * 6.5);
-      // FRAME THE PAIR. A duel is two men and the shot has to hold both:
-      // the eye pulls back as the range opens so he does not walk out of
-      // frame, and rises a little so the ground between them reads. Capped,
-      // because past a few metres this stops being a duel and the lock is
-      // about to break anyway.
+      // FRAME THE PAIR — WHICH MEANS CLOSING IN WHEN THEY ARE CLOSE.
+      //
+      // This pulled back as the range opened, which is right, on top of a
+      // flat push-out that applied at every range, which is not: locking on
+      // at reach moved the eye a metre FURTHER away and half a metre higher
+      // than free look, and both men got smaller for it. Measured at 2.1m,
+      // 1280x800: the commander went from 215px tall to 176px the moment
+      // the lock engaged. Everything the melee pass built — the guard
+      // poses, the arc of a blow, the weight going through the body — was
+      // being shown at three quarters size exactly when the player most
+      // needed to read it.
+      //
+      // So the base is now negative. Inside about three and a half metres,
+      // which is where a fight actually happens, the lock leans IN and
+      // drops a little to put the stance on screen; past that the old
+      // opening-out takes over and still holds both men in frame as the
+      // range stretches towards the break.
       const gap = Math.hypot(t.x - p.x, t.z - p.z);
       const frame = clamp((gap - 1.5) / 6, 0, 1);
-      want.back += 0.55 + frame * 1.5;
-      want.up += 0.20 + frame * 0.45;
+      want.back += -0.85 + frame * 2.40;
+      want.up += -0.15 + frame * 0.70;
       // And a touch wider, so the pair sit inside the frame rather than
       // filling it corner to corner.
       want.fov += frame * 4;

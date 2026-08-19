@@ -730,6 +730,9 @@ export class WorldMap {
   updatePartyLabels() {
     if (!this.labelHost) return;
     this.partyLabels = this.partyLabels || new Map();
+    // Handed to updateLabels(), which runs after this and works around them.
+    const boxes = [];
+    this._partyBoxes = boxes;
     const el = this.renderer.domElement;
     const w = el.clientWidth, h = el.clientHeight;
     const seen = new Set();
@@ -768,7 +771,13 @@ export class WorldMap {
       const py = (-this._proj.y * 0.5 + 0.5) * h;
       const on = !behind && px > -40 && px < w + 40 && py > -20 && py < h - 30;
       lab.style.display = on ? 'block' : 'none';
-      if (on) { lab.style.left = `${px}px`; lab.style.top = `${py}px`; }
+      if (on) {
+        lab.style.left = `${px}px`; lab.style.top = `${py}px`;
+        // Centred both ways, unlike a place name, which hangs below its tick.
+        const lw = lab.offsetWidth || 26, lh = lab.offsetHeight || 16;
+        boxes.push({ l: px - lw / 2 - 3, r: px + lw / 2 + 3,
+          t: py - lh / 2 - 2, b: py + lh / 2 + 2 });
+      }
     }
     for (const [id, lab] of this.partyLabels) {
       if (!seen.has(id)) { lab.remove(); this.partyLabels.delete(id); }
@@ -791,6 +800,7 @@ export class WorldMap {
     const el = this.renderer.domElement;
     const w = el.clientWidth, h = el.clientHeight;
     const contract = State.activeContract(this.S);
+    const shown = [];
     for (const L of this.labels) {
       // Anchor above the model so the text never sits on top of the buildings.
       this._proj.set(L.loc.x, L.y + (L.loc.kind === 'settlement' ? 96 : 80), L.loc.z);
@@ -812,6 +822,37 @@ export class WorldMap {
       // Fade with distance so the near ground stays uncluttered.
       const d = Math.hypot(L.loc.x - this.S.pos.x, L.loc.z - this.S.pos.z);
       L.el.style.opacity = String(clamp(1.25 - d / 620, 0.35, 1));
+      L._x = x; L._y = y; L._d = d; L._active = !!active;
+      shown.push(L);
+    }
+
+    // NAMES THAT SIT ON TOP OF EACH OTHER ARE NOT NAMES.
+    //
+    // Hiding everything above zoom 1.5 dealt with the province view, and
+    // left the close view alone — but the middle of the Reach is dense, and
+    // measured at 1280 wide there were thirty pairs of labels overlapping
+    // each other, some by eighty pixels. Stacked text does not read as two
+    // places, it reads as a smear, and it made the map look broken.
+    //
+    // So the names are placed by PRIORITY and a name that would land on one
+    // already placed is dropped for this frame: the contract you are on
+    // first, then settlements, then whatever is nearest the company. What
+    // survives is the layer of the map you are actually navigating by, and
+    // moving the camera a little brings the rest back.
+    shown.sort((A, B) => (B._active - A._active)
+      || ((B.loc.kind === 'settlement') - (A.loc.kind === 'settlement'))
+      || (A._d - B._d));
+    const placed = (this._partyBoxes || []).slice();
+    for (const L of shown) {
+      // Measured once: the text never changes, so its box never changes.
+      if (!L._w) { L._w = L.el.offsetWidth || 80; L._h = L.el.offsetHeight || 26; }
+      const box = { l: L._x - L._w / 2 - 3, r: L._x + L._w / 2 + 3, t: L._y - 2, b: L._y + L._h + 2 };
+      let clash = false;
+      for (const q of placed) {
+        if (box.l < q.r && box.r > q.l && box.t < q.b && box.b > q.t) { clash = true; break; }
+      }
+      if (clash) L.el.style.display = 'none';
+      else placed.push(box);
     }
   }
 
@@ -1447,9 +1488,9 @@ export class WorldMap {
     this.renderer.render(this.scene, this.camera);
     this.updateOwnership();
     this.refreshTerritory();
-    this.updateLabels();
-    this.updateRegionLabels();
     this.updatePartyLabels();
+    this.updateRegionLabels();
+    this.updateLabels();
     this.onHud(this.buildHud());
   }
 

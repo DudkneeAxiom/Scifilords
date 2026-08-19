@@ -2735,11 +2735,31 @@ export function changeRelation(S, locId, delta, why = null) {
  * multiplier into priceAt() would have done the first and the exact opposite of
  * the second — being well liked would have cost you money on every sale.
  */
-const REL_PRICE_SWING = 0.18;
+const REL_PRICE_SWING = 0.08;
+// THE COUNTER TAKES ITS CUT, AND BEING LIKED NEVER TURNS THAT INTO A WAGE.
+//
+// These were the same base price pushed apart by relation alone: buy was
+// base minus the swing, sell was base plus it. At neutral they met exactly,
+// and ABOVE neutral the sell price crossed over the buy price in the same
+// market — so a well-regarded company could buy a crate and sell it back
+// across the same counter at a profit, without travelling, waiting or
+// risking anything. Measured at relation 100: ten crates of rations bought
+// for 710 and sold back for 1010, +300 a go, repeatable for ever.
+//
+// A trader's margin sits between the two prices and is wider than the
+// relation swing can ever be, so buy is always dearer than sell and the
+// round trip always costs something. Relation still does what it was for —
+// liked, you pay 1.02 of base instead of 1.18 and receive 0.98 instead of
+// 0.82 — it just narrows the counter's cut rather than inverting it. Real
+// money is still made the way it should be: hauling to a town whose own
+// priceAt() is higher.
+const MARGIN = 0.10;
+const relSwing = (S, locId) =>
+  clamp(relationOf(S, locId) / 100, -1, 1) * REL_PRICE_SWING;
 export const buyPriceAt = (S, locId, goodId) => Math.max(1, Math.round(
-  priceAt(S, locId, goodId) * (1 - clamp(relationOf(S, locId) / 100, -1, 1) * REL_PRICE_SWING)));
-export const sellPriceAt = (S, locId, goodId) => Math.max(1, Math.round(
-  priceAt(S, locId, goodId) * (1 + clamp(relationOf(S, locId) / 100, -1, 1) * REL_PRICE_SWING)));
+  priceAt(S, locId, goodId) * (1 + MARGIN - relSwing(S, locId))));
+export const sellPriceAt = (S, locId, goodId) => Math.max(2, Math.round(
+  priceAt(S, locId, goodId) * (1 - MARGIN + relSwing(S, locId))));
 
 /**
  * Caravans of your own.
