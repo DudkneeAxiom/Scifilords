@@ -2379,7 +2379,7 @@ export class Mission {
 
   get ORDERS() {
     return [
-      { id: 'move', name: 'MOVE / ATTACK', key: '',
+      { id: 'move', name: 'SEND THEM IN', key: 'R',
         desc: 'Aimed at a man: go for him. Aimed at ground: move up and take it.' },
       // SUPPRESS is gone. "Pour fire into that position, pin whoever is
       // behind it" is a verb from the game this used to be: it needs
@@ -2389,7 +2389,7 @@ export class Mission {
       // hold or loose.
       { id: 'volley', name: 'HOLD / LOOSE', key: 'X',
         desc: 'The bows hold their volley, or send it.' },
-      { id: 'charge', name: 'CHARGE', key: 'R',
+      { id: 'charge', name: 'CHARGE', key: '',
         desc: 'Run them down. No cover, no stopping, until nothing stands.' },
       { id: 'flank', name: 'FLANK', key: 'Z',
         desc: 'Swing wide and come at it from a different angle than you are.' },

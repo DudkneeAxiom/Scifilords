@@ -1036,3 +1036,30 @@ Verified in a real deployment (`tools/controls2.mjs`): R takes all nine
 of the squad, Ctrl+1 binds without crouching, all eight strip entries
 show their key, and the controls screen leads with the essentials and no
 longer mentions reloading.
+
+### Work that was offered and could never be posted
+
+The board picks a mission type from the site's own list and then looks up
+the wording for it. No wording, no posting — generateContract() returns
+null and the caller sees nothing, which reads exactly like "no job
+today". Twelve locations advertised SEIZE work in their data and one a
+LAIR: sixteen per cent of every site/type offer on the map, none of it
+able to reach the board, while buildSeize() and buildLair() sat fully
+written in the mission layer. An implemented mission type was unreachable
+from the campaign.
+
+Both have wording now, and a 400-posting board carries 64 seize jobs and
+11 lairs where it carried none. The invariant is a test rather than a
+memory, because data and content drifting apart is silent by nature.
+
+### Two loose ends from the control rework, found by walking it
+
+- The wheel advertised R for CHARGE and nothing was bound to it — there
+  was no 'r' handler except reload. Meanwhile MOVE / ATTACK, the order a
+  player reaches for constantly, had no key at all. One key now, and the
+  wheel, the strip and the controls screen finally agree: SEND THEM IN on
+  R. CHARGE stays on the wheel, which suits it — it is the all-out
+  version and worth a deliberate choice rather than a reflex.
+- The weapon panel still read "EMPTY — R", naming a key that now orders
+  the company, for a reload that happens automatically in the firing path
+  anyway. It says EMPTY.

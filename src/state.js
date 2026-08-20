@@ -183,6 +183,44 @@ export const awaitingAnyPerk = (S) =>
 
 // Prose for a generated posting, keyed by template. `%SITE%` is substituted.
 const CONTRACT_FLAVOUR = {
+  // SEIZE AND LAIR WORK EXISTS AND COULD NOT BE POSTED.
+  //
+  // generateContract() takes a type from the site's own missions list and
+  // then looks up the wording here. No wording, no posting — it returns
+  // null and the caller sees nothing at all. Twelve locations advertise
+  // seize work in their data and one a lair, sixteen per cent of every
+  // site/type offer on the map, and none of it could ever reach the board
+  // while buildSeize() and buildLair() sat fully written in the mission
+  // layer. Silent, because a null reads exactly like "no job today".
+  seize: [
+    {
+      title: 'Take The Ground',
+      text: 'Whoever holds %SITE% holds the road under it, and at present that is '
+        + 'not us. Put your company on that ground and keep it long enough to matter.',
+    },
+    {
+      title: 'It Changes Hands Today',
+      text: '%SITE% has been traded back and forth twice this season by people who '
+        + 'could not hold it. Take it, stand on it, and be the last name on the list.',
+    },
+    {
+      title: 'Post And Hold',
+      text: 'We want %SITE% and we want it standing. Clear whoever is in it and hold '
+        + 'the position until our own people arrive to relieve you.',
+    },
+  ],
+  lair: [
+    {
+      title: 'Clear The Hideout',
+      text: 'Everything taken off this stretch of road ends up at %SITE%. Go in, '
+        + 'clear it out, and there will be nothing left to take it to.',
+    },
+    {
+      title: 'Cut The Root',
+      text: 'We can chase the bands off the road for ever or we can go to %SITE% '
+        + 'once. Burn the nest and the road looks after itself for a season.',
+    },
+  ],
   recovery: [
     {
       title: 'Missing Work Detail',

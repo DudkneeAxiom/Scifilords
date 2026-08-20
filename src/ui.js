@@ -427,7 +427,7 @@ export function renderMissionHud(h) {
     $('w-cur').textContent = h.ammo;
     $('w-mag').textContent = h.mag;
     $('w-cur').parentElement.classList.toggle('low', h.ammo <= h.mag * 0.25);
-    $('w-state').textContent = h.reloading ? 'RELOADING' : (h.ammo === 0 ? 'EMPTY — R' : '');
+    $('w-state').textContent = h.reloading ? 'NOCKING' : (h.ammo === 0 ? 'EMPTY' : '');
   }
 
   // Vitals

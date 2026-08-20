@@ -147,12 +147,23 @@ async function enterLocation(page, selector, verb = null) {
 /**
  * Select everyone in the deployment picker. The panel re-renders after every
  * click, so cached element handles go stale — re-query by index each time.
+ *
+ * TOGGLES, so it has to check before it clicks. This clicked every row once
+ * and called it selection, which worked only while the panel opened with
+ * nobody but the commander ticked. The panel now opens with the whole
+ * company ticked — taking the default should not march one person into a
+ * war band — and the same blind clicking deselected all of them, which
+ * surfaced as six tests timing out waiting for a squad that was never sent.
+ * Reading the row's state first makes the helper mean what its name says
+ * whichever way the default goes.
  */
 async function selectWholeCompany(page) {
-  const count = (await page.$$('#modal [data-p]')).length;
+  const count = (await page.$('#modal [data-p]')).length;
   for (let i = 0; i < count; i++) {
-    const els = await page.$$('#modal [data-p]');
-    if (els[i]) await els[i].click().catch(() => {});
+    const els = await page.$('#modal [data-p]');
+    if (!els[i]) continue;
+    const already = await els[i].evaluate((el) => el.classList.contains('on'));
+    if (!already) await els[i].click().catch(() => {});
     await page.waitForTimeout(60);
   }
 }
@@ -2353,10 +2364,18 @@ test('a settlement that likes you sells cheaper and pays better', async ({ page 
   expect(r.hated.buy).toBeGreaterThan(r.neutral.buy);
   expect(r.hated.sell).toBeLessThan(r.neutral.sell);
   // A market always takes a spread; you never buy cheaper than they pay.
-  expect(r.loved.buy).toBeLessThan(r.loved.sell);
+  //
+  // This line used to assert the exact opposite of the sentence above it —
+  // buy BELOW sell, in the same market — and that is not a spread, it is a
+  // wage: buy the crate, sell the crate, repeat. The comment was right and
+  // the assertion was the bug, which is how it survived being read.
+  expect(r.loved.sell).toBeLessThan(r.loved.buy);
+  expect(r.neutral.sell).toBeLessThan(r.neutral.buy);
   // Somewhere you have never been is neutral, not suspicious.
   expect(r.neutral.tier).toBe('Known');
-  expect(r.neutral.buy).toBe(r.neutral.sell);
+  // Neutral is the SYMMETRIC case — the counter's cut falls evenly either
+  // side of the base price, rather than the two meeting at it.
+  expect(r.neutral.buy - r.neutral.base).toBe(r.neutral.base - r.neutral.sell);
 });
 
 test('standing decides who a settlement will put forward', async ({ page }) => {
@@ -8038,8 +8057,13 @@ test('the order of battle: what you are taking, against what', async ({ page }) 
       type: 'skirmish', site: 'vetch', enemyFaction: 'trust',
       party: { strength: 40, kind: 'column_trust' },
     }, { onClose: () => {}, onGo: () => {} });
-    // Select everybody so the tally is the whole company.
-    for (const el of document.querySelectorAll('#modal [data-p]')) el.click();
+    // Select everybody so the tally is the whole company. The rows TOGGLE,
+    // and the panel now opens with the company already ticked, so clicking
+    // every row blindly un-picked all of them and left the order of battle
+    // describing a company of one.
+    for (const el of document.querySelectorAll('#modal [data-p]')) {
+      if (!el.classList.contains('on')) el.click();
+    }
     const text = document.querySelector('#modal .modal-body').textContent
       .replace(/\s+/g, ' ');
     UI.closeModal();
@@ -9290,4 +9314,42 @@ test('locking on brings you closer to the fight, not further from it', async ({ 
   expect(r.on).toBe(true);
   // And at fighting range it does not push the camera away from the fight.
   expect(r.locked).toBeLessThanOrEqual(r.free + 0.05);
+});
+
+test('every kind of work a site offers can actually be posted', async ({ page }) => {
+  await boot(page);
+  // generateContract() takes a mission type from the site's own missions
+  // list and then looks up the wording for it. No wording, no posting — it
+  // returns null and the caller sees nothing, which reads exactly like "no
+  // job today". Twelve locations advertised SEIZE work and one a LAIR, 16%
+  // of every site/type offer on the map, and none of it could reach the
+  // board while buildSeize() and buildLair() sat fully written in the
+  // mission layer.
+  //
+  // Data and content drifting apart like this is silent by nature, so it
+  // gets an invariant rather than a memory.
+  const r = await page.evaluate(async () => {
+    const State = await import('/src/state.js');
+    const { LOCATIONS } = await import('/src/data.js');
+    // Draw many fresh boards and record which types ever appear. A type
+    // with no wording can never show up, however many times it is drawn.
+    const seen = new Set();
+    const S = State.newCampaign(4242);
+    let rr = 12345;
+    const rand = () => { rr = (rr * 1664525 + 1013904223) >>> 0; return rr / 4294967296; };
+    for (let i = 0; i < 1500; i++) {
+      S.contracts.length = 0;
+      const c = State.generateContract(S, rand);
+      if (c) seen.add(c.type);
+    }
+    const offered = new Set();
+    for (const l of LOCATIONS) for (const t of (l.missions || [])) offered.add(t);
+    return { offered: [...offered].sort(), postable: [...seen].sort() };
+  });
+
+  // Everything a location advertises has to be capable of reaching the board.
+  const missing = r.offered.filter((t) => !r.postable.includes(t));
+  expect(missing).toEqual([]);
+  // And the board is not one job in a trenchcoat.
+  expect(r.postable.length).toBeGreaterThanOrEqual(5);
 });
