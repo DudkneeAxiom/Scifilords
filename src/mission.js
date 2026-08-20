@@ -3085,9 +3085,18 @@ export class Mission {
     }
     const sin = Math.sin(this.rtsYaw), cos = Math.cos(this.rtsYaw);
     const maxSp = this.rtsZoom * 1.7;
+    // THE SIDEWAYS AXIS WAS BACKWARDS.
+    //
+    // The eye sits at focus - (sin, cos)·d and looks at the focus, so its
+    // forward is +(sin, cos) and screen-RIGHT is therefore (-cos, +sin).
+    // The pan gave D a velocity of (+cos, -sin) — exactly the negative of
+    // that — so pressing right walked the board left and the edge-pan did
+    // the same, on a view whose whole job is that you can point at things.
+    // Forward and back were right all along, which is why it read as an
+    // inverted axis rather than a broken camera.
     const want = {
-      x: (px * cos + pz * sin) * maxSp,
-      z: (-px * sin + pz * cos) * maxSp,
+      x: (-px * cos + pz * sin) * maxSp,
+      z: (px * sin + pz * cos) * maxSp,
     };
     this.rtsVel = this.rtsVel || { x: 0, z: 0 };
     const k = 1 - Math.exp(-dt * ((px || pz) ? 9 : 4.5));
@@ -7054,13 +7063,23 @@ export class Mission {
     const wantTac = !!(this.rts && (!this.intro?.active || this.intro.setup));
     const target = wantTac ? 1 : 0;
     if (this.tacBlend === undefined) this.tacBlend = target;
-    // Fast enough not to feel like a load screen, slow enough to read as a
-    // MOVE rather than a whip. At 6.5 the eye covered forty metres in half a
-    // second — continuous, but four metres a frame through the middle, which
-    // the eye reads as a smear rather than as rising out of the line.
-    const rate = 1 - Math.exp(-dt * 3.6);
-    this.tacBlend += (target - this.tacBlend) * rate;
-    if (Math.abs(target - this.tacBlend) < 0.002) this.tacBlend = target;
+    // A MOVE HAS A BEGINNING AND AN END.
+    //
+    // This was an exponential approach, which has neither: it covers most
+    // of the distance quickly and then crawls a very long tail, snapping
+    // only once it is within 0.002. Measured, the eye was still visibly
+    // between the two rigs a second and a half after the key — so the view
+    // spent most of the transition drifting almost imperceptibly, which
+    // reads as mush rather than as a camera changing its mind. Smoothstep
+    // was then applied ON TOP of an already-eased value, easing it twice.
+    //
+    // A fixed duration instead. The blend is a straight ramp and the
+    // smoothstep below shapes it, so the ends are gentle, the middle
+    // carries the speed, and it is DONE — the same half-second every time,
+    // in both directions.
+    const TAC_MOVE = 0.55;
+    this.tacBlend += (target > this.tacBlend ? 1 : -1) * (dt / TAC_MOVE);
+    this.tacBlend = clamp(this.tacBlend, 0, 1);
 
     if (this.tacBlend <= 0) { this.updateShoulderCamera(dt); return; }
     if (this.tacBlend >= 1) { this.updateTacticalCamera(dt); return; }

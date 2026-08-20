@@ -5655,7 +5655,16 @@ test('the tactical camera has weight: rotation, glide zoom, follow, jump to comb
     m.toggleTactical();
     return {
       rotated, z0, zMid, zEnd,
-      panMoved: atRelease - fx0, coast: afterCoast - atRelease, settledDrift: settled - afterCoast,
+      // MAGNITUDE, AND WHETHER IT KEPT GOING THE SAME WAY.
+      //
+      // These were signed differences on the x axis, which pinned the test
+      // to the direction the pan happened to travel — and that direction
+      // was itself the bug: D used to walk the board LEFT. What this test
+      // is about is weight, not bearing: the eye builds speed under input,
+      // carries on after the key is released, and then actually stops.
+      panMoved: Math.abs(atRelease - fx0),
+      coast: (afterCoast - atRelease) * Math.sign(atRelease - fx0 || 1),
+      settledDrift: settled - afterCoast,
       followDist, jumped, at: { x: m.player.x - 40, z: m.player.z - 40 },
     };
   });
@@ -9572,4 +9581,81 @@ test('a won field still has a burial detail, and the one memorable pull is steel
   expect(r.relic.price).toBe(0);
   // It goes in a hand, so it needs the poses the rig grips it by.
   expect(r.relic.hasPoses).toBe(true);
+});
+
+test('the tactical pan goes where the screen does, and the move has an end', async ({ page }) => {
+  await boot(page);
+  await newCampaign(page);
+  // The eye sits at focus - (sin, cos)·d and looks at the focus, so its
+  // forward is +(sin, cos) and screen-RIGHT is (-cos, +sin). The pan gave D
+  // a velocity of (+cos, -sin) — exactly the negative — so pressing right
+  // walked the board left, and the screen-edge pan did the same. Forward
+  // and back were correct, which is why it read as an inverted axis rather
+  // than a broken camera.
+  //
+  // And the blend between the shoulder and the board was an exponential
+  // approach: most of the distance quickly, then a very long crawl, still
+  // visibly between the two rigs a second and a half after the key.
+  const r = await page.evaluate(async () => {
+    const { Mission } = await import('/src/mission.js');
+    const UI = await import('/src/ui.js');
+    const THREE = await import('/vendor/three/three.module.min.js');
+    const G = window.KR;
+    const S = G.campaign;
+    G.mission?.dispose();
+    G.world?.dispose(); G.world = null;
+    document.getElementById('viewport').innerHTML = '';
+    UI.show('hud');
+    G.mission = new Mission({
+      campaign: S,
+      spec: { type: 'skirmish', site: 'roadside', layout: 'roadside', siteName: 'Cam',
+        party: { id: 'cm', kind: 'looters', name: 'Foe', strength: 5, tier: 1, quality: 0.6 } },
+      squad: S.roster.slice(0, 4),
+      container: document.getElementById('viewport'),
+      onHud: () => {}, onToast: () => {}, onIntro: () => {}, onWheel: () => {}, onEnd: () => {},
+    });
+    await G.mission.start();
+    const m = G.mission;
+    m.paused = false; m.hadLock = true; m.inserting = false;
+    if (m.intro) { m.intro.active = false; m.time = m.intro.graceUntil + 0.1; }
+    const realStep = m.step.bind(m);
+    m.step = () => {};
+    // updateCamera lives in the render loop, not step().
+    const tick = (n) => { for (let i = 0; i < n; i++) { realStep(1 / 60); m.updateCamera(1 / 60); } };
+
+    tick(60);
+    m.toggleTactical();
+    let frames = 0;
+    while (frames < 600 && m.tacBlend < 1) { tick(1); frames++; }
+    const settleMs = Math.round((frames / 60) * 1000);
+    tick(30);
+
+    // The camera's OWN right vector, not an assumption about which way
+    // the world faces.
+    const fwd = new THREE.Vector3();
+    m.camera.getWorldDirection(fwd);
+    fwd.y = 0; fwd.normalize();
+    const right = new THREE.Vector3().crossVectors(fwd, new THREE.Vector3(0, 1, 0)).normalize();
+    const probe = (key) => {
+      m.rtsVel = { x: 0, z: 0 };
+      const f0 = { x: m.rtsFocus.x, z: m.rtsFocus.z };
+      m.keys.add(key);
+      tick(40);
+      m.keys.delete(key);
+      const dx = m.rtsFocus.x - f0.x, dz = m.rtsFocus.z - f0.z;
+      const len = Math.hypot(dx, dz) || 1e-6;
+      return { right: (dx * right.x + dz * right.z) / len, fwd: (dx * fwd.x + dz * fwd.z) / len };
+    };
+    return { settleMs, d: probe('d'), a: probe('a'), w: probe('w'), s: probe('s') };
+  });
+
+  // Each key moves the board the way the screen says it should.
+  expect(r.d.right).toBeGreaterThan(0.8);
+  expect(r.a.right).toBeLessThan(-0.8);
+  expect(r.w.fwd).toBeGreaterThan(0.8);
+  expect(r.s.fwd).toBeLessThan(-0.8);
+  // And the move between rigs finishes, promptly, rather than crawling a
+  // tail nobody can see the end of.
+  expect(r.settleMs).toBeGreaterThan(200);
+  expect(r.settleMs).toBeLessThan(900);
 });

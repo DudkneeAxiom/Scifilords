@@ -1368,3 +1368,34 @@ tuning a harness until it agrees with you stops being measurement.
   `locationAt(S, 38)` reads the company's POSITION, so a soak that never
   moves convalesces in open country at half rate for a hundred and fifty
   days. That is a property of the probe, not the infirmary.
+
+## Round: the board went the wrong way, and took too long getting there
+
+Two reports about the tactical eye, both measurable against the camera
+itself rather than by eye (`tools/rtscam.mjs`).
+
+### D walked the board left
+
+The eye sits at `focus - (sin, cos)·d` and looks at the focus, so its
+forward is `+(sin, cos)` and screen-RIGHT is therefore `(-cos, +sin)`.
+The pan gave D a velocity of `(+cos, -sin)` — exactly the negative of
+that. Pressing right moved the board left, and the screen-edge pan did
+the same, on a view whose entire job is that you can point at things.
+
+Forward and back were correct, which is why it read as an inverted axis
+rather than a broken camera. Measured against the camera's own right
+vector: D dotted -1 with screen-right before, +1 after; A the mirror of
+it; W and S untouched at +1 and -1 throughout.
+
+### And the move between rigs had no end
+
+The blend was an exponential approach, which covers most of the distance
+quickly and then crawls a very long tail, snapping only once it is within
+0.002 — measured at 1717ms from the key to settled, most of it spent
+drifting almost imperceptibly between two rigs. Then smoothstep was
+applied ON TOP of that already-eased value, easing it twice.
+
+A fixed duration instead: the blend is a straight ramp, the smoothstep
+shapes it, and it is done. 550ms, the same in both directions, with
+gentle ends and the speed in the middle where the eye can read it as a
+camera changing its mind.
