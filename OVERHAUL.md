@@ -1399,3 +1399,48 @@ A fixed duration instead: the blend is a straight ramp, the smoothstep
 shapes it, and it is done. 550ms, the same in both directions, with
 gentle ends and the speed in the middle where the eye can read it as a
 camera changing its mind.
+
+## Round: kit that was plumbed and inert
+
+The seize/lair contracts were content declared in data and unreachable in
+code, and that class is silent by construction — so this round swept for
+more of it (`tools/reachable.mjs`, which reports rather than fails,
+because plenty of ids are reached by computed lookup).
+
+It found two pieces of kit still selling gun statistics.
+
+- BANDOLIER, 180 credits: `magMul: 1.5`. The multiplier IS wired — ammo
+  is `mag * magMul` — but every melee weapon and the bow carry `mag: 999`,
+  so it bought half again as much of a cap nobody reaches in a battle.
+- STABILISER, 240 credits: `suppressResist: 0.5`. Suppression comes from
+  exactly two code paths, the hitscan gun and the Titan's LMG, and there
+  are no guns. The resist mattered against one rare boss and nowhere else.
+
+Both were plumbed, and that is precisely why they survived: a statistic
+that is read and inert looks identical to one that works. Repurposed
+rather than deleted — the items are fine, their numbers were left behind
+by the overhaul. The Belt Rig buys wind, the Bracing Rig buys a guard
+that holds and feet that stay under a maul.
+
+### And the same bug one layer down
+
+Which did not work either, at first. `effective()` summed `wind` and
+`staggerRes` from PERKS only, never from kit, so a piece of kit granting
+either was inert however correctly it was declared. `guardStr` on the
+line between them already took both, which is why half a repurposed item
+worked and the other half did not. Both take kit now.
+
+The test asserts the thing that matters rather than the thing that is
+easy: not "is this key referenced anywhere" but "does equipping this move
+a number the melee reads".
+
+### Three probe errors on the way, all the same shape
+
+Worth recording together, because they cost more than the fix did.
+Comparing two freshly rolled soldiers — which differ from each other far
+more than any kit does — and reading the dice. Writing the kit to
+`equip.gear` when kit hangs off `s.kit`, which reported every item,
+including the two that certainly work, as doing nothing. And copying
+`fx:` out of a debug print that read `k.fx || k.mods`, when the field is
+`mods:` — which would have shipped kit reading a key nothing looks at.
+Each looked like a finding until the known-good items disagreed.

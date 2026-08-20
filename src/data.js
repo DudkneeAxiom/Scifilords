@@ -1301,14 +1301,14 @@ export const KIT = {
     mods: { acc: 0.07, sight: 10 },
   },
   bandolier: {
-    id: 'bandolier', name: 'Bandolier', abbr: 'BND', price: 180,
-    desc: 'Half again as much ammunition in the magazine.',
-    mods: { magMul: 1.5 },
+    id: 'bandolier', name: 'Belt Rig', abbr: 'BLT', price: 180,
+    desc: 'Load on the hips, not the shoulders. You last longer swinging.',
+    mods: { wind: 0.22 },
   },
   stabiliser: {
-    id: 'stabiliser', name: 'Stabiliser Rig', abbr: 'STB', price: 240,
-    desc: 'Shrugs off suppressing fire and steadies the first shot.',
-    mods: { suppressResist: 0.5, acc: 0.03 },
+    id: 'stabiliser', name: 'Bracing Rig', abbr: 'BRC', price: 240,
+    desc: 'Takes a landed blow through the frame. The guard holds, and a maul moves you less.',
+    mods: { guardStr: 0.18, staggerRes: 0.25 },
   },
   stim: {
     id: 'stim', name: 'Trauma Stim', abbr: 'STM', price: 300,

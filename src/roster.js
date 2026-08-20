@@ -237,10 +237,10 @@ export function effective(s, company = null) {
     // is the stamina economy, guardStr is what a raised guard turns, reach is
     // who gets the first blow, staggerRes is whether weight cancels you.
     swingSpeed: perkMod(s, 'swingSpeed') + kitMod(s, 'swingSpeed'),
-    wind: clamp(perkMod(s, 'wind'), 0, 0.9),
+    wind: clamp(perkMod(s, 'wind') + kitMod(s, 'wind'), 0, 0.9),
     guardStr: clamp(perkMod(s, 'guardStr') + kitMod(s, 'guardStr'), 0, 0.85),
     reachBonus: perkMod(s, 'reachBonus'),
-    staggerRes: clamp(perkMod(s, 'staggerRes'), 0, 0.9),
+    staggerRes: clamp(perkMod(s, 'staggerRes') + kitMod(s, 'staggerRes'), 0, 0.9),
     rally: perkMod(s, 'rally'),
     nerveBonus: (company?.squadNerve || 0),
     magMul: 1 + (perkMod(s, 'magMul') ? perkMod(s, 'magMul') - 1 : 0)
