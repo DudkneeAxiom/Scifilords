@@ -9675,20 +9675,22 @@ test('every piece of kit on the shelf changes something the melee reads', async 
   // referenced" but "does equipping this move a number the melee uses".
   const r = await page.evaluate(async () => {
     const Roster = await import('/src/roster.js');
-    const { KIT } = await import('/src/data.js');
+    const { KIT, ARMOUR } = await import('/src/data.js');
     let seed = 4242;
     const rnd = () => { seed = (seed * 1664525 + 1013904223) >>> 0; return seed / 4294967296; };
     // Keys the melee layer reads every frame.
     const KEYS = ['wind', 'guardStr', 'staggerRes', 'swingSpeed', 'reachBonus',
       'maxHp', 'speed', 'accuracy', 'sight', 'bleedMul', 'nerveBonus'];
     const out = [];
-    for (const id of Object.keys(KIT)) {
+    const table = { ...KIT };
+    for (const [aid, av] of Object.entries(ARMOUR)) table[aid] = av;
+    for (const id of Object.keys(table)) {
       // ONE soldier, kit off and on. Two freshly rolled soldiers differ from
       // each other far more than any kit does.
       const s = Roster.makeSoldier(rnd, {});
-      s.kit = null;
+      s.kit = null; s.equip = {};
       const a = { ...Roster.effective(s) };
-      s.kit = id;
+      if (ARMOUR[id]) s.equip = { [ARMOUR[id].slot]: id }; else s.kit = id;
       const b = { ...Roster.effective(s) };
       const moved = KEYS.filter((k) => Math.abs((b[k] ?? 0) - (a[k] ?? 0)) > 1e-9);
       out.push({ id, moved });
@@ -9700,6 +9702,11 @@ test('every piece of kit on the shelf changes something the melee reads', async 
   expect(inert).toEqual([]);
   // And the two that were repurposed pull on the melee specifically, rather
   // than being quietly given some other stat to look busy.
+  // Armour too: webbing was the last thing granting magMul, an ammunition
+  // multiplier on a magazine of 999, while its description sold the player
+  // on carrying rounds for a weapon nobody in the Reach owns.
+  const web = r.find((x) => x.id === 'body_webbing');
+  if (web) expect(web.moved).not.toContain('magMul');
   const belt = r.find((x) => x.id === 'bandolier');
   const brace = r.find((x) => x.id === 'stabiliser');
   expect(belt.moved).toContain('wind');

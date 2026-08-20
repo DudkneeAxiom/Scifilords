@@ -1444,3 +1444,35 @@ including the two that certainly work, as doing nothing. And copying
 `fx:` out of a debug print that read `k.fx || k.mods`, when the field is
 `mods:` — which would have shipped kit reading a key nothing looks at.
 Each looked like a finding until the known-good items disagreed.
+
+## Round: the last of the ammunition statistics
+
+Carrying on the sweep from last round — every modifier a soldier can
+carry, checked for whether it moves a number the melee actually reads
+(`tools/modifiers.mjs`, with plate and shield as a control: if the
+known-good items read as dead, the sweep is wrong and every other line in
+it is worthless).
+
+One thing left: ASSAULT WEBBING granted `magMul: 1.25` — an ammunition
+multiplier on a magazine of 999 — and its description sold the player on
+"carries ammunition" for a weapon nobody in the Reach owns. It carries
+the load now, which is what webbing is actually good for when nothing on
+your belt is a magazine: light on the shoulders, and no protection worth
+the name.
+
+Every piece of kit and armour now grants only stats the melee reads.
+
+### Two corrections to my own reading
+
+- ACCURACY IS BLADEWORK. The first pass filed it under ranged-only and
+  duly reported the Steady trait as dead weight. It is not: melee damage
+  scales by it directly — "the swinger's accuracy stat is their
+  bladework" — which makes it one of the most melee-relevant numbers a
+  soldier has. The sweep classified it wrongly, not the game.
+- THE FREE ORIGIN IS NOT STRICTLY WORSE. It reads that way on stats
+  alone — every other origin grants a mix and free grants nothing — but
+  it has the widest role access of the five, six against four or five,
+  and a middling hiring cost. It trades a stat identity and its starting
+  armour for being able to become anything. That is a design position,
+  not a defect, and I had called it a defect before looking at the other
+  three axes.

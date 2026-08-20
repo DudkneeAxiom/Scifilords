@@ -1255,9 +1255,14 @@ export const ARMOUR = {
     mods: { hp: 34, speed: -0.09, sight: -6 },
   },
   body_webbing: {
+    // The last of the ammunition statistics. magMul multiplied a magazine of
+    // 999 — inert — and the description sold the player on carrying rounds
+    // for a weapon nobody in the Reach owns. What webbing IS good for in a
+    // melee is that it carries the load without armouring you: light on the
+    // shoulders, and no protection worth the name.
     id: 'body_webbing', slot: 'body', name: 'Assault Webbing', abbr: 'WEB', price: 120,
-    desc: 'Pouches and straps. Carries ammunition, stops nothing.',
-    mods: { hp: 6, magMul: 1.25 },
+    desc: 'Pouches and straps. Carries the load, stops nothing.',
+    mods: { hp: 6, wind: 0.08 },
   },
   body_carrier: {
     id: 'body_carrier', slot: 'body', name: 'Plate Carrier', abbr: 'CAR', price: 380,
