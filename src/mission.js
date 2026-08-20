@@ -6931,7 +6931,7 @@ export class Mission {
       loot.credits = irange(r, 180, 320);
       // The prototype is the one memorable pull in the slice, and it only
       // exists behind an optional objective.
-      loot.weapons.push(this.spec.type === 'sabotage' ? 'relic' : 'dmr');
+      loot.weapons.push(this.spec.type === 'sabotage' ? 'relic' : 'warden');
     }
 
     this.result = {

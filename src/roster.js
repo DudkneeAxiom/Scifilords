@@ -350,11 +350,33 @@ export function resolveCasualty(r, s, {
   const shrug = plate * (CUT ? 0.55 : CRUSH ? 0.12 : 0.34);
 
   if (stabilised) {
-    s.status = STATUS.WOUNDED;
-    s.wound = rollWound(r, (hasMedic ? 0.6 : 1.0) * (CRUSH ? 1.35 : 1) * (1 - shrug * 0.4), cause);
-    s.maxHp = maxHpOf(s);
-    s.hp = Math.max(8, Math.round(s.maxHp * 0.3));
-    return STATUS.WOUNDED;
+    // A CLIFF, NOT A CURVE — AND NOW A CURVE.
+    //
+    // Reaching a casualty and walking off the field with them USED to be an
+    // absolute guarantee: measured across every cause, a won-and-extracted
+    // battle buried nobody at all, while a lost one buried 41 to 70 per
+    // cent of the downed. So victory cost nothing permanent and defeat cost
+    // half your company, with nothing in between — the opposite of the
+    // campaign this is modelled on, where a won field still has a burial
+    // detail and the reason you nurse a roster is that good days cost you
+    // too.
+    //
+    // Stabilising is still overwhelmingly what saves a man: it is the
+    // difference between about a twentieth and about a half. It is simply
+    // no longer a promise. A medic, good armour and luck all push it back
+    // towards certain; a maul to the chest pushes the other way.
+    const save = 0.90 + (hasMedic ? 0.06 : 0) + effective(s).luck
+      + survivalBonus * 0.5 + shrug * 0.15 - (CRUSH ? 0.05 : 0);
+    if (r() < save) {
+      s.status = STATUS.WOUNDED;
+      s.wound = rollWound(r, (hasMedic ? 0.6 : 1.0) * (CRUSH ? 1.35 : 1) * (1 - shrug * 0.4), cause);
+      s.maxHp = maxHpOf(s);
+      s.hp = Math.max(8, Math.round(s.maxHp * 0.3));
+      return STATUS.WOUNDED;
+    }
+    s.status = STATUS.DEAD;
+    s.hp = 0;
+    return STATUS.DEAD;
   }
   // Left behind. Luck, a medic, and the fact that a melee casualty falls
   // among friends rather than a hundred metres from them.

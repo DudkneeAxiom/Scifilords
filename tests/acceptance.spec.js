@@ -2375,7 +2375,13 @@ test('a settlement that likes you sells cheaper and pays better', async ({ page 
   expect(r.neutral.tier).toBe('Known');
   // Neutral is the SYMMETRIC case — the counter's cut falls evenly either
   // side of the base price, rather than the two meeting at it.
-  expect(r.neutral.buy - r.neutral.base).toBe(r.neutral.base - r.neutral.sell);
+  //
+  // Within a credit: both prices are independently rounded, so a base of 95
+  // gives a cut of 10 above and 9 below. Asserting exact equality passed on
+  // a fresh campaign and failed in the suite at a different price, which
+  // reads as an order-dependent flake and is really a rounding one.
+  expect(Math.abs((r.neutral.buy - r.neutral.base) - (r.neutral.base - r.neutral.sell)))
+    .toBeLessThanOrEqual(1);
 });
 
 test('standing decides who a settlement will put forward', async ({ page }) => {
@@ -8169,7 +8175,11 @@ test('the record matches the battle: wounds name what did them', async ({ page }
       for (let i = 0; i < 40; i++) {
         const s = sol();
         R.resolveCasualty(rng(100 + i), s, { stabilised: true, hasMedic: false, cause });
-        drawn[cause].add(R.WOUNDS.find((w) => w.id === s.wound.id).kind);
+        // Stabilising is no longer a GUARANTEE — a won field has a burial
+      // detail now — so a sample can come back with no wound because the man
+      // did not. The claim here is which wound kinds a cause draws from, and
+      // that is only answerable about the ones who lived.
+      if (s.wound) drawn[cause].add(R.WOUNDS.find((w) => w.id === s.wound.id).kind);
       }
     }
     // Crushing is deadlier than an edge when nobody carries you out.
@@ -9502,4 +9512,64 @@ test('a stall you paid for appears on the screen that lists what you own', async
   // A town that will not deal with you earns nothing, and says why.
   expect(r.income).toBe(0);
   expect(r.frozen).toMatch(/frozen out/i);
+});
+
+test('a won field still has a burial detail, and the one memorable pull is steel', async ({ page }) => {
+  await boot(page);
+  await newCampaign(page);
+  // TWO THINGS THIS ROUND FIXED, both measured rather than asserted.
+  //
+  // Reaching a casualty and walking off the field with them used to be an
+  // absolute guarantee: a won-and-extracted battle buried NOBODY, across
+  // every cause, while a lost one buried 41 to 70 per cent of the downed.
+  // Victory cost nothing permanent and defeat cost half the company, with
+  // nothing in between — a cliff, where the campaign this is modelled on
+  // has a curve, and the reason you nurse a roster is that good days cost
+  // you too.
+  //
+  // And the optional objective — the thing you spend time on while time is
+  // expensive — paid out a 'dmr', the Vardo Long Rifle: 160 metres of range
+  // in a company that fights with steel, equippable by no role and sold in
+  // no market. The find was the point; the rifle was left over.
+  const r = await page.evaluate(async () => {
+    const Roster = await import('/src/roster.js');
+    const { WEAPONS } = await import('/src/data.js');
+    let seed = 99;
+    const rnd = () => { seed = (seed * 1664525 + 1013904223) >>> 0; return seed / 4294967296; };
+    const run = (opts) => {
+      let dead = 0;
+      const N = 3000;
+      for (let i = 0; i < N; i++) {
+        const s = Roster.makeSoldier(rnd, {});
+        if (Roster.resolveCasualty(rnd, s, opts) === Roster.STATUS.DEAD) dead++;
+      }
+      return dead / N;
+    };
+    const wonMedic = run({ stabilised: true, hasMedic: true, cause: 'cut' });
+    const wonAlone = run({ stabilised: true, hasMedic: false, cause: 'cut' });
+    const lost = run({ stabilised: false, hasMedic: true, cause: 'cut' });
+    const w = WEAPONS.warden;
+    return {
+      wonMedic, wonAlone, lost,
+      relic: w ? { melee: !!w.melee, price: w.price, hasPoses: !!(w.hold && w.guard) } : null,
+      // Nothing in the table that a market would stock is a gun.
+      gunsForSale: Object.values(WEAPONS).filter((x) => !x.melee && !x.bow && x.price > 0).length,
+    };
+  });
+
+  // Winning still saves almost everyone — that is what stabilising IS.
+  expect(r.wonMedic).toBeLessThan(0.15);
+  // But it is no longer a promise: a won field costs something permanent.
+  expect(r.wonMedic).toBeGreaterThan(0);
+  // And losing is still far worse, by a wide margin rather than a cliff edge.
+  expect(r.lost).toBeGreaterThan(r.wonMedic * 3);
+  // A medic earns its place on a won field too, not only on a lost one.
+  expect(r.wonAlone).toBeGreaterThan(r.wonMedic);
+
+  // The memorable pull is steel, and cannot simply be bought.
+  expect(r.relic).not.toBeNull();
+  expect(r.relic.melee).toBe(true);
+  expect(r.relic.price).toBe(0);
+  // It goes in a hand, so it needs the poses the rig grips it by.
+  expect(r.relic.hasPoses).toBe(true);
 });

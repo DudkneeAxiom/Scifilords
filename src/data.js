@@ -1143,6 +1143,28 @@ export const WEAPONS = {
     recoil: 0, auto: false, price: 190,
     note: 'A composite head on a mast section. Held in a line it is a wall; let someone inside the point and it is a walking stick.',
   },
+  // THE ONE MEMORABLE PULL, IN A GAME WITH NO GUNS.
+  //
+  // A weapons cache is the optional objective — the thing you spend time on
+  // while time is expensive — and its reward was a 'dmr': the Vardo Long
+  // Rifle, a hundred and sixty metres of range in a company that fights
+  // with steel. It could not be equipped by any role, could not be bought
+  // in any market, and existed only to be found. The find was the point;
+  // the rifle was left over from the game this used to be.
+  //
+  // A relic blade instead. Better than anything on a shelf, and NOT for
+  // sale at any price — you have it because you went and got it.
+  warden: {
+    id: 'warden', name: 'Warden Pattern', abbr: 'WDN', model: 'wpn_sword', melee: true,
+    hold: { pitch: 1.05, roll: 0.10, pos: [0, -0.02, 0] },
+    guard: { pitch: -0.15, roll: 0.55, pos: [0, 0, 0.06] },
+    // Between a sword and a maul: it reaches like the one and lands like
+    // the other, and it does not care much what you are holding up.
+    damage: 38, reach: 2.5, arc: 1.7, stagger: 1, shieldMul: 2,
+    rpm: 96, mag: 999, reload: 0, spread: 0, adsSpread: 0, range: 2.5,
+    recoil: 0, auto: false, price: 0,
+    note: 'Charter-era, and nobody has made one since. The edge has never needed grinding.',
+  },
   heavy: {
     id: 'heavy', name: 'Breaker Maul', abbr: 'MAUL', model: 'wpn_heavy', melee: true,
     hold: { pitch: 1.15, roll: -0.20, pos: [0, 0, 0] },

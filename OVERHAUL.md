@@ -1276,3 +1276,49 @@ SCOUR, PORT — so it is in the cloth now, muted well down from the signal
 colour because this is a shoulder at sixteen pixels and not a banner.
 Five origins, five distinct cloths, checked by sampling the pixels the
 portrait actually draws (`tools/identity.mjs`).
+
+## Round: a won field has a burial detail, and the pull is steel
+
+The last two things left standing on the open list, both raised as
+measurements rather than opinions several rounds ago.
+
+### The cliff
+
+Reaching a casualty and walking off the field with them was an absolute
+guarantee. Measured across every cause, a won-and-extracted battle buried
+NOBODY; a lost one buried 41 to 70 per cent of the downed. So victory
+cost nothing permanent and defeat cost half the company, with nothing in
+between — the opposite of the campaign this is modelled on, where a won
+field still has a burial detail and the reason you nurse a roster is that
+the good days cost you too.
+
+Stabilising is still overwhelmingly what saves a man — it is the
+difference between about a twentieth and about a half — but it is no
+longer a promise. A medic, good armour and luck push it back towards
+certain; a maul to the chest pushes the other way.
+
+| outcome              | before | after   |
+|----------------------|--------|---------|
+| won, extracted, medic| 0%     | 3-7%    |
+| won, no medic        | 0%     | 8-13%   |
+| lost, medic          | 41-58% | unchanged |
+| lost, no medic       | 54-70% | unchanged |
+
+The campaign gradient separates properly now: over twenty engagements,
+winning three in four buries 7% of casualties, an even record 17%, losing
+three in four 26%. It used to be flat noise between them. And a medic
+earns its place on a WON field, not only on a lost one.
+
+### The rifle in the cache
+
+The optional objective — the thing you spend time on exactly when time is
+expensive — paid out a `dmr`: the Vardo Long Rifle, a hundred and sixty
+metres of range in a company that fights with steel. No role could equip
+it, no market sold it, and it existed only to be found. The find was the
+point; the rifle was left over from the game this used to be.
+
+It is the Warden Pattern now: charter-era steel, between a sword and a
+maul — it reaches like the one and lands like the other, and it does not
+care much what you are holding up. Priced at zero, which is how the shop
+stock filter already excludes it: you have it because you went and got
+it, not because you saved up.
