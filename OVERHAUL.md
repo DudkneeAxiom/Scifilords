@@ -1322,3 +1322,49 @@ maul — it reaches like the one and lands like the other, and it does not
 care much what you are holding up. Priced at zero, which is how the shop
 stock filter already excludes it: you have it because you went and got
 it, not because you saved up.
+
+## Round: a career soak, and an inconclusive answer honestly reported
+
+The casualty curve landed last round, and a change that makes every won
+battle cost a few per cent is exactly the kind that compounds — so the
+question was whether a company can still survive a career.
+
+`tools/campaignsoak.mjs` runs forty autoresolved battles through the real
+campaign functions: pay, food, wages, healing, desertion. Autoresolve
+rather than the 3D battle because it RESOLVES — the fought-battle harness
+needs an immortal commander to stand up, and an immortal commander cannot
+lose, so every battle times out and a timeout is a loss.
+
+### What it found, and what it did not
+
+It did not find a bug. What it found was a company reduced from ten to
+one by day 154, and the breakdown is the whole story: two or three DIED,
+seven or eight DESERTED, morale zero. The chain is insolvency — broke,
+so the rations go unbought, so the company goes hungry, so morale
+collapses, so people walk. Casualties barely feature.
+
+The insolvency comes from fighting roughly once a fortnight while paying
+wages daily, and that cadence is the harness's, not the game's: it waits
+for most of the company to be fit and idles four days at a time. The
+earlier ledger soak, taking a contract every five days, is comfortably
+solvent at every company size.
+
+So the honest answer is that this does not demonstrate a balance problem.
+The tension it points at is real and worth knowing — wound recovery
+cadence against wage burn — but whether it bites depends on how often a
+player can actually fight, which this harness does not model well. Three
+revisions of it produced the same number, which is the point at which
+tuning a harness until it agrees with you stops being measurement.
+
+### Two things worth keeping from the attempt
+
+- AUTORESOLVE HAS ITS OWN CASUALTY MODEL. It never calls
+  resolveCasualty; it has its own `danger`, scaled by how close the
+  fight was. So the cliff fixed last round only ever applied to battles
+  you fight yourself — autoresolve already had a curve. They agree in
+  spirit now, which is worth knowing before anybody tunes one of them
+  and expects the other to follow.
+- Healing at a town works, and a headless soak defeats it by accident.
+  `locationAt(S, 38)` reads the company's POSITION, so a soak that never
+  moves convalesces in open country at half rate for a hundred and fifty
+  days. That is a property of the probe, not the infirmary.
