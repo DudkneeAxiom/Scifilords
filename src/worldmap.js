@@ -9,7 +9,7 @@
 import * as THREE from '../vendor/three/three.module.min.js';
 import * as Models from './models.js';
 import * as Audio from './audio.js';
-import { LOCATIONS, REGION, REGIONS, FACTIONS, PARTY_TIERS } from './data.js';
+import { LOCATIONS, REGION, REGIONS, FACTIONS, FACTION_SIGNAL, PARTY_TIERS } from './data.js';
 import * as State from './state.js';
 import * as Dip from './diplomacy.js';
 import { clamp, lerp, rng, range, pick } from './util.js';
@@ -32,11 +32,10 @@ const HOURS_PER_SECOND = 1.6;
 // Border-line hues. These are drawn as thin surveyed boundaries rather than a
 // wash over the terrain, so they can afford to be saturated — the ground stays
 // visible on both sides of them, and the line is what carries the meaning.
-const TERRITORY_TINTS = {
-  trust: 0x3fb8c4,   // cold cyan — the chartered administration
-  syndic: 0xd8434f,  // signal red — the work-councils
-  raider: 0xa855c8,  // violet — nobody's writ, everybody's problem
-};
+// The border hues live in data.js now, as FACTION_SIGNAL — the same three
+// this table held, shared with the bodies on a battlefield and the faces in
+// a roster so a side looks like itself wherever it appears.
+const TERRITORY_TINTS = FACTION_SIGNAL;
 
 // --------------------------------------------------------------------------
 // Terrain
@@ -1200,7 +1199,33 @@ export class WorldMap {
       if (!m) {
         m = Models.get(p.model);
         m.scale.setScalar(7.0);
-        m.traverse((o) => { if (o.isMesh) o.castShadow = true; });
+        // COLOUR THE BAND, NOT JUST THE RING UNDER IT.
+        //
+        // A party's allegiance lived entirely on a ring at 0.4 opacity, so
+        // thirty-five bands on the map read as one column of identical
+        // shapes and the player had to squint at a halo to tell a Trust
+        // patrol from a raider pack. There are tens of these, not hundreds,
+        // and each is its own clone — a cloned material here costs nothing
+        // like it would on a field of sixty instanced bodies.
+        // A CARAVAN IS NOT A BANDIT PACK.
+        //
+        // Falling straight through to the raider violet meant every party
+        // with no faction — trade caravans, free companies, anybody's
+        // hired band — flew the colour of "nobody's writ, everybody's
+        // problem". On a map you read at a glance that is worse than no
+        // colour at all: it says run, about somebody selling grain.
+        // Violet is for parties that will actually come at you.
+        const bandHex = p.owner === 'player'
+          ? (this.S.ownFaction?.colour ?? FACTION_SIGNAL.player)
+          : (FACTION_SIGNAL[p.faction]
+            ?? (p.hostileToPlayer ? FACTION_SIGNAL.raider : FACTION_SIGNAL.free));
+        const bandCol = new THREE.Color(bandHex).lerp(new THREE.Color(0xffffff), 0.3);
+        m.traverse((o) => {
+          if (!o.isMesh) return;
+          o.castShadow = true;
+          o.material = o.material.clone();
+          if (o.material.color) o.material.color.copy(bandCol);
+        });
         // Vivid tints, not uniform colours: the same signal palette the
         // borders use, so a band's allegiance reads at map distance.
         const ring = this.makeRing(

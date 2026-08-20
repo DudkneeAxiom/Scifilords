@@ -9,7 +9,7 @@
 import {
   RANKS, COMMANDER_RANKS, ROLES, TRAITS, WEAPONS, KIT, ARMOUR, SLOTS, ORIGINS,
   CREEDS, CREED_LIST, REGARD_TIERS,
-  FIRST_NAMES, LAST_NAMES,
+  FIRST_NAMES, LAST_NAMES, FACTION_SIGNAL,
 } from './data.js';
 import { perkMod, hasPerk, offerPerks } from './perks.js';
 import { clamp, pick, irange, uid, shuffle } from './util.js';
@@ -422,6 +422,16 @@ export function deployable(s) {
  * stored seed. Chunky, 5-value palette, deliberately about 24px of real detail
  * — an ID photo taken by a machine that does not care.
  */
+/** Blend two packed hex colours; t = 0 keeps the first, 1 the second. */
+function mixHex(a, b, t) {
+  const ar = (a >> 16) & 255, ag = (a >> 8) & 255, ab = a & 255;
+  const br = (b >> 16) & 255, bg = (b >> 8) & 255, bb = b & 255;
+  const r = Math.round(ar + (br - ar) * t);
+  const g2 = Math.round(ag + (bg - ag) * t);
+  const b2 = Math.round(ab + (bb - ab) * t);
+  return `#${((r << 16) | (g2 << 8) | b2).toString(16).padStart(6, '0')}`;
+}
+
 export function portrait(s, size = 64) {
   const c = document.createElement('canvas');
   c.width = c.height = size;
@@ -437,7 +447,20 @@ export function portrait(s, size = 64) {
 
   const skins = ['#7a5a40', '#54402e', '#9a7550', '#3f2f22', '#8a6a4a', '#63483400'.slice(0, 7)];
   const skin = skins[Math.floor(rnd(1) * skins.length)];
-  const cloth = ['#2f3324', '#3a3628', '#43392b', '#2a2f33'][Math.floor(rnd(2) * 4)];
+  // WHERE THIS ONE CAME UP, ON THEIR SHOULDERS.
+  //
+  // Cloth was four near-identical darks picked at random, so a portrait
+  // said nothing a player could use: a roster of twelve faces carried no
+  // information beyond "person". A soldier's ORIGIN is already on the row
+  // beside them in words — FREE, TRUST, SYNDIC, SCOUR, PORT — and putting
+  // it in the cloth means the list reads as a mix of people from places
+  // rather than a column of the same silhouette.
+  //
+  // Muted well down from the signal colour: this is a shoulder of dyed
+  // cloth at sixteen pixels, not a faction banner, and it has to sit under
+  // a face without becoming the whole portrait.
+  const originHex = FACTION_SIGNAL[s.origin] ?? FACTION_SIGNAL.free;
+  const cloth = mixHex(originHex, 0x23261c, 0.72);
 
   // shoulders
   g.fillStyle = cloth;

@@ -1232,3 +1232,47 @@ test importing the constant, which then built a party of NaN strength and
 put four men on a field sized for a hundred and sixty-five.
 
 An anchor has to be unique against the whole line, not a substring of it.
+
+## Round: one palette, everywhere a side has to be recognised
+
+The battlefield got faction colour last round; the map tokens and the
+roster faces had the same problem and were left out of it. Sweeping them
+turned up the real issue, which was that there was no single answer to
+"what colour is Trust".
+
+There were three palettes. `FACTIONS[*].color` — olive, khaki, brown,
+ochre — is the MAP'S FURNITURE, chosen so labels and holdings sit on a
+dust-coloured continent without shouting, and it is right for that job.
+`TERRITORY_TINTS` in worldmap.js held a saturated cyan/red/violet for the
+border lines. And last round's `FIELD_TINT` was a third set, invented for
+bodies, close to the second but not the same — so a Trust column was one
+blue on a field and a different cyan on the map.
+
+There is one now: `FACTION_SIGNAL` in data.js, used by the borders, the
+party tokens, the bodies and the portraits. A side looks like itself
+wherever it appears.
+
+### The token, not the ring under it
+
+A party's allegiance lived entirely on a ring at 0.4 opacity, so
+thirty-odd bands read as one column of identical shapes and telling a
+Trust patrol from a raider pack meant squinting at a halo. The tokens are
+tinted now — there are tens of them, each its own clone, so a cloned
+material costs nothing like it would on a field of sixty instanced bodies.
+
+And a caravan is not a bandit pack. Everything without a faction fell
+through to the raider violet, so trade caravans and free companies flew
+the colour of "nobody's writ, everybody's problem" — on a map you read at
+a glance that is worse than no colour, because it says RUN about somebody
+selling grain. Violet is for parties that will actually come at you;
+everyone else wears undyed cloth.
+
+### The faces
+
+Portrait cloth was four near-identical darks picked at random, so twelve
+faces in a roster carried no information beyond "person". A soldier's
+ORIGIN is already written on the row beside them — FREE, TRUST, SYNDIC,
+SCOUR, PORT — so it is in the cloth now, muted well down from the signal
+colour because this is a shoulder at sixteen pixels and not a banner.
+Five origins, five distinct cloths, checked by sampling the pixels the
+portrait actually draws (`tools/identity.mjs`).

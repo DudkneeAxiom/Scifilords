@@ -18,7 +18,7 @@ import * as Level from './level.js';
 import { NavGrid } from './nav.js';
 import * as Audio from './audio.js';
 import {
-  WEAPONS, ROLES, FACTIONS, MISSION_TYPES, PARTY_TIERS, ORIGINS,
+  WEAPONS, ROLES, FACTIONS, FACTION_SIGNAL, MISSION_TYPES, PARTY_TIERS, ORIGINS,
   ARMOUR, ARMOUR_LIST, KIT, DOCTRINES,
 } from './data.js';
 import {
@@ -82,12 +82,10 @@ const LOCK_BREAK = 24;
  * "whose man is that, and is he coming for me", and it gets four hues far
  * enough apart to answer it in peripheral vision at forty metres.
  */
-const FIELD_TINT = {
-  player: 0xe0a03a,     // your own: warm gold, the colour of the banner
-  trust: 0x4f86c6,      // cold blue steel
-  syndic: 0xc0453a,     // deep red
-  raider: 0x8a5bb8,     // violet — nobody's uniform, which is the point
-};
+// Shared with the map's borders, its party tokens and the roster's faces:
+// see FACTION_SIGNAL in data.js. A second palette here meant a Trust column
+// was one blue on the field and a different cyan on the map.
+const FIELD_TINT = FACTION_SIGNAL;
 
 // How much of a swing is wind-up. See updateSwing() for why it is not 0.55.
 const SWING_APEX = 0.68;

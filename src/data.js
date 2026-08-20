@@ -112,6 +112,33 @@ export const FACTIONS = {
 // Locations. Positions are in map units, origin at centre.
 // --------------------------------------------------------------------------
 
+/**
+ * WHOSE, AT A GLANCE — the one palette, for every surface.
+ *
+ * FACTIONS[*].color is the MAP'S FURNITURE: olive, khaki, brown and ochre,
+ * chosen so labels and holdings sit on a dust-coloured continent without
+ * shouting. It is the right palette for that job and the wrong one for
+ * every other, because painted onto a body, a token or a portrait those
+ * four become one warm smudge — which is how a battle came to read as a
+ * grey crowd, and a roster row said nothing about who a soldier was.
+ *
+ * These are signal colours: saturated, far apart, and the SAME everywhere
+ * a side has to be recognised. A Trust column is the same cold cyan on the
+ * map, on the field, and in the portrait of the man who came from there.
+ * The border lines already used these three; now everything does.
+ */
+export const FACTION_SIGNAL = {
+  player: 0xe0a03a,     // your own: warm gold, the colour of the banner
+  trust: 0x3fb8c4,      // cold cyan — the chartered administration
+  syndic: 0xd8434f,     // signal red — the work-councils
+  raider: 0xa855c8,     // violet — nobody's writ, everybody's problem
+  // Origins that are not factions, so a roster still reads by where a
+  // soldier came up rather than defaulting everyone to the same cloth.
+  scour: 0xb98a4a,      // the open country: dust and rust
+  littoral: 0x5f9e77,   // the anchorage: salt green
+  free: 0x8d8f7a,       // free towns: undyed cloth, and proud of it
+};
+
 export const LOCATIONS = [
   {
     id: 'dolmet',
