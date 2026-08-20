@@ -1370,12 +1370,23 @@ function refreshPreview(S, soldier) {
     const a = ARMOUR_ATTACH[slot];
     armour.push({ model: `item_armour_${id}`, node: a.node, scale: a.scale, offset: a.offset });
   }
+  // The weapon decides the pose. Falling back to a RIFLE model here was the
+  // last gun in the equipment screen: a soldier carrying nothing was drawn
+  // holding a carbine.
+  const w = WEAPONS[soldier.weapon];
   charPreview.setSoldier(
     soldier.isCommander
       ? 'soldier_commander'
       : originOf(soldier).model,
-    WEAPONS[soldier.weapon]?.model || 'wpn_rifle',
+    w?.model || 'wpn_blade',
     armour,
+    {
+      melee: !!w?.melee,
+      hold: w?.hold || null,
+      guardPose: w?.guard || null,
+      // Your own colours, so the screen reads as YOUR company.
+      tint: FACTIONS.player?.accent ?? null,
+    },
   );
 }
 
@@ -1640,7 +1651,35 @@ export function holdingsPanel(S, cbs) {
   })()}
     <div class="section-title">EACH PLACE</div>` : '';
 
-  const body = stores + realm + (held.length ? held.map(({ id, loc, h }) => {
+  // THE STALLS, WHICH THIS SCREEN HAS NEVER MENTIONED.
+  //
+  // A market stall costs 2400, pays every day, and appeared on no screen at
+  // all: buying one showed up as money leaving, and the only reminder it
+  // existed was walking back to that particular town and talking to the
+  // trader. Hold three and there was no way to see what they came to.
+  //
+  // They sit with the truck rather than with the ground, because a stall is
+  // an interest in somebody else's town — you do not hold Dolmet because
+  // you rent a counter in it — and the roll call above is about ground.
+  const stalls = Object.keys(S.workshops || {});
+  const stallBlock = stalls.length ? `
+    <div class="section-title">STALLS — ${stalls.length}
+      <span class="dim" style="letter-spacing:0.1em"> · ${stalls.reduce(
+    (a2, id) => a2 + State.workshopIncome(S, id), 0)} CREDITS/DAY</span></div>
+    <div class="realm-roll">${stalls.map((id) => {
+    const take = State.workshopIncome(S, id);
+    const since = S.workshops[id]?.sinceDay;
+    return `<div class="realm-row">
+        <span class="rr-name">${esc(State.locName(id))}</span>
+        <span class="rr-cr">${take}/day</span>
+        <span class="rr-gar ${take ? '' : 'hurt'}">${take
+    ? 'trading'
+    : 'frozen out — they will not deal with you'}</span>
+        <span class="rr-men">${since != null ? `held ${Math.max(0, S.day - since)}d` : ''}</span>
+      </div>`;
+  }).join('')}</div>` : '';
+
+  const body = stores + stallBlock + realm + (held.length ? held.map(({ id, loc, h }) => {
     const threat = Math.min(1, h.threat || 0);
     const rows = UPGRADE_LIST.map((key) => {
       const def = HOLDING_UPGRADES[key];

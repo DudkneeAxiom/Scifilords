@@ -69,6 +69,29 @@ export const SWING_DIRS = ['overhead', 'thrust', 'left', 'right'];
 const LOCK_RANGE = 16;
 const LOCK_BREAK = 24;
 
+/**
+ * WHOSE SIDE, AT A GLANCE.
+ *
+ * Not FACTIONS[*].color, which is the MAP's palette: olive, khaki, brown
+ * and ochre, chosen to sit on a dust-coloured continent without shouting.
+ * Painted onto bodies those four become one warm smudge, which is how a
+ * battle came to read as a single grey crowd with faction living entirely
+ * on the ring under each man's feet.
+ *
+ * A field is a different problem from a map. Here the only question is
+ * "whose man is that, and is he coming for me", and it gets four hues far
+ * enough apart to answer it in peripheral vision at forty metres.
+ */
+const FIELD_TINT = {
+  player: 0xe0a03a,     // your own: warm gold, the colour of the banner
+  trust: 0x4f86c6,      // cold blue steel
+  syndic: 0xc0453a,     // deep red
+  raider: 0x8a5bb8,     // violet — nobody's uniform, which is the point
+};
+
+// How much of a swing is wind-up. See updateSwing() for why it is not 0.55.
+const SWING_APEX = 0.68;
+
 export const FIELD_CAP = 120;
 
 /**
@@ -1020,6 +1043,21 @@ export class Mission {
 
   updateCharBatch() {
     if (!this.charPools) return;
+    // Cached on the entity: the colour of a man does not change frame to
+    // frame, and allocating sixty Colors sixty times a second would.
+    const tintOf = (e) => {
+      if (!e._tintCol) {
+        const hex = FIELD_TINT[e.side === 'player' ? 'player' : (e.faction || 'raider')]
+          ?? FIELD_TINT.raider;
+        // Pulled towards white a little, so it reads as CLOTH IN A COLOUR
+        // rather than a silhouette painted flat — the authored shading still
+        // shows through, because an instance colour multiplies the vertex
+        // colours underneath it. Only a little: washing them out was what
+        // made four different factions look like one grey crowd.
+        e._tintCol = new THREE.Color(hex).lerp(new THREE.Color(0xffffff), 0.22);
+      }
+      return e._tintCol;
+    };
     // Fresh matrices for every batched body: syncVisuals just posed them,
     // and copying last frame's matrixWorld would trail the animation by one
     // frame. Character subtrees only — the level is static and enormous.
@@ -1034,10 +1072,21 @@ export class Mission {
         const g = s.owner.char?.group;
         if (!g || g.visible === false) continue;
         pool.im.setMatrixAt(n, s.mesh.matrixWorld);
+        // WHOSE MAN IS THAT?
+        //
+        // The per-instance tint was taken out when characters were merged
+        // and instanced, because recolouring a shared geometry would mean
+        // cloning it per soldier — so faction lived entirely on the ring
+        // under their feet, and a line of sixty read as one grey crowd.
+        // An InstancedMesh carries a colour per instance without touching
+        // geometry at all, which is exactly the tool for this: the ring
+        // mesh has used it all along.
+        pool.im.setColorAt(n, tintOf(s.owner));
         n++;
       }
       pool.im.count = n;
       pool.im.instanceMatrix.needsUpdate = true;
+      if (pool.im.instanceColor) pool.im.instanceColor.needsUpdate = true;
     }
   }
 
@@ -3634,10 +3683,25 @@ export class Mission {
 
   /** Advance a swing; the steel arrives at the apex. */
   updateSwing(dt, e) {
+    // (see SWING_APEX below — the fraction of a swing spent winding up)
     const s = e.swing;
     if (!s) return;
     s.t += dt;
-    if (!s.hitDone && s.t >= s.dur * 0.55) {
+    // THE APEX, AND WHY IT MOVED.
+    //
+    // A blow resolved 55% of the way through its swing, which put the whole
+    // tell — the raised steel, the rose lighting the line it is coming down
+    // — inside 254ms for a blade and 303ms for a sword. Human visual
+    // reaction is about 250ms just to NOTICE, before the hand moves, and
+    // that is one opponent: against three the windows overlap and nothing
+    // can be answered. The melee read as unfair because it was.
+    //
+    // The apex is later now. Total swing time is UNCHANGED, so the pace of
+    // a fight and the damage it does are unchanged — the wind-up is longer
+    // and the recovery shorter. Measured after: blade 314ms, sword 374ms,
+    // spear 475ms, heavy 742ms. It also lands the weight where it belongs,
+    // because a blow that hangs at the top for longer reads as heavier.
+    if (!s.hitDone && s.t >= s.dur * SWING_APEX) {
       s.hitDone = true;
       this.resolveStrike(e);
     }
@@ -7401,7 +7465,7 @@ export class Mission {
       if (e.swing && !e.swing.hitDone) {
         // How far through the wind-up, so the shell can tighten the tell as
         // the steel comes down rather than flashing once and vanishing.
-        const t = clamp(e.swing.t / (e.swing.dur * 0.55), 0, 1);
+        const t = clamp(e.swing.t / (e.swing.dur * SWING_APEX), 0, 1);
         if (!incoming || t > incoming.t) {
           incoming = { dir: e.swing.dir, t, dist: d };
         }

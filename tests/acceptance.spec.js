@@ -7010,7 +7010,13 @@ test('steel arrives at the apex: swings, guards, spears, and the boot', async ({
     const hp0 = foe.hp;
     m.strike(p, 'overhead');
     const midSwing = !!p.swing && p.swing.hitDone === false;
-    m.updateSwing(p.swing.dur * 0.6, p);
+    // Past the apex, wherever the apex is. This advanced by 0.6 of the
+    // swing, which cleared the old 55% mark and stops short of the 68% the
+    // wind-up was lengthened to — so the blow simply had not landed yet and
+    // the test read it as a swing that does no damage. Still mid-swing, so
+    // the claim being made — steel resolves at the apex and NOT at the end
+    // of the animation — is the one being checked.
+    m.updateSwing(p.swing.dur * 0.75, p);
     const hit = hp0 - foe.hp;
     // 2) The guard turns it: same blow into a raised shield, plate pays.
     p.swing = null; p.cooldown = 0;
@@ -7018,7 +7024,7 @@ test('steel arrives at the apex: swings, guards, spears, and the boot', async ({
     foe.yaw = Math.atan2(p.x - foe.x, p.z - foe.z);
     const hp1 = foe.hp;
     m.strike(p, 'right');
-    m.updateSwing(p.swing.dur * 0.6, p);
+    m.updateSwing(p.swing.dur * 0.75, p);
     const blocked = foe.hp === hp1;
     const platePaid = KIT.shield.shieldHp - foe.shieldHp;
     // 3) The boot breaks the guard, and the next swing lands. A kick is a
@@ -7031,19 +7037,19 @@ test('steel arrives at the apex: swings, guards, spears, and the boot', async ({
     p.cooldown = 0;
     foe.x = p.x; foe.z = p.z + 2.0;                 // the kick shoved them
     m.strike(p, 'left');
-    m.updateSwing(p.swing.dur * 0.6, p);
+    m.updateSwing(p.swing.dur * 0.75, p);
     const landedThroughBreak = foe.hp < hp2;
     // 4) A spear is a wall at its point and a walking stick inside it.
     p.swing = null; p.cooldown = 0; foe.guard = 0; foe.guardBreak = 0;
     p.weapon = WEAPONS.spear;
     foe.x = p.x; foe.z = p.z + 3.2;                 // at the point
     const hpA = foe.hp;
-    m.strike(p, 'thrust'); m.updateSwing(p.swing.dur * 0.6, p);
+    m.strike(p, 'thrust'); m.updateSwing(p.swing.dur * 0.75, p);
     const atPoint = hpA - foe.hp;
     p.swing = null; p.cooldown = 0;
     foe.x = p.x; foe.z = p.z + 0.9;                 // inside it
     const hpB = foe.hp;
-    m.strike(p, 'thrust'); m.updateSwing(p.swing.dur * 0.6, p);
+    m.strike(p, 'thrust'); m.updateSwing(p.swing.dur * 0.75, p);
     const inside = hpB - foe.hp;
     // 5) Weight interrupts: a maul cancels a sword mid-swing.
     p.swing = null; p.cooldown = 0;
@@ -7051,7 +7057,7 @@ test('steel arrives at the apex: swings, guards, spears, and the boot', async ({
     foe.weapon = WEAPONS.sword;
     foe.swing = { t: 0, dur: 0.55, dir: 'right', hitDone: false };
     foe.x = p.x; foe.z = p.z + 2.0;
-    m.strike(p, 'overhead'); m.updateSwing(p.swing.dur * 0.6, p);
+    m.strike(p, 'overhead'); m.updateSwing(p.swing.dur * 0.75, p);
     const staggered = foe.swing === null;
     // 6) The wind: swings spend it, standing buys it back.
     const sta0 = m.pStamina;
@@ -9443,4 +9449,57 @@ test('a field with nobody left on it ends itself, and the take is offered not ta
   expect(r.spoils).toContain('medkit');
   // And it is NOT on the truck yet — that is the spoils screen's decision.
   expect(r.bankedAfter).toBe(r.bankedBefore);
+});
+
+test('a stall you paid for appears on the screen that lists what you own', async ({ page }) => {
+  await boot(page);
+  await newCampaign(page);
+  // A market stall costs 2400, pays every day, and appeared on no screen at
+  // all. Buying one showed as money leaving the purse; the only reminder it
+  // existed was walking back to that particular town and talking to the
+  // trader. Hold three across the Reach and there was nowhere to see what
+  // they came to. The holdings panel was byte-identical with and without one.
+  const r = await page.evaluate(async () => {
+    const UI = await import('/src/ui.js');
+    const State = await import('/src/state.js');
+    const { LOCATIONS } = await import('/src/data.js');
+    const S = window.KR.campaign;
+    const town = LOCATIONS.find((l) => l.services?.includes('market'));
+    S.credits = 50000;
+    S.workshops = {};
+
+    const readPanel = () => {
+      UI.holdingsPanel(S, { onClose: () => {} });
+      const m = document.querySelector('#modal');
+      const txt = (m?.textContent || '').replace(/\s+/g, ' ');
+      UI.closeModal();
+      return txt;
+    };
+
+    const without = readPanel();
+    const bought = State.buyWorkshop(S, town.id);
+    const withOne = readPanel();
+    // And a town that has frozen you out pays nothing, which the screen
+    // should say rather than showing a confident zero.
+    S.relations[town.id] = -60;
+    const frozen = readPanel();
+    return {
+      bought: bought.ok,
+      townName: town.name,
+      without, withOne, frozen,
+      income: State.workshopIncome(S, town.id),
+    };
+  });
+
+  expect(r.bought).toBe(true);
+  // The screen said nothing about it before.
+  expect(r.without).not.toContain('STALLS');
+  // And names it, with what it pays, afterwards.
+  expect(r.withOne).toContain('STALLS');
+  expect(r.withOne).toContain(r.townName);
+  expect(r.withOne).toMatch(/CREDITS\/DAY/);
+  expect(r.withOne).toMatch(/\d+\/day/);
+  // A town that will not deal with you earns nothing, and says why.
+  expect(r.income).toBe(0);
+  expect(r.frozen).toMatch(/frozen out/i);
 });

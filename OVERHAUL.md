@@ -1110,3 +1110,125 @@ rather than reading:
   empties into the real stores later. Reading `S.armoury` straight after
   the decision reports every kept piece as lost, which is a probe error
   that looks exactly like a bug.
+
+## Round: diplomacy and the stalls
+
+Both systems' rules check out under their own tests
+(`tools/dipshop.mjs`), which is worth recording because gates are where
+this kind of code goes wrong — one that never opens is a feature nobody
+can reach, one that never closes is an exploit.
+
+- A stall refuses every wrong purchase: broke, a town with no market, one
+  you already hold, selling one you do not own. It costs 2400 and sells
+  back for 1600, so the round trip loses money — no arbitrage there
+  either. Income is 0 where a town has frozen you out (relation ≤ -25),
+  72/day normally, 86 at 40 or better: about a thirty-three day payback.
+- A commission needs standing 14 AND renown 300, and correctly refuses
+  when given either alone. Declaring for yourself needs renown 1200 AND
+  three holdings, and names which one you are short of. War and truce
+  between the majors set and clear, and enemiesOf() agrees.
+
+### The stall nobody could see
+
+The holdings screen was byte-identical with and without one — 441
+characters both times, still reading BRACKET HOLDS NO GROUND. A player
+spends 2400 credits and the only evidence is the money leaving; the sole
+reminder the stall exists is walking back to that particular town and
+talking to its trader. Hold three across the Reach and there was nowhere
+to see what they came to.
+
+They are listed now, with the town, what each pays today, how long it
+has been held, and the total across all of them. They sit with the truck
+rather than with the ground, because a stall is an interest in somebody
+else's town — you do not hold Dolmet because you rent a counter in it —
+and the roll call below is about ground. A town that has frozen you out
+reads as such instead of showing a confident zero.
+
+## Round: the grip, the colours, and a blow you can see coming
+
+Three reports, one theme — the game knew things it was not showing.
+
+### Everyone on the equipment screen held a rifle
+
+`makePreview` called the rig with `aiming: true` and no melee flag, so it
+used the shouldered firing pose whatever was in the hand: every swordsman
+in the company stood holding his sword like a carbine. The rig has had
+proper melee poses all along — each weapon carries its own `hold` and
+`guard` — and the preview simply never passed them.
+
+It does now, and it moves: the loop settles on guard, cuts, and recovers,
+so the screen shows what the kit DOES rather than a mannequin. The model
+fallback was `wpn_rifle` too, so a soldier carrying nothing was drawn
+with a carbine; it is a blade now.
+
+### Four factions, one grey crowd
+
+The per-instance tint was removed when characters were merged and
+instanced — recolouring shared geometry would mean cloning it per soldier,
+and that is what makes a sixty-strong field affordable. So faction lived
+entirely on the ring under each man's feet.
+
+An InstancedMesh carries a colour per instance without touching geometry,
+which is exactly the tool for this; the faction rings have used it all
+along. Bodies are tinted now, and the preview — one body, where a cloned
+material costs nothing — is tinted too.
+
+The tints are NOT FACTIONS[*].color. That is the map's palette: olive,
+khaki, brown and ochre, chosen to sit on a dust-coloured continent
+without shouting, and painted onto bodies those four become one warm
+smudge. A field asks a different question — whose man is that, and is he
+coming for me — so it gets four hues far enough apart to answer it in
+peripheral vision: your own in gold, Trust in cold blue, Syndic in red,
+and anybody else in violet.
+
+### A blow you could not have answered
+
+The rose was fed the right things all along — which line the blow is
+coming down, and how far through its wind-up it is. The problem was the
+clock. A swing resolved 55% of the way through, which put the entire tell
+inside 254ms for a blade and 303ms for a sword; human visual reaction is
+about 250ms just to NOTICE, before the hand moves. Against three
+opponents the windows overlap and nothing can be answered. The melee read
+as unfair because it was.
+
+The apex is later now (`SWING_APEX`), and total swing time is unchanged —
+the wind-up is longer and the recovery shorter, so the pace of a fight
+and the damage it does are untouched. Measured, first-showable frame to
+impact:
+
+| weapon | before | after |
+|--------|--------|-------|
+| blade  | 267ms  | 317ms |
+| sword  | 317ms  | 383ms |
+| spear  | 400ms  | 483ms |
+| heavy  | 600ms  | 750ms |
+
+And the rose says it properly. It was a five-pixel sliver whose only tell
+was a change in alpha — asked to carry a life-or-death timing through
+something the eye does not catch while the camera is moving. The bars are
+thicker, and an incoming blow now GROWS along its own line towards the
+crosshair, reaching full length exactly at impact: motion is what the eye
+catches without being looked at, and length is a clock you can read
+without counting. A guard that meets it stops dead and goes green.
+
+### A footnote worth keeping: the export that walked off
+
+Four tests went red for this round and three were the usual thing — a
+test pinned to the old constant, advancing a swing by 0.6 of its duration
+because the apex used to be at 0.55.
+
+The fourth was mine, and it is a trap worth writing down. Inserting a
+block before an anchor of `const FIELD_CAP` matched INSIDE the real line,
+`export const FIELD_CAP`, so the new block landed between the keyword and
+its declaration:
+
+    export /** ...comment... */ const FIELD_TINT = { ... };
+    const FIELD_CAP = 120;
+
+FIELD_TINT became the exported one and FIELD_CAP quietly stopped being
+exported. It PARSES — `export /*comment*/ const X` is perfectly legal —
+so the boot check passed clean, and the only thing that noticed was a
+test importing the constant, which then built a party of NaN strength and
+put four men on a field sized for a hundred and sixty-five.
+
+An anchor has to be unique against the whole line, not a substring of it.

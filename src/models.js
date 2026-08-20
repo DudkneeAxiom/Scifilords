@@ -903,7 +903,19 @@ export function makePreview(width = 320, height = 460) {
   let current = null;
   let yaw = 0.35;
 
-  function setSoldier(variant, weaponModel, armourModels = []) {
+  // What this soldier is carrying and whose colours they wear. The preview
+  // used to know neither, which is why everyone stood in a rifle grip.
+  let kit = { melee: false, hold: null, guardPose: null, tint: null };
+  let clock = 0;
+
+  function setSoldier(variant, weaponModel, armourModels = [], opts = {}) {
+    kit = {
+      melee: !!opts.melee,
+      hold: opts.hold || null,
+      guardPose: opts.guardPose || null,
+      tint: opts.tint || null,
+    };
+    clock = 0;
     if (current) { pivot.remove(current.group); current.dispose?.(); }
     current = makeCharacter(variant, weaponModel);
     // Armour is shown as pieces floating in place on the body — the rigs are
@@ -918,6 +930,22 @@ export function makePreview(width = 320, height = 460) {
       parent.add(piece);
     }
     current.group.position.y = -0.02;
+    // COLOURS THE PLAYER CAN SEE.
+    //
+    // Character meshes are merged and share geometry across every instance,
+    // which is what makes a sixty-strong battle renderable and why the
+    // per-instance tint was taken out. A preview is ONE body: cloning its
+    // material costs nothing and gives the equipment screen the faction
+    // colour it has never had, on the soldier rather than on a ring under
+    // his feet.
+    if (kit.tint != null) {
+      current.group.traverse((o) => {
+        if (!o.isMesh || !o.material) return;
+        o.material = o.material.clone();
+        if (o.material.color) o.material.color.setHex(kit.tint);
+        o.material.vertexColors = true;   // wash over the authored colours
+      });
+    }
     pivot.add(current.group);
     render();
   }
@@ -925,7 +953,30 @@ export function makePreview(width = 320, height = 460) {
   function render() {
     pivot.rotation.y = yaw;
     if (current) {
-      current.update(0.016, { speed: 0, aiming: true, pitch: 0 });
+      clock += 0.016;
+      if (kit.melee) {
+        // A FIGHTER, NOT A RIFLEMAN STANDING STILL.
+        //
+        // This called update() with aiming:true and no melee flag, so the
+        // rig used its shouldered firing pose and every swordsman on the
+        // equipment screen stood holding a sword like a carbine. Now the
+        // weapon's own hold and guard poses drive it, and the loop shows
+        // what the kit DOES: settle on guard, cut, recover, breathe.
+        const T = 4.2;                        // one full demonstration
+        const t = (clock % T) / T;
+        // 0.00-0.45 at rest, 0.45-0.62 comes on guard, 0.62-0.80 cuts.
+        const guard = t < 0.45 ? 0 : t < 0.62 ? (t - 0.45) / 0.17
+          : t < 0.86 ? 1 : Math.max(0, 1 - (t - 0.86) / 0.14);
+        const swing = t > 0.62 && t < 0.80 ? (t - 0.62) / 0.18 : 0;
+        current.update(0.016, {
+          speed: 0, melee: true, aiming: false, pitch: 0,
+          guard, swing, swingDir: 'right', guardDir: 'overhead',
+          hold: kit.hold, guardPose: kit.guardPose,
+        });
+      } else {
+        // A bow is still drawn from the shoulder, so that pose is correct.
+        current.update(0.016, { speed: 0, aiming: true, pitch: 0 });
+      }
     }
     renderer.render(scene, camera);
   }

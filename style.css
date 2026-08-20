@@ -1430,3 +1430,52 @@ kbd {
   width: 1px; align-self: stretch; margin: 0 4px;
   background: var(--edge, #33352a);
 }
+
+/* ------------------------------------------------- the rose, made loud
+   The rose was fed the right things all along — which line the blow is
+   coming down, and how far through its wind-up it is — and said them in
+   a five-pixel sliver that changed opacity. In a melee, with the camera
+   moving and three people in reach, that is not a warning; the report
+   was that the wheel "almost feels useless", and it was being asked to
+   communicate a life-or-death timing through a slight change in alpha.
+
+   Two changes. The bars are thicker so they exist in peripheral vision
+   at all, and an incoming blow now GROWS along its own line towards the
+   crosshair as it falls, reaching full length exactly at impact. Motion
+   is what the eye catches without being looked at, and length is a clock
+   you can read without counting. */
+.guard-rose i { background: rgba(216, 211, 200, 0.22); }
+.guard-rose i[data-d="overhead"],
+.guard-rose i[data-d="thrust"] { height: 7px; width: 48px; margin-left: -24px; }
+.guard-rose i[data-d="left"],
+.guard-rose i[data-d="right"] { width: 7px; height: 48px; margin-top: -24px; }
+
+/* The blow coming in: it lengthens towards the middle, and the origin is
+   the OUTSIDE edge so it reads as travelling inwards rather than swelling
+   in place. */
+.guard-rose i.inc {
+  background: rgba(214, 96, 78, calc(0.55 + var(--t, 0) * 0.45));
+  border-color: rgba(255, 150, 128, 1);
+  box-shadow: 0 0 calc(6px + var(--t, 0) * 18px) rgba(214, 80, 60, 0.85);
+  transition: none;   /* --t is already a smooth clock; easing it lags the tell */
+}
+.guard-rose i.inc[data-d="overhead"] { transform-origin: 50% 0%; transform: scaleY(calc(1 + var(--t, 0) * 2.6)); }
+.guard-rose i.inc[data-d="thrust"]   { transform-origin: 50% 100%; transform: scaleY(calc(1 + var(--t, 0) * 2.6)); }
+.guard-rose i.inc[data-d="left"]     { transform-origin: 0% 50%; transform: scaleX(calc(1 + var(--t, 0) * 2.6)); }
+.guard-rose i.inc[data-d="right"]    { transform-origin: 100% 50%; transform: scaleX(calc(1 + var(--t, 0) * 2.6)); }
+
+/* Your guard, raised: brighter than it was, because the answer should read
+   as clearly as the question. */
+.guard-rose i.up {
+  background: rgba(240, 186, 118, 0.95);
+  border-color: rgba(255, 205, 145, 1);
+  box-shadow: 0 0 8px rgba(232, 176, 112, 0.55);
+}
+/* Met. Kill the growth — the blow stopped, and the rose should say so by
+   going still as much as by going green. */
+.guard-rose i.met {
+  background: rgba(158, 210, 104, 0.98);
+  border-color: rgba(200, 235, 160, 1);
+  box-shadow: 0 0 14px rgba(158, 196, 106, 0.85);
+  transform: none !important;
+}
