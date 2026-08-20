@@ -3175,13 +3175,24 @@ export function spoilsPanel(S, result, { onClose }) {
     const caps = (S.prisoners || []).filter((p) => capIds.has(p.id));
     const counts = {};
     for (const it of spoils) counts[it.id] = (counts[it.id] || 0) + 1;
+    // Everything is kept unless the player says otherwise — the common case
+    // is "take it all", and that should cost no clicks.
+    if (!result._leave) result._leave = new Set();
+    const leave = result._leave;
+    const keptOf = (id) => (counts[id] || 0) - (leave.has(id) ? (counts[id] || 0) : 0);
     const body = `
       <div class="prose">The field is quiet. What the enemy carried is yours
-        to sort — kit goes on the truck, and the people go where you say.</div>
+        to sort — take what is worth the room on the truck, and leave the
+        rest where it fell. The people go where you say.</div>
       <div class="section-title">FROM THE ENEMY SUPPLY — ${spoils.length} ${spoils.length === 1 ? 'PIECE' : 'PIECES'}</div>
       ${spoils.length ? `<div class="spoils-grid">${Object.entries(counts).map(([id, n]) =>
-    `<div class="note good">${esc(id.toUpperCase())}${n > 1 ? ` ×${n}` : ''}</div>`).join('')}</div>
-      <div class="hint">Loaded on the truck. Fit it to the company from the EQUIPMENT screen.</div>`
+    `<div class="note ${leave.has(id) ? '' : 'good'} clickable" data-spoil="${esc(id)}"
+        style="cursor:pointer${leave.has(id) ? ';opacity:0.45;text-decoration:line-through' : ''}">
+       ${esc(id.toUpperCase())}${n > 1 ? ` ×${n}` : ''}
+       <span class="dim" style="margin-left:6px;font-size:10px">${leave.has(id) ? 'LEFT' : 'TAKEN'}</span>
+     </div>`).join('')}</div>
+      <div class="hint">Click a piece to leave it behind. What you keep goes on
+        the truck — fit it to the company from the EQUIPMENT screen.</div>`
     : '<div class="empty">NOTHING WORTH STRIPPING</div>'}
       <div class="section-title">${caps.length === 1 ? 'PRISONER' : 'PRISONERS'} TAKEN — ${caps.length}</div>
       ${caps.length ? caps.map((p) => `<div class="pris">
@@ -3193,15 +3204,37 @@ export function spoilsPanel(S, result, { onClose }) {
     : '<div class="empty">NOBODY THREW DOWN THEIR WEAPON</div>'}
       ${caps.length ? '<div class="hint">Kept prisoners ride in the truck — ransom them at a broker, or press them later from the roster.</div>' : ''}`;
 
+    const takeAndClose = () => {
+      // ONCE. The button's handler and the modal's own onClose both lead
+      // here — which is deliberate, so the escape key cannot drop the take
+      // on the floor — and both fire on a button press, which banked every
+      // kept piece twice. Measured: one medkit off the field arrived as two.
+      if (result._spoilsTaken) { onClose?.(); return; }
+      result._spoilsTaken = true;
+      // Bank the kept pieces here, because applyMissionResult deliberately
+      // left them alone for exactly this decision.
+      const picks = (result.fieldSpoils || []).filter((it) => !leave.has(it.id));
+      for (const it of picks) State.addSpoils(S, it.pool, it.id, 1);
+      result.fieldSpoilsKept = picks.length;
+      onClose?.();
+    };
     modal({
       title: 'FIELD SPOILS',
       tag: `DAY ${S.day}`,
       body,
       foot: `<span class="spacer">CREDITS ${S.credits}</span>
         <button class="btn btn-major" data-x="close">MOVE OUT</button>`,
-      onClose,
+      onClose: takeAndClose,
     });
-    wire({ close: onCloseWrap(onClose) });
+    wire({ close: takeAndClose });
+    for (const el of document.querySelectorAll('#modal [data-spoil]')) {
+      el.onclick = () => {
+        const id = el.dataset.spoil;
+        if (leave.has(id)) leave.delete(id); else leave.add(id);
+        Audio.uiMove();
+        render();
+      };
+    }
     for (const el of document.querySelectorAll('#modal [data-cap-press]')) {
       el.onclick = () => {
         if (State.pressPrisoner(S, el.dataset.capPress)) { Audio.uiSelect(); render(); }

@@ -5454,6 +5454,26 @@ export class Mission {
     if (this.objective.progress < this.objective.need) {
       this.objective.progress = this.objective.need;
     }
+    // A FIELD WITH NOBODY LEFT ON IT IS OVER.
+    //
+    // Every completed objective armed an extraction and asked the player to
+    // walk back across ground they had just cleared, with nothing on it, to
+    // collect what was already theirs. That walk is a real decision when
+    // somebody is still shooting — getting out with the thing you came for
+    // is half of a sabotage run — and it is pure tax when the last man is
+    // down. So the walk is kept for a field that is still contested, and a
+    // field that is not simply ends.
+    const hostilesLeft = this.entities.filter(
+      (e) => e.side === 'enemy' && !e.dead && !e.down && !e.routing).length;
+    const reservesLeft = Math.max(0, (this.skirmishTotal || 0) - (this.skirmishCommitted || 0));
+    if (hostilesLeft === 0 && reservesLeft === 0 && this.spec.type !== 'defense'
+      && !this.stragglersOutstanding()) {
+      this.onToast('THE FIELD IS YOURS', 'Nothing left standing', 'good');
+      Audio.extractTone();
+      // A beat, so the last blow lands and reads before the report covers it.
+      this.autoEndAt = this.time + 1.6;
+      return;
+    }
     this.extractArmed = true;
     const ex = this.level.extraction;
     this.extractMarker.position.set(ex.x, Level.heightAt(ex.x, ex.z) + 0.05, ex.z);
@@ -5462,6 +5482,19 @@ export class Mission {
     if (this.spec.type !== 'defense') {
       this.onToast('OBJECTIVE COMPLETE', 'Move to extraction', 'good');
     }
+  }
+
+  /**
+   * People you came for who are not with you yet.
+   *
+   * A recovery ends when the freed walk out WITH you — the extraction check
+   * has always refused to close on stragglers, and an automatic end must
+   * refuse for the same reason or it would leave them on the field.
+   */
+  stragglersOutstanding() {
+    const p = this.player;
+    return this.prisoners.some(
+      (q) => q.released && !q.dead && Math.hypot(q.x - p.x, q.z - p.z) > 14);
   }
 
   /**
@@ -6580,6 +6613,12 @@ export class Mission {
 
     // Extraction: reach the marker. For a recovery, the people you came for
     // have to be standing there too, which is the whole point of the mission.
+    // The pause after a field is won, then the report.
+    if (this.autoEndAt && !this.over && this.time >= this.autoEndAt) {
+      this.autoEndAt = 0;
+      this.endMission(!this.objective.failed, 'cleared');
+      return;
+    }
     if (this.extractArmed && !this.over) {
       const ex = this.level.extraction;
       const d = Math.hypot(p.x - ex.x, p.z - ex.z);
@@ -6845,6 +6884,17 @@ export class Mission {
       soldierResults,
       recruits,
       loot,
+      // WHAT CAME OFF THE FIELD, AS A LIST YOU CAN SORT THROUGH.
+      //
+      // The spoils screen has always read result.fieldSpoils and nothing has
+      // ever written it — so the one place the player was meant to look over
+      // the take and decide about it only opened when there were prisoners,
+      // and kit was simply banked behind their back. Flattened per piece
+      // rather than as pools, because the decision is made a piece at a time.
+      fieldSpoils: [['armoury', loot.armoury], ['armourPool', loot.armourPool],
+        ['kitPool', loot.kitPool]].flatMap(([pool, bag]) =>
+        Object.entries(bag || {}).flatMap(([id, count]) =>
+          Array.from({ length: count || 0 }, () => ({ id, pool })))),
       lostPrisoners: this.lostPrisoners || 0,
       retake: this.spec.contract?.retake || null,
       suppliesUsed: 2 + Math.floor(this.stats.shotsFired / 90),

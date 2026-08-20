@@ -4585,12 +4585,13 @@ test('heavy contracts run in stages, and the ground grows with the fight', async
     const markerDist = Math.hypot(m.stages[0].x - spawn.x, m.stages[0].z - spawn.z);
 
     // Walking each stage down finishes the chain.
-    for (let guard = 0; guard < 4 && m.stages[m.stageIndex] && !m.extractArmed; guard++) {
+    const chainDone = () => !!m.extractArmed || !!m.over || !!m.autoEndAt;
+    for (let guard = 0; guard < 4 && m.stages[m.stageIndex] && !chainDone(); guard++) {
       const s = m.stages[m.stageIndex];
       m.player.x = s.x; m.player.z = s.z;
-      for (let i = 0; i < 900 && m.stages[m.stageIndex] === s && !m.extractArmed; i++) m.step(0.016);
+      for (let i = 0; i < 900 && m.stages[m.stageIndex] === s && !chainDone(); i++) m.step(0.016);
     }
-    return { sizes, lairStages, afterPrimary, markerDist, finished: !!m.extractArmed };
+    return { sizes, lairStages, afterPrimary, markerDist, finished: chainDone() };
   });
 
   // Ground scales with the number of people standing on it.
@@ -9352,4 +9353,94 @@ test('every kind of work a site offers can actually be posted', async ({ page })
   expect(missing).toEqual([]);
   // And the board is not one job in a trenchcoat.
   expect(r.postable.length).toBeGreaterThanOrEqual(5);
+});
+
+test('a field with nobody left on it ends itself, and the take is offered not taken', async ({ page }) => {
+  await boot(page);
+  await newCampaign(page);
+  // Every completed objective armed an extraction and asked the player to
+  // walk back across ground they had just cleared, with nothing on it, to
+  // collect what was already theirs. That walk earns its place when somebody
+  // is still shooting; it is pure tax when the last man is down.
+  //
+  // And what came off the field was banked behind the player's back: the
+  // spoils screen reads result.fieldSpoils, which nothing ever wrote, so it
+  // only opened when there were prisoners.
+  const r = await page.evaluate(async () => {
+    const { Mission } = await import('/src/mission.js');
+    const UI = await import('/src/ui.js');
+    const State = await import('/src/state.js');
+    const G = window.KR;
+    const S = G.campaign;
+    G.mission?.dispose();
+    G.world?.dispose(); G.world = null;
+    document.getElementById('viewport').innerHTML = '';
+    UI.show('hud');
+    G.mission = new Mission({
+      campaign: S,
+      spec: { type: 'skirmish', site: 'roadside', layout: 'roadside', siteName: 'Cleared',
+        party: { id: 'cl', kind: 'looters', name: 'Foe', strength: 5, tier: 1, quality: 0.6 } },
+      squad: S.roster.slice(0, 4),
+      container: document.getElementById('viewport'),
+      onHud: () => {}, onToast: () => {}, onIntro: () => {}, onWheel: () => {},
+      onEnd: () => {},
+    });
+    await G.mission.start();
+    const m = G.mission;
+    m.paused = false; m.hadLock = true; m.inserting = false;
+    if (m.intro) { m.intro.active = false; m.time = m.intro.graceUntil + 0.1; }
+    for (const e of m.entities) e.inserting = false;
+    const realStep = m.step.bind(m);
+    m.step = () => {};
+
+    // Something worth arguing over, then kill the field — and do NOT move
+    // the commander, which is the whole point.
+    // STAND WELL AWAY FROM THE WAY OUT FIRST. On this layout the extraction
+    // sits about two metres from the spawn, so a commander who never moved
+    // would satisfy the old walk anyway and the test would prove nothing.
+    const ex = m.level.extraction;
+    m.player.x = ex.x + 34; m.player.z = ex.z + 22;
+    const home = { x: m.player.x, z: m.player.z };
+    const distToExtraction = Math.hypot(home.x - ex.x, home.z - ex.z);
+    for (const e of m.entities) if (e.side === 'enemy') { e.hp = 0; e.dead = true; }
+    // Planted AFTER the killing: men dropping their kit as they fall put
+    // their own pieces in these same pools, so setting it first left the
+    // take one item longer than the test had planned for.
+    m.loot.armoury = { spear: 2 };
+    m.loot.armourPool = {};
+    m.loot.kitPool = { medkit: 1 };
+    m.skirmishTotal = 0; m.skirmishCommitted = 0;
+    m.checkRout();
+    // Enough time for the beat after the last blow, and no longer.
+    for (let i = 0; i < 300 && !m.over; i++) realStep(1 / 60);
+
+    const res = m.result;
+    // What the campaign does with that report, before anybody is asked.
+    const before = JSON.stringify(S.spoils?.armoury || {});
+    State.applyMissionResult(S, res);
+    const after = JSON.stringify(S.spoils?.armoury || {});
+    return {
+      over: !!m.over, reason: res?.reason,
+      moved: Math.hypot(m.player.x - home.x, m.player.z - home.z),
+      distToExtraction,
+      spoils: (res?.fieldSpoils || []).map((x) => x.id).sort(),
+      bankedBefore: before, bankedAfter: after,
+    };
+  });
+
+  // It ended on its own, with the commander standing where they fought.
+  expect(r.over).toBe(true);
+  expect(r.reason).toBe('cleared');
+  expect(r.moved).toBeLessThan(1);
+  // And it was not simply that the extraction happened to be underfoot.
+  expect(r.distToExtraction).toBeGreaterThan(6);
+  // The take is listed PIECE BY PIECE for the player to sort — one entry per
+  // item, not a pool with a count, because the decision is made a piece at a
+  // time. Containment rather than equality: men go on dropping their kit
+  // through the beat between the last blow and the report, so the exact
+  // contents are the battle's business and the shape is the claim.
+  expect(r.spoils.filter((x) => x === 'spear').length).toBe(2);
+  expect(r.spoils).toContain('medkit');
+  // And it is NOT on the truck yet — that is the spoils screen's decision.
+  expect(r.bankedAfter).toBe(r.bankedBefore);
 });

@@ -1063,3 +1063,50 @@ memory, because data and content drifting apart is silent by nature.
 - The weapon panel still read "EMPTY — R", naming a key that now orders
   the company, for a reload that happens automatically in the firing path
   anyway. It says EMPTY.
+
+## Round: the field is yours, so take what you want off it
+
+Two things, both from the same report: you should not have to walk back
+across a field you have just cleared, and what came off it should be
+yours to sort rather than banked behind your back.
+
+### The walk after the last man falls
+
+Every completed objective armed an extraction and asked the player to
+cross ground they had already taken, with nothing on it, to collect what
+was already theirs. That walk earns its place while somebody is still
+shooting — getting out with the thing you came for is half of a sabotage
+run, and a recovery still refuses to close while freed personnel are
+strung out behind you. It is pure tax when the last man is down.
+
+So the walk is kept for a field that is still contested and a field that
+is not simply ends: no hostiles standing, no reserves left to commit, no
+stragglers outstanding, a beat of about a second and a half so the last
+blow reads, and then the report.
+
+### And the take is offered, not taken
+
+The spoils screen has always read `result.fieldSpoils` — and nothing has
+ever written it. So the one place the player was meant to look over what
+the enemy carried and decide about it only opened when there were
+prisoners, and kit was simply added to the truck without a word.
+
+The report carries the take now, one entry per piece rather than pools
+with counts, because the decision is made a piece at a time. Everything
+is kept unless you say otherwise; clicking a piece leaves it where it
+fell. `applyMissionResult` deliberately does NOT bank spoils on a report
+that carries the field list, so the screen is a decision rather than a
+description — reports without it (autoresolved encounters, older saves)
+keep the old behaviour exactly.
+
+Two things this turned up while building it, both caught by measuring
+rather than reading:
+
+- The take was banked TWICE. The button's handler and the modal's own
+  onClose both lead to the same exit — deliberately, so the escape key
+  cannot drop the whole field's kit on the floor — and both fire on a
+  button press. One medkit off the field arrived as two.
+- `addSpoils()` stages into `S.spoils`, a holding bag that `claimSpoils()`
+  empties into the real stores later. Reading `S.armoury` straight after
+  the decision reports every kept piece as lost, which is a probe error
+  that looks exactly like a bug.

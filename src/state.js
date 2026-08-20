@@ -1946,7 +1946,14 @@ export function applyMissionResult(S, res) {
   // a different kind of reward from what the contract paid — and the player
   // should be able to see which was which.
   const carried = [];
-  for (const [pool, label] of [['armoury', 'weapon'], ['armourPool', 'armour'], ['kitPool', 'kit']]) {
+  // WHEN THE PLAYER IS GOING TO BE ASKED, DO NOT DECIDE FOR THEM.
+  //
+  // A report that carries fieldSpoils is going to put the take in front of
+  // the player piece by piece; banking it here first would make that screen
+  // a description of something already done. Reports without the field
+  // (autoresolved encounters, older saves) keep the old behaviour exactly.
+  const askFirst = Array.isArray(res.fieldSpoils);
+  for (const [pool, label] of (askFirst ? [] : [['armoury', 'weapon'], ['armourPool', 'armour'], ['kitPool', 'kit']])) {
     for (const [id, n] of Object.entries(res.loot?.[pool] || {})) {
       if (!n) continue;
       addSpoils(S, pool, id, n);
